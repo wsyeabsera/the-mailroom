@@ -3,7 +3,7 @@
 // exercised without the Worker.  Run: node scripts/ui-mock.mjs   ->  http://localhost:8799
 // Owner password: "mailroom" (override with MOCK_PASSWORD). Data is in memory and resets on restart.
 // Handy routes: GET /mock/offline?on=1|0 (toggle the daemon, no arg = toggle), GET /mock/event (emit a fake event),
-// GET /mock/reset-lock (clear the login lockout). Start offline with ?offline in the first URL or MOCK_OFFLINE=1.
+// GET /mock/tokens-clear (remove all admin tokens, for the empty state), GET /mock/reset-lock (clear the login lockout). Start offline with ?offline in the first URL or MOCK_OFFLINE=1.
 import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -21,13 +21,14 @@ const t = (m) => now - m * min;
 // ---------------------------------------------------------------- data
 const db = {
   daemon: { connected: process.env.MOCK_OFFLINE !== "1", last_seen: t(0), rotated_at: t(6 * 1440), hint: "mrd_...9a3f", seq: 0 },
-  contracts: new Map(), keys: new Map(), jobs: new Map(), events: [],
+  contracts: new Map(), keys: new Map(), jobs: new Map(), events: [], tokens: new Map(),
 };
 let seq = 400;
 const sessions = new Set();
 const clients = new Set();
 const fails = new Map(); // ip -> {n, until}
 let counter = 4824;
+let tokSeq = 2;
 
 function emit(kind, payload, ts = Date.now()) {
   const e = { seq: ++seq, ts, kind, payload };
@@ -52,6 +53,9 @@ putJob(4819, "k_hobby", "echo", { text: "hello from the cloud" }, "done", t(44),
 putJob(4820, "k_prod", "read_file", { path: "~/Documents/taxes/2025.pdf" }, "refused", t(42), { reason: "folder is outside the contract" });
 putJob(4821, "k_prod", "write_file", { path: "~/Hobby/dunder/notes/standup.md", content: "# Standup 15 Nov\n- shipped the gateway rate limit\n- next: approval UI\n".padEnd(214, " ") }, "waiting_approval", t(41));
 putJob(4822, "k_prod", "write_file", { path: "~/Hobby/dunder/notes/ideas.md", content: "x".repeat(98) }, "waiting_approval", t(40));
+const putToken = (id, label, prefix, scopes, created, used) => db.tokens.set(id, { id, label, prefix, scopes, created_at: created, last_used_at: used, revoked_at: null });
+putToken("t_1", "Claude Code on the laptop", "mra_Hk3d", ["read", "write"], t(3 * 1440), t(9));
+putToken("t_2", "Approver bot", "mra_Zp81", ["read", "approve"], t(40), null);
 const seedEv = (kind, p, m) => emit(kind, p, t(m));
 seq = 404;
 seedEv("daemon.disconnected", {}, 60); seedEv("daemon.connected", {}, 55); seedEv("key.created", { key_id: "k_hobby", label: "Hobby scripts" }, 5);
@@ -165,6 +169,29 @@ async function admin(req, res, url) {
       return json(res, 200, { id: k.id, revoked_at: k.revoked_at, cancelled });
     }
   }
+  if (p === "/admin/tokens" && m === "GET") return json(res, 200, [...db.tokens.values()]);
+  if (p === "/admin/tokens" && m === "POST") {
+    const b = (await body(req)) || {}, errors = {};
+    const label = typeof b.label === "string" ? b.label.trim() : "";
+    if (label.length < 1 || label.length > 60) errors.label = "Every token needs a label, 60 characters at most.";
+    const SC = ["read", "write", "approve"];
+    if (!Array.isArray(b.scopes) || !b.scopes.length) errors.scopes = "Pick at least one scope.";
+    else if (b.scopes.some((x) => !SC.includes(x))) errors.scopes = "Unknown scope. Use read, write or approve.";
+    if (Object.keys(errors).length) return err(res, 422, "invalid", { errors });
+    const scopes = SC.filter((x) => b.scopes.includes(x) || x === "read");
+    const secret = "mra_" + base62(32), id = "t_" + ++tokSeq;
+    db.tokens.set(id, { id, label, prefix: secret.slice(0, 8), scopes, created_at: Date.now(), last_used_at: null, revoked_at: null });
+    emit("token.created", { token_id: id, label, scopes });
+    return json(res, 201, { id, label, scopes, token: secret });
+  }
+  if (seg[1] === "tokens" && seg[2] && seg[3] === "revoke" && m === "POST") {
+    const tk = db.tokens.get(seg[2]);
+    if (!tk) return err(res, 404, "not_found");
+    if (tk.revoked_at) return err(res, 409, "conflict");
+    tk.revoked_at = Date.now();
+    emit("token.revoked", { token_id: tk.id, label: tk.label, scopes: tk.scopes });
+    return json(res, 200, { id: tk.id, revoked_at: tk.revoked_at });
+  }
   if (p === "/admin/contracts" && m === "GET") return json(res, 200, [...db.contracts.values()].map((c) => ({ ...c, used_by: usedBy(c.id) })));
   if (p === "/admin/contracts" && m === "POST") {
     const r = validate(await body(req));
@@ -262,6 +289,7 @@ http.createServer(async (req, res) => {
   try {
     if (url.pathname === "/mock/offline") { db.daemon.connected = url.searchParams.has("on") ? url.searchParams.get("on") !== "0" : !db.daemon.connected; if (!db.daemon.connected) { db.daemon.last_seen = Date.now(); emit("daemon.disconnected", {}); } else { emit("daemon.connected", {}); pushQueued(); } return json(res, 200, { connected: db.daemon.connected }); }
     if (url.pathname === "/mock/event") { const j = [...db.jobs.values()][0]; return json(res, 200, emit("job.done", { job_id: j.id, key_id: j.key_id, task: j.task })); }
+    if (url.pathname === "/mock/tokens-clear") { db.tokens.clear(); return json(res, 200, { ok: true }); }
     if (url.pathname === "/mock/reset-lock") { fails.clear(); return json(res, 200, { ok: true }); }
     if (url.pathname.startsWith("/admin/")) return await admin(req, res, url);
     if (url.pathname.startsWith("/api/")) return await client(req, res, url);
