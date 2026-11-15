@@ -4,7 +4,7 @@ A small, personal service that lets software in the cloud ask the Claude Code on
 
 For personal use on the owner's own machine only. It is not a service for other people.
 
-**Status: v0.3.0.** Slice 1 (auth, contracts, keys, events, daemon, admin UI) and slice 2 (approvals, running a Claude Code task) are built, tested locally, and deployed once to the owner's Cloudflare account (workers.dev).
+**Status: v0.3.1.** Slice 1 (auth, contracts, keys, events, daemon, admin UI) and slice 2 (approvals, running a Claude Code task) are built, tested locally, and deployed once to the owner's Cloudflare account (workers.dev).
 
 ## Parts
 
@@ -40,6 +40,17 @@ A client then sends work with its key:
 curl -X POST localhost:8787/api/jobs -H "Authorization: Bearer mr_live_..." \
   -H 'content-type: application/json' -d '{"task":"echo","args":{"text":"hello"}}'
 ```
+
+To keep the laptop connected after a reboot or a closed terminal, run it as a background service (macOS launchd):
+
+```sh
+mailroom login                 # prompts for the Hub URL and the daemon credential (hidden)
+mailroom service install       # starts at login, restarts if it stops; log: ~/Library/Logs/mailroom-daemon.log
+mailroom service status        # installed? running? does the Hub accept the credential?
+mailroom service uninstall
+```
+
+`mailroom` is a one-line wrapper around `node daemon/cli.ts`; put it on your PATH (for example `~/.local/bin/mailroom`). If the credential is rotated or wrong, the daemon exits and launchd retries once a minute, so run `mailroom login` again and then `mailroom service install`.
 
 Tasks: `echo`, `read_file`, `write_file`, `claude` (runs `claude -p` in a folder the contract allows). Paths must be `~/...` or absolute and inside a contract folder. A task the contract lists under "needs approval" waits on the Approvals page.
 

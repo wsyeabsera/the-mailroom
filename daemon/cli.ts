@@ -2,12 +2,15 @@
 import readline from "node:readline";
 import { deleteConfig, configPath, loadConfig, saveConfig } from "./config.ts";
 import { probe, run } from "./client.ts";
+import * as service from "./service.ts";
+import { fileURLToPath } from "node:url";
 
 const HELP = `mailroom <command>
   login [--url URL] [--credential mrd_...]   save the Hub URL and daemon credential (or env MAILROOM_URL / MAILROOM_CREDENTIAL)
   run                                        connect to the Hub and do its jobs
   status                                     show the config and whether the Hub accepts the credential
-  logout                                     delete the saved config`;
+  logout                                     delete the saved config
+  service install|uninstall|status           keep the daemon running in the background (macOS launchd, starts at login)`;
 
 function flag(args: string[], name: string): string | undefined {
   const i = args.indexOf(`--${name}`);
@@ -52,6 +55,28 @@ async function main() {
       const r = await probe(cfg);
       console.log(`hub: ${r}`);
       return r === "accepted" ? 0 : 1;
+    }
+    case "service": {
+      const opts = { program: [process.execPath, fileURLToPath(new URL("./cli.ts", import.meta.url)), "run"] };
+      const sub = args[0];
+      if (sub === "install") {
+        if (!loadConfig()) return fail("Not logged in. Run `mailroom login` first, then install the service.");
+        const file = service.install(opts);
+        await new Promise(r => setTimeout(r, 2500));
+        const st = service.status(opts);
+        console.log(`Installed ${file}`);
+        console.log(st.running ? `Running (pid ${st.pid}). It starts at login and restarts if it stops. Log: ~/Library/Logs/mailroom-daemon.log` : "Installed, but not running yet. See ~/Library/Logs/mailroom-daemon.log");
+        return st.running ? 0 : 1;
+      }
+      if (sub === "uninstall") { console.log(service.uninstall(opts) ? "Service removed." : "No service was installed."); return 0; }
+      if (sub === "status") {
+        const st = service.status(opts);
+        console.log(`service: ${st.installed ? "installed" : "not installed"}, ${st.running ? `running (pid ${st.pid})` : "not running"}${st.lastExit ? `, last exit ${st.lastExit}` : ""}`);
+        const cfg = loadConfig();
+        if (cfg) console.log(`hub: ${await probe(cfg)}`);
+        return st.running ? 0 : 1;
+      }
+      return fail("Usage: mailroom service install|uninstall|status");
     }
     case "logout":
       console.log(deleteConfig() ? "Logged out." : "Nothing to delete.");
