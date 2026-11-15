@@ -1,0 +1,42 @@
+:root {
+  --canvas: #0e1013; --panel: #15181c; --hair: #262b32; --text: #e8e6e1; --muted: #9aa0a8; --stamp: #f2703a; --stamp-ink: #14100d; --ok: #5fb37c; --warn: #e0a030;
+  color-scheme: dark light;
+}
+@media (prefers-color-scheme: light) {
+  :root { --canvas: #f7f5f0; --panel: #ffffff; --hair: #dedad0; --text: #1c1b18; --muted: #6a675f; --stamp: #d9531e; --stamp-ink: #ffffff; --ok: #2f8a50; --warn: #a86a00; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--canvas); color: var(--text); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.muted { color: var(--muted); }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--hair); }
+header h1 { font-size: 14px; margin: 0; font-weight: 600; flex: 1 0 auto; white-space: nowrap; }
+.logo { width: 22px; height: 22px; }
+.chip { white-space: nowrap; display: inline-flex; gap: 6px; align-items: center; padding: 3px 10px; border: 1px solid var(--hair); border-radius: 999px; background: var(--panel); font-size: 12px; }
+.chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.chip.ok .dot { background: var(--ok); }
+.chip.away .dot { background: var(--warn); }
+section { padding: 10px 14px; border-bottom: 1px solid var(--hair); }
+h2 { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; font-weight: 600; }
+.counts { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.count { background: var(--panel); border: 1px solid var(--hair); border-radius: 6px; padding: 6px 4px; text-align: center; }
+.count b { display: block; font-size: 16px; font-variant-numeric: tabular-nums; }
+.count span { display: block; font-size: 10px; color: var(--muted); line-height: 1.2; }
+.count.hot b { color: var(--stamp); }
+.parcel { display: flex; align-items: center; gap: 8px; padding: 8px; margin-bottom: 6px; background: var(--panel); border: 1px solid var(--hair); border-radius: 6px; }
+.parcel-main { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 2px 8px; }
+.parcel .task { font-weight: 600; }
+.keylabel { flex-basis: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button, .btn { font: inherit; cursor: pointer; border: 1px solid var(--hair); background: var(--panel); color: var(--text); border-radius: 6px; padding: 5px 12px; }
+button.primary { background: var(--stamp); border-color: var(--stamp); color: var(--stamp-ink); font-weight: 600; }
+button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid var(--stamp); outline-offset: 2px; }
+.event { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; }
+.ev-time { white-space: nowrap; }
+.empty { margin: 4px 0; color: var(--muted); }
+footer { display: flex; gap: 14px; padding: 10px 14px; flex-wrap: wrap; }
+footer a { color: var(--text); text-decoration: underline; text-decoration-color: var(--hair); text-underline-offset: 3px; cursor: pointer; background: none; border: 0; padding: 0; font: inherit; }
+.message { padding: 28px 18px; text-align: center; }
+.message p { margin: 0 0 12px; color: var(--muted); }
+.skel { height: 44px; border-radius: 6px; background: linear-gradient(90deg, var(--panel), var(--hair), var(--panel)); background-size: 200% 100%; animation: sh 1.2s infinite linear; margin: 10px 14px; }
+@keyframes sh { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .skel { animation: none; } }
