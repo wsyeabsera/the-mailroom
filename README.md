@@ -4,7 +4,7 @@ A small, personal service that lets software in the cloud ask the Claude Code on
 
 For personal use on the owner's own machine only. It is not a service for other people.
 
-**Status: v0.3.1.** Slice 1 (auth, contracts, keys, events, daemon, admin UI) and slice 2 (approvals, running a Claude Code task) are built, tested locally, and deployed once to the owner's Cloudflare account (workers.dev).
+**Status: v0.3.2.** Slice 1 (auth, contracts, keys, events, daemon, admin UI) and slice 2 (approvals, running a Claude Code task) are built, tested locally, and deployed once to the owner's Cloudflare account (workers.dev).
 
 ## Parts
 
@@ -50,7 +50,7 @@ mailroom service status        # installed? running? does the Hub accept the cre
 mailroom service uninstall
 ```
 
-`mailroom` is a one-line wrapper around `node daemon/cli.ts`; put it on your PATH (for example `~/.local/bin/mailroom`). If the credential is rotated or wrong, the daemon exits and launchd retries once a minute, so run `mailroom login` again and then `mailroom service install`.
+`mailroom` is a one-line wrapper around `node daemon/cli.ts`; put it on your PATH (for example `~/.local/bin/mailroom`). If the credential is rotated or wrong, the daemon exits and launchd retries every 30 seconds, so run `mailroom login` again and then `mailroom service install`.
 
 Tasks: `echo`, `read_file`, `write_file`, `claude` (runs `claude -p` in a folder the contract allows). Paths must be `~/...` or absolute and inside a contract folder. A task the contract lists under "needs approval" waits on the Approvals page.
 
@@ -72,6 +72,7 @@ npm run typecheck
 node scripts/smoke.mjs    # needs `npm run dev` on 8787, or pass a URL: 59 checks against the Worker
 node scripts/mcp-smoke.mjs  # raw JSON-RPC against /mcp: scopes, audit, auth boundaries (needs `npm run dev`; pass a URL)
 node scripts/mcp-e2e.mjs  # Claude Code itself as the MCP client, through ./plugin, against its own local Worker
+node scripts/cli-e2e.mjs  # the `mailroom` CLI as you run it: every command, the hidden prompt via a pseudo-terminal, the real launchd service (macOS, throwaway HOME)
 node scripts/e2e.mjs      # starts its own Worker and a real daemon, uses real files, cleans up after itself
 node scripts/ui-mock.mjs  # the UI against an in-memory mock on :8799, no Worker needed
 PLAYWRIGHT_CORE=/path/to/node_modules/playwright-core node scripts/extension-e2e.mjs   # the extension in a throwaway Chromium (needs a Playwright Chromium; downloads nothing)

@@ -8,7 +8,7 @@ test("the plist runs the daemon with the user's bin dirs on PATH and holds no se
   assert.match(xml, /<string>\/n\/bin\/node<\/string>\s*<string>\/r\/daemon\/cli\.ts<\/string>\s*<string>run<\/string>/);
   assert.match(xml, /<key>RunAtLoad<\/key><true\/>/);
   assert.match(xml, /<key>KeepAlive<\/key><true\/>/);
-  assert.match(xml, /<key>ThrottleInterval<\/key><integer>60<\/integer>/);
+  assert.match(xml, /<key>ThrottleInterval<\/key><integer>30<\/integer>/);
   assert.match(xml, /\/Users\/x\/\.local\/bin/); // so the claude task finds `claude`
   assert.match(xml, /\/Users\/x\/Library\/Logs\/mailroom-daemon\.log/);
   assert.doesNotMatch(xml, /mrd_|credential/i);
