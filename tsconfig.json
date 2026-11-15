@@ -10,7 +10,8 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": false,
-    "isolatedModules": true
+    "isolatedModules": true,
+    "allowJs": true
   },
   "include": ["src", "shared", "daemon", "tests"]
 }
