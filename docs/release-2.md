@@ -1,4 +1,4 @@
-# The Mailroom, release 2: it runs (v0.2.0, fixes in v0.2.1)
+# The Mailroom, release 2: it runs (v0.2.0, fixes in v0.2.1, deployed)
 
 **v0.2.1** verifies the browser extension in a real Chromium (a throwaway profile, not your Chrome) and fixes what that found:
 the toolbar badge hid the approvals count behind a "!" whenever the laptop was away (the count now wins and turns amber), and
@@ -30,9 +30,11 @@ Release 1 was the designs. Release 2 is the working system, tested locally. It i
 - The sign-in page loaded but its stylesheet and scripts redirected to the login, so it would have been unstyled and dead. The mock hid it. Fixed with an explicit allow-list of exactly those files, and the e2e now checks what a signed-out visitor can and cannot load.
 - The e2e left `wrangler` and `workerd` running after it finished. Each child now runs in its own process group and is killed with it.
 
-## Not proven, or known gaps
+## Deployed
 
-- **Not deployed.** No Cloudflare account was touched.
+Deployed to the owner's Cloudflare account on workers.dev with a generated owner password and session secret set as Worker secrets. Checked live: strangers get only the sign-in page (everything else redirects, `/admin/*` is 401, `/api/jobs` without a key is 401), a foreign Origin on sign-in is 403, the session cookie is `HttpOnly; Secure; SameSite=Strict`, and a real daemon connected over a WebSocket, ran an echo job through the live Durable Object, and a revoked key was refused.
+
+## Not proven, or known gaps
 - **The extension is verified in real Chromium, with two limits.** `scripts/extension-e2e.mjs` loads it into a throwaway profile against a real Worker and checks: the service worker starts, the owner cookie authenticates the extension's requests, the badge count and tooltip, one notification per new parcel (not on the first poll, not twice), the popup and side panel with real data in dark and light, Review opening the Approvals page, the signed-out and not-configured states, no console errors. It grants localhost host access in the manifest up front, because Chromium's runtime permission prompt (`chrome.permissions.request` from the options page) cannot be clicked in automation, so **that prompt is still untested**, and so is whether the notification actually appears in the OS (the test checks the call, not the pixels). It has not been tried in Google Chrome or Brave.
 - **UI flows not clicked on the real Worker:** saving a contract, widening a contract after a refusal, declining, and rotating the credential. Their API routes are covered by the smoke and e2e scripts and the builder exercised the screens on a mock.
 - The 429 login lockout and the 60 requests a minute per-key limit are unit tested but were not driven against the live Worker. The SSE and daemon pings every 20 and 25 seconds were not waited on.
