@@ -1,0 +1,551 @@
+// The Hub: the one Durable Object and the only writer. SQLite state, append-only events, SSE replay, the daemon WebSocket.
+import { DurableObject } from "cloudflare:workers";
+import { check, validateContract, type Contract } from "../shared/contract.ts";
+import { bearer, credentialHint, displayPrefix, generateDaemonCredential, generateKey, hashToken, makeId, safeEqual, safeEqualSecret, tokenKind } from "./keys.ts";
+import { checkLogin, clearFailures, LOGIN_TABLE, recordFailure, type Sql } from "./login-limit.ts";
+import { SESSION_SECONDS, sessionCookie, signSession } from "./session.ts";
+
+export interface Env {
+  HUB: DurableObjectNamespace;
+  ASSETS: Fetcher;
+  OWNER_PASSWORD?: string;
+  SESSION_SECRET?: string;
+}
+
+const MAX_BODY = 256 * 1024;
+const RATE_PER_MIN = 60;
+const PING_MS = 25_000;
+const DEAD_MS = 60_000;
+const SSE_PING_MS = 20_000;
+const STATES = ["queued", "waiting_approval", "running", "done", "refused", "failed"] as const;
+
+type Row = Record<string, any>;
+type Ev = { seq: number; ts: number; kind: string; payload: any };
+type Daemon = { ws: WebSocket; hello: boolean; lastPong: number; timer: ReturnType<typeof setInterval> | null };
+
+const json = (body: unknown, status = 200, headers?: Record<string, string>) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store", ...headers } });
+const err = (status: number, error: string, extra: Record<string, unknown> = {}) => json({ error, ...extra }, status);
+const invalid = (errors: Record<string, string>) => err(422, "invalid", { errors });
+const parse = (s: string | null | undefined) => (s == null ? undefined : JSON.parse(s));
+const utcMidnight = (now: number) => now - (now % 86_400_000);
+
+export class Hub extends DurableObject<Env> {
+  private sql: Sql;
+  private daemon: Daemon | null = null;
+  private inflight: string | null = null;
+  private lastSeq = 0; // last seq the daemon said it saw
+  private subs = new Set<ReadableStreamDefaultController<Uint8Array>>();
+  private sseTimer: ReturnType<typeof setInterval> | null = null;
+  private rate = new Map<string, { start: number; n: number }>();
+  private enc = new TextEncoder();
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    const s = ctx.storage.sql;
+    this.sql = { all: <T>(q: string, ...p: unknown[]) => [...s.exec(q, ...p)] as T[], run: (q: string, ...p: unknown[]) => void s.exec(q, ...p) };
+    for (const q of [
+      "CREATE TABLE IF NOT EXISTS keys (id TEXT PRIMARY KEY, label TEXT NOT NULL, prefix TEXT NOT NULL, hash TEXT NOT NULL, contract_id TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER, last_used_at INTEGER)",
+      "CREATE TABLE IF NOT EXISTS contracts (id TEXT PRIMARY KEY, name TEXT NOT NULL, body TEXT NOT NULL, version INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, key_id TEXT NOT NULL, contract_id TEXT NOT NULL, contract_version INTEGER NOT NULL, task TEXT NOT NULL, args TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, result TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+      "CREATE INDEX IF NOT EXISTS jobs_key ON jobs (key_id, created_at)",
+      "CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS daemon (id INTEGER PRIMARY KEY CHECK (id = 1), hash TEXT NOT NULL, hint TEXT, rotated_at INTEGER NOT NULL, last_seen INTEGER, connected INTEGER NOT NULL DEFAULT 0)",
+      "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL)",
+      LOGIN_TABLE,
+    ])
+      this.sql.run(q);
+    // A fresh instance has no socket: nothing can still be running.
+    this.sql.run("UPDATE daemon SET connected = 0");
+    for (const j of this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'running'")) this.setState(j, "queued", "laptop disconnected");
+  }
+
+  // ---- small helpers ----
+  private one = (q: string, ...p: unknown[]): Row | undefined => this.sql.all<Row>(q, ...p)[0];
+  private next(name: string): number {
+    this.sql.run("INSERT INTO meta (k, v) VALUES (?, 1) ON CONFLICT (k) DO UPDATE SET v = v + 1", name);
+    return this.one("SELECT v FROM meta WHERE k = ?", name)!.v - 1;
+  }
+
+  private event(kind: string, payload: Record<string, unknown>): Ev {
+    const ts = Date.now();
+    this.sql.run("INSERT INTO events (ts, kind, payload) VALUES (?, ?, ?)", ts, kind, JSON.stringify(payload));
+    const seq = this.one("SELECT last_insert_rowid() AS s")!.s as number;
+    const ev = { seq, ts, kind, payload };
+    const frame = this.enc.encode(`id: ${seq}\ndata: ${JSON.stringify(ev)}\n\n`);
+    for (const c of this.subs) {
+      try {
+        c.enqueue(frame);
+      } catch {
+        this.subs.delete(c);
+      }
+    }
+    return ev;
+  }
+  private evOut = (r: Row): Ev => ({ seq: r.seq, ts: r.ts, kind: r.kind, payload: parse(r.payload) });
+  private lastEventSeq = () => (this.one("SELECT MAX(seq) AS s FROM events")?.s as number | null) ?? 0;
+
+  private jobOut = (r: Row) => ({
+    id: r.id, key_id: r.key_id, contract_id: r.contract_id, contract_version: r.contract_version, task: r.task, args: parse(r.args), state: r.state,
+    reason: r.reason ?? undefined, result: parse(r.result), created_at: r.created_at, updated_at: r.updated_at,
+  });
+
+  /** Moves a job to a new state, appends the event. `kind` defaults to job.<state>. */
+  private setState(job: Row, state: string, reason?: string | null, result?: unknown, kind?: string) {
+    const now = Date.now();
+    this.sql.run("UPDATE jobs SET state = ?, reason = ?, result = ?, updated_at = ?, contract_version = ? WHERE id = ?", state, reason ?? null, result === undefined ? job.result ?? null : JSON.stringify(result), now, job.contract_version, job.id);
+    job.state = state;
+    const p: Record<string, unknown> = { job_id: job.id, key_id: job.key_id, task: job.task };
+    if (reason) p.reason = reason;
+    this.event(kind ?? `job.${state}`, p);
+  }
+
+  private contractRow(id: string): Row | undefined { return this.one("SELECT * FROM contracts WHERE id = ?", id); }
+  private contractOut(r: Row) { return { id: r.id, ...(parse(r.body) as Contract), version: r.version, used_by: this.one("SELECT COUNT(*) AS n FROM keys WHERE contract_id = ? AND revoked_at IS NULL", r.id)!.n }; }
+
+  private usedToday(keyId: string, now: number, excludeId?: string): number {
+    return this.one("SELECT COUNT(*) AS n FROM jobs WHERE key_id = ? AND created_at >= ? AND state != 'refused' AND id != ?", keyId, utcMidnight(now), excludeId ?? "")!.n;
+  }
+
+  private async readJson(req: Request): Promise<{ ok: true; body: any } | { ok: false; res: Response }> {
+    const len = Number(req.headers.get("content-length") ?? 0);
+    if (len > MAX_BODY) return { ok: false, res: err(413, "too_large") };
+    const text = await req.text();
+    if (text.length > MAX_BODY || this.enc.encode(text).length > MAX_BODY) return { ok: false, res: err(413, "too_large") };
+    try {
+      const body = JSON.parse(text);
+      if (body === null || typeof body !== "object" || Array.isArray(body)) return { ok: false, res: invalid({ body: "Expected a JSON object." }) };
+      return { ok: true, body };
+    } catch {
+      return { ok: false, res: invalid({ body: "Not valid JSON." }) };
+    }
+  }
+
+  // ---- routing ----
+  async fetch(req: Request): Promise<Response> {
+    const url = new URL(req.url);
+    const path = url.pathname;
+    try {
+      if (path === "/daemon") return await this.daemonUpgrade(req);
+      if (path === "/api/jobs" || path.startsWith("/api/jobs/")) return await this.clientRoute(req, path);
+      if (path === "/admin/login") return await this.login(req);
+      if (path.startsWith("/admin/")) return await this.admin(req, url);
+      return err(404, "not_found");
+    } catch (e) {
+      console.error("hub error", e instanceof Error ? e.message : "unknown");
+      return err(500, "internal");
+    }
+  }
+
+  // ---- client API ----
+  private async clientAuth(req: Request): Promise<Row | null> {
+    const tok = bearer(req.headers.get("Authorization"));
+    if (!tok || tokenKind(tok) !== "client") return null;
+    const hash = await hashToken(tok);
+    const k = this.sql.all<Row>("SELECT * FROM keys WHERE prefix = ? AND revoked_at IS NULL", displayPrefix(tok)).find((r) => safeEqual(r.hash, hash));
+    if (!k) return null;
+    const c = this.contractRow(k.contract_id);
+    if (!c) return null;
+    const exp = (parse(c.body) as Contract).expires;
+    if (exp && Date.now() >= Date.parse(exp)) return null;
+    this.sql.run("UPDATE keys SET last_used_at = ? WHERE id = ?", Date.now(), k.id);
+    return k;
+  }
+
+  private rateLimited(keyId: string): boolean {
+    const now = Date.now();
+    const r = this.rate.get(keyId);
+    if (!r || now - r.start >= 60_000) {
+      this.rate.set(keyId, { start: now, n: 1 });
+      return false;
+    }
+    return ++r.n > RATE_PER_MIN;
+  }
+
+  private async clientRoute(req: Request, path: string): Promise<Response> {
+    const k = await this.clientAuth(req);
+    if (!k) return err(401, "bad_key");
+    if (this.rateLimited(k.id)) return err(429, "rate_limited", { retry_after: 60 });
+    if (path === "/api/jobs") {
+      if (req.method !== "POST") return err(405, "method_not_allowed");
+      return this.submit(req, k);
+    }
+    if (req.method !== "GET") return err(405, "method_not_allowed");
+    const j = this.one("SELECT * FROM jobs WHERE id = ? AND key_id = ?", path.slice("/api/jobs/".length), k.id);
+    if (!j) return err(404, "not_found");
+    const o = this.jobOut(j);
+    return json({ id: o.id, state: o.state, reason: o.reason, result: o.result, created_at: o.created_at, updated_at: o.updated_at });
+  }
+
+  private async submit(req: Request, k: Row): Promise<Response> {
+    const r = await this.readJson(req);
+    if (!r.ok) return r.res;
+    const { task, args = {} } = r.body;
+    const errors: Record<string, string> = {};
+    if (typeof task !== "string" || task.length === 0 || task.length > 40) errors.task = "task must be a string.";
+    if (args === null || typeof args !== "object" || Array.isArray(args)) errors.args = "args must be an object.";
+    else if (typeof task === "string") {
+      if (task === "echo" && typeof args.text !== "string") errors.args = "echo needs a text string.";
+      if (task === "write_file" && typeof args.content !== "string") errors.args = "write_file needs a content string.";
+      if (task === "claude" && typeof args.prompt !== "string") errors.args = "claude needs a prompt string.";
+      if ((task === "read_file" || task === "write_file") && args.path !== undefined && typeof args.path !== "string") errors.args = `${task} needs a path string.`;
+      if (task === "claude" && args.cwd !== undefined && typeof args.cwd !== "string") errors.args = "claude needs a cwd string.";
+    }
+    if (Object.keys(errors).length) return invalid(errors);
+
+    const c = this.contractRow(k.contract_id)!;
+    const now = Date.now();
+    const verdict = check(parse(c.body), { task, args }, { now, usedToday: this.usedToday(k.id, now) });
+    const id = makeId("p_", this.next("job"));
+    const state = verdict.verdict === "refuse" ? "refused" : verdict.verdict === "approve" ? "waiting_approval" : "queued";
+    this.sql.run("INSERT INTO jobs (id, key_id, contract_id, contract_version, task, args, state, reason, result, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+      id, k.id, c.id, c.version, task, JSON.stringify(args), state, verdict.verdict === "refuse" ? verdict.reason : null, now, now);
+    const job = this.one("SELECT * FROM jobs WHERE id = ?", id)!;
+    this.event(`job.${state}`, { job_id: id, key_id: k.id, task, ...(verdict.verdict === "refuse" ? { reason: verdict.reason } : {}) });
+    if (verdict.verdict === "refuse") return json({ id, state, reason: verdict.reason }, 403);
+    if (state === "queued") this.pushNext();
+    return json({ id, state }, 202);
+  }
+
+  // ---- owner: login ----
+  private async login(req: Request): Promise<Response> {
+    if (req.method !== "POST") return err(405, "method_not_allowed");
+    const { OWNER_PASSWORD, SESSION_SECRET } = this.env;
+    if (!OWNER_PASSWORD || !SESSION_SECRET) return err(500, "misconfigured", { message: "OWNER_PASSWORD and SESSION_SECRET must be set." });
+    const ip = req.headers.get("X-Mr-IP") || "unknown";
+    const a = checkLogin(this.sql, ip);
+    if (a.locked) return err(429, "too_many_attempts", { retry_after: a.retry_after });
+    const r = await this.readJson(req);
+    if (!r.ok) return r.res;
+    const pw = typeof r.body.password === "string" ? r.body.password : "";
+    if (!(await safeEqualSecret(pw, OWNER_PASSWORD))) {
+      const n = recordFailure(this.sql, ip);
+      return n.locked ? err(429, "too_many_attempts", { retry_after: n.retry_after }) : err(401, "bad_password", { tries_left: n.tries_left });
+    }
+    clearFailures(this.sql, ip);
+    const exp = Math.floor(Date.now() / 1000) + SESSION_SECONDS;
+    const secure = req.headers.get("X-Mr-Secure") === "1";
+    return new Response(null, { status: 204, headers: { "Set-Cookie": sessionCookie(await signSession(SESSION_SECRET, exp), SESSION_SECONDS, secure), "cache-control": "no-store" } });
+  }
+
+  // ---- owner: everything else (the Worker has verified the session and the Origin) ----
+  private async admin(req: Request, url: URL): Promise<Response> {
+    const path = url.pathname;
+    const m = req.method;
+    const seg = path.split("/").filter(Boolean); // ["admin", ...]
+    const route = seg[1];
+
+    if (route === "logout" && seg.length === 2) return m === "POST" ? new Response(null, { status: 204, headers: { "Set-Cookie": sessionCookie("", 0, req.headers.get("X-Mr-Secure") === "1") } }) : err(405, "method_not_allowed");
+    if (route === "state" && seg.length === 2) return m === "GET" ? this.state() : err(405, "method_not_allowed");
+
+    if (route === "keys") {
+      if (seg.length === 2) {
+        if (m === "GET") return json(this.sql.all<Row>("SELECT * FROM keys ORDER BY created_at DESC, id DESC").map((k) => this.keyOut(k)));
+        if (m === "POST") return this.createKey(req);
+        return err(405, "method_not_allowed");
+      }
+      const k = this.one("SELECT * FROM keys WHERE id = ?", seg[2]);
+      if (!k) return err(404, "not_found");
+      if (seg.length === 3 && m === "GET") {
+        const c = this.contractRow(k.contract_id)!;
+        return json({ ...this.keyOut(k), recent_jobs: this.sql.all<Row>("SELECT * FROM jobs WHERE key_id = ? ORDER BY created_at DESC, id DESC LIMIT 10", k.id).map(this.jobOut), contract: this.contractOut(c) });
+      }
+      if (seg.length === 4 && seg[3] === "revoke") return m === "POST" ? this.revoke(k) : err(405, "method_not_allowed");
+      return err(404, "not_found");
+    }
+
+    if (route === "contracts") {
+      if (seg.length === 2) {
+        if (m === "GET") return json(this.sql.all<Row>("SELECT * FROM contracts ORDER BY updated_at DESC, id DESC").map((c) => this.contractOut(c)));
+        if (m === "POST") return this.saveContract(req, null);
+        return err(405, "method_not_allowed");
+      }
+      const c = this.contractRow(seg[2]);
+      if (seg.length === 3) {
+        if (m === "GET") return c ? json(this.contractOut(c)) : err(404, "not_found");
+        if (m === "PUT") return c ? this.saveContract(req, c) : err(404, "not_found");
+        return err(405, "method_not_allowed");
+      }
+      return err(404, "not_found");
+    }
+
+    if (route === "jobs") {
+      if (seg.length === 2) {
+        if (m !== "GET") return err(405, "method_not_allowed");
+        const st = url.searchParams.get("state");
+        const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") ?? "50", 10) || 50, 1), 500);
+        const rows = st ? this.sql.all<Row>("SELECT * FROM jobs WHERE state = ? ORDER BY created_at DESC, id DESC LIMIT ?", st, limit) : this.sql.all<Row>("SELECT * FROM jobs ORDER BY created_at DESC, id DESC LIMIT ?", limit);
+        return json(rows.map(this.jobOut));
+      }
+      const j = this.one("SELECT * FROM jobs WHERE id = ?", seg[2]);
+      if (!j) return err(404, "not_found");
+      if (seg.length === 3 && m === "GET") return this.jobDetail(j);
+      if (seg.length === 4 && seg[3] === "approve") return m === "POST" ? this.approve(j) : err(405, "method_not_allowed");
+      if (seg.length === 4 && seg[3] === "decline") return m === "POST" ? this.decline(j) : err(405, "method_not_allowed");
+      return err(404, "not_found");
+    }
+
+    if (route === "events") {
+      if (m !== "GET") return err(405, "method_not_allowed");
+      const after = Math.max(parseInt(url.searchParams.get("after") ?? "0", 10) || 0, 0);
+      if (seg[2] === "stream" && seg.length === 3) return this.stream(req, after);
+      if (seg.length === 2) {
+        const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") ?? "200", 10) || 200, 1), 1000);
+        const events = this.sql.all<Row>("SELECT * FROM events WHERE seq > ? ORDER BY seq LIMIT ?", after, limit).map(this.evOut);
+        return json({ events, last_seq: this.lastEventSeq() });
+      }
+      return err(404, "not_found");
+    }
+
+    if (route === "laptop") {
+      if (seg.length === 2 && m === "GET") return json(this.laptop());
+      if (seg.length === 3 && seg[2] === "rotate") return m === "POST" ? this.rotate() : err(405, "method_not_allowed");
+      return err(404, "not_found");
+    }
+    return err(404, "not_found");
+  }
+
+  private keyOut(k: Row) {
+    const c = this.contractRow(k.contract_id);
+    return { id: k.id, label: k.label, prefix: k.prefix, contract: { id: k.contract_id, name: c?.name ?? "" }, created_at: k.created_at, last_used_at: k.last_used_at, revoked_at: k.revoked_at };
+  }
+
+  private daemonInfo() {
+    const d = this.one("SELECT * FROM daemon WHERE id = 1");
+    return { connected: !!this.daemon?.hello, last_seen: d?.last_seen ?? null, last_seq: this.lastSeq, rotated_at: d?.rotated_at ?? null, hint: d?.hint ?? null };
+  }
+
+  private state() {
+    const counts: Record<string, number> = {};
+    for (const s of STATES) counts[s] = this.one("SELECT COUNT(*) AS n FROM jobs WHERE state = ?", s)!.n;
+    const needs = this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'waiting_approval' ORDER BY created_at, id").map(this.jobOut);
+    const latest = this.sql.all<Row>("SELECT * FROM events ORDER BY seq DESC LIMIT 5").map(this.evOut);
+    const d = this.daemonInfo();
+    return json({ daemon: { connected: d.connected, last_seen: d.last_seen, last_seq: d.last_seq }, counts, needs_you: needs, latest_events: latest, approvals: needs.length });
+  }
+
+  private async createKey(req: Request): Promise<Response> {
+    const r = await this.readJson(req);
+    if (!r.ok) return r.res;
+    const label = typeof r.body.label === "string" ? r.body.label.trim() : "";
+    const errors: Record<string, string> = {};
+    if (label.length < 1 || label.length > 60) errors.label = "Label must be 1 to 60 characters.";
+    if (typeof r.body.contract_id !== "string" || !this.contractRow(r.body.contract_id)) errors.contract_id = "Unknown contract.";
+    if (Object.keys(errors).length) return invalid(errors);
+    const key = generateKey();
+    const id = makeId("k_", this.next("key"));
+    const now = Date.now();
+    this.sql.run("INSERT INTO keys (id, label, prefix, hash, contract_id, created_at) VALUES (?, ?, ?, ?, ?, ?)", id, label, displayPrefix(key), await hashToken(key), r.body.contract_id, now);
+    this.event("key.created", { key_id: id, label });
+    return json({ id, label, key }, 201);
+  }
+
+  private revoke(k: Row): Response {
+    if (k.revoked_at) return json({ id: k.id, revoked_at: k.revoked_at, cancelled: 0 });
+    const now = Date.now();
+    this.sql.run("UPDATE keys SET revoked_at = ? WHERE id = ?", now, k.id);
+    this.event("key.revoked", { key_id: k.id, label: k.label });
+    let cancelled = 0;
+    for (const j of this.sql.all<Row>("SELECT * FROM jobs WHERE key_id = ? AND state IN ('queued','waiting_approval','running') ORDER BY created_at, id", k.id)) {
+      const wasRunning = j.state === "running";
+      this.setState(j, "cancelled", "key revoked");
+      cancelled++;
+      if (wasRunning) {
+        if (this.inflight === j.id) this.inflight = null;
+        this.send({ type: "cancel", id: j.id });
+      }
+    }
+    this.pushNext();
+    return json({ id: k.id, revoked_at: now, cancelled });
+  }
+
+  private async saveContract(req: Request, existing: Row | null): Promise<Response> {
+    const r = await this.readJson(req);
+    if (!r.ok) return r.res;
+    const v = validateContract(r.body);
+    if (!v.ok) return invalid(v.errors);
+    const now = Date.now();
+    const id = existing?.id ?? makeId("c_", this.next("contract"));
+    const version = existing ? existing.version + 1 : 1;
+    this.sql.run("INSERT INTO contracts (id, name, body, version, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET name = excluded.name, body = excluded.body, version = excluded.version, updated_at = excluded.updated_at", id, v.contract.name, JSON.stringify(v.contract), version, now);
+    this.event("contract.saved", { contract_id: id, name: v.contract.name, version });
+    if (existing) this.pushNext(); // queued jobs are re-checked against the new text
+    return json(this.contractOut(this.contractRow(id)!), existing ? 200 : 201);
+  }
+
+  private jobDetail(j: Row): Response {
+    const c = this.contractRow(j.contract_id)!;
+    const now = Date.now();
+    const v = check(parse(c.body), { task: j.task, args: parse(j.args) }, { now, usedToday: this.usedToday(j.key_id, now, j.id) });
+    const k = this.one("SELECT id, label FROM keys WHERE id = ?", j.key_id);
+    const timeline = this.sql.all<Row>("SELECT * FROM events WHERE json_extract(payload, '$.job_id') = ? ORDER BY seq", j.id).map(this.evOut);
+    return json({ ...this.jobOut(j), timeline, contract_check: v.verdict === "refuse" ? { verdict: v.verdict, reason: v.reason } : { verdict: v.verdict }, key: k ?? { id: j.key_id, label: "" } });
+  }
+
+  /** Re-check a job against its contract's current text. Returns a refusal reason or null. */
+  private recheck(j: Row): string | null {
+    const c = this.contractRow(j.contract_id)!;
+    const now = Date.now();
+    j.contract_version = c.version;
+    const v = check(parse(c.body), { task: j.task, args: parse(j.args) }, { now, usedToday: this.usedToday(j.key_id, now, j.id) });
+    return v.verdict === "refuse" ? v.reason : null;
+  }
+
+  private approve(j: Row): Response {
+    if (j.state !== "waiting_approval") return err(409, "conflict", { message: `job is ${j.state}` });
+    const reason = this.recheck(j);
+    if (reason) this.setState(j, "refused", reason);
+    else {
+      this.setState(j, "queued", null, undefined, "job.approved");
+      this.pushNext();
+    }
+    return json(this.jobOut(this.one("SELECT * FROM jobs WHERE id = ?", j.id)!));
+  }
+
+  private decline(j: Row): Response {
+    if (j.state !== "waiting_approval") return err(409, "conflict", { message: `job is ${j.state}` });
+    this.setState(j, "refused", "declined by owner", undefined, "job.declined");
+    return json(this.jobOut(this.one("SELECT * FROM jobs WHERE id = ?", j.id)!));
+  }
+
+  // ---- events: SSE ----
+  private stream(req: Request, afterQ: number): Response {
+    const lastId = parseInt(req.headers.get("Last-Event-ID") ?? "", 10);
+    const after = Number.isFinite(lastId) && lastId > afterQ ? lastId : afterQ;
+    let ctl!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({
+      start: (c) => {
+        ctl = c;
+        c.enqueue(this.enc.encode(": open\n\n"));
+        for (const r of this.sql.all<Row>("SELECT * FROM events WHERE seq > ? ORDER BY seq", after)) {
+          const ev = this.evOut(r);
+          c.enqueue(this.enc.encode(`id: ${ev.seq}\ndata: ${JSON.stringify(ev)}\n\n`));
+        }
+        this.subs.add(c); // same synchronous turn as the replay: nothing is missed or doubled
+        if (!this.sseTimer) this.sseTimer = setInterval(() => this.ssePing(), SSE_PING_MS);
+      },
+      cancel: () => {
+        this.subs.delete(ctl);
+        if (!this.subs.size && this.sseTimer) { clearInterval(this.sseTimer); this.sseTimer = null; }
+      },
+    });
+    req.signal?.addEventListener("abort", () => this.subs.delete(ctl));
+    return new Response(body, { headers: { "content-type": "text/event-stream", "cache-control": "no-store", "x-accel-buffering": "no" } });
+  }
+
+  private ssePing() {
+    const frame = this.enc.encode(": ping\n\n");
+    for (const c of this.subs) {
+      try { c.enqueue(frame); } catch { this.subs.delete(c); }
+    }
+    if (!this.subs.size && this.sseTimer) { clearInterval(this.sseTimer); this.sseTimer = null; }
+  }
+
+  // ---- laptop ----
+  private laptop() {
+    const d = this.daemonInfo();
+    return { connected: d.connected, last_seen: d.last_seen, last_seq: d.last_seq, rotated_at: d.rotated_at, credential_hint: d.hint, queue: this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at, id").map(this.jobOut) };
+  }
+
+  private async rotate(): Promise<Response> {
+    const cred = generateDaemonCredential();
+    const now = Date.now();
+    this.sql.run("INSERT INTO daemon (id, hash, hint, rotated_at, last_seen, connected) VALUES (1, ?, ?, ?, NULL, 0) ON CONFLICT (id) DO UPDATE SET hash = excluded.hash, hint = excluded.hint, rotated_at = excluded.rotated_at", await hashToken(cred), credentialHint(cred), now);
+    this.event("daemon.rotated", {});
+    this.dropDaemon(this.daemon, 4001);
+    return json({ credential: cred });
+  }
+
+  // ---- daemon WebSocket ----
+  private async daemonUpgrade(req: Request): Promise<Response> {
+    if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") return err(426, "upgrade_required");
+    const tok = bearer(req.headers.get("Authorization"));
+    const d = this.one("SELECT hash FROM daemon WHERE id = 1");
+    // Always hash and compare, so a missing or wrong-kind token costs the same as a wrong one.
+    const hash = await hashToken(tok ?? "");
+    if (!tok || tokenKind(tok) !== "daemon" || !d || !safeEqual(d.hash, hash)) return err(401, "bad_credential");
+
+    const [client, server] = Object.values(new WebSocketPair()) as [WebSocket, WebSocket];
+    server.accept();
+    this.dropDaemon(this.daemon, 4002); // a new valid connection replaces the old one
+    const dm: Daemon = { ws: server, hello: false, lastPong: Date.now(), timer: null };
+    this.daemon = dm;
+    dm.timer = setInterval(() => {
+      if (Date.now() - dm.lastPong > DEAD_MS) return this.dropDaemon(dm, 1011);
+      try { server.send(JSON.stringify({ type: "ping" })); } catch { this.dropDaemon(dm, 1011); }
+    }, PING_MS);
+    server.addEventListener("message", (e) => { try { this.onDaemonMessage(dm, e.data); } catch (x) { console.error("daemon msg", x instanceof Error ? x.message : "?"); } });
+    server.addEventListener("close", () => this.dropDaemon(dm));
+    server.addEventListener("error", () => this.dropDaemon(dm));
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  private send(msg: unknown): boolean {
+    if (!this.daemon?.hello) return false;
+    try { this.daemon.ws.send(JSON.stringify(msg)); return true; } catch { return false; }
+  }
+
+  private touchDaemon(dm: Daemon) {
+    dm.lastPong = Date.now();
+    this.sql.run("UPDATE daemon SET last_seen = ? WHERE id = 1", dm.lastPong);
+  }
+
+  private onDaemonMessage(dm: Daemon, data: unknown) {
+    if (this.daemon !== dm || typeof data !== "string" || data.length > 4 * MAX_BODY) return;
+    let m: any;
+    try { m = JSON.parse(data); } catch { return; }
+    if (!m || typeof m.type !== "string") return;
+    this.touchDaemon(dm);
+    if (m.type === "pong") return;
+    if (m.type === "hello") {
+      if (dm.hello) return;
+      dm.hello = true;
+      this.lastSeq = Number.isInteger(m.last_seq) ? m.last_seq : 0;
+      this.sql.run("UPDATE daemon SET connected = 1 WHERE id = 1");
+      this.event("daemon.connected", {});
+      this.send({ type: "welcome", server_seq: this.lastEventSeq() });
+      this.pushNext();
+      return;
+    }
+    if (!dm.hello || typeof m.id !== "string") return;
+    const j = this.one("SELECT * FROM jobs WHERE id = ?", m.id);
+    if (!j || j.state !== "running") return; // late or stray (e.g. cancelled): ignore
+    if (m.type === "result") {
+      if (m.ok === true) this.setState(j, "done", null, m.result ?? null);
+      else this.setState(j, "failed", typeof m.error === "string" ? m.error.slice(0, 2000) : "failed");
+    } else if (m.type === "refuse") this.setState(j, "refused", typeof m.reason === "string" ? m.reason.slice(0, 2000) : "refused by laptop");
+    else return;
+    if (this.inflight === j.id) this.inflight = null;
+    this.pushNext();
+  }
+
+  /** Closes a daemon connection (if it is still the live one), requeues what it was running, records the disconnect. */
+  private dropDaemon(dm: Daemon | null, code?: number) {
+    if (!dm) return;
+    if (dm.timer) { clearInterval(dm.timer); dm.timer = null; }
+    if (code) { try { dm.ws.close(code, code === 4001 ? "rotated" : code === 4002 ? "replaced" : "closing"); } catch { /* already closed */ } }
+    if (this.daemon !== dm) return;
+    this.daemon = null;
+    this.inflight = null;
+    this.sql.run("UPDATE daemon SET connected = 0 WHERE id = 1");
+    if (dm.hello) this.event("daemon.disconnected", {});
+    for (const j of this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'running' ORDER BY created_at, id")) this.setState(j, "queued", "laptop disconnected");
+  }
+
+  /** Pushes the oldest queued job when the daemon is idle, re-checking its contract first. One job at a time. */
+  private pushNext() {
+    for (let guard = 0; guard < 1000; guard++) {
+      if (!this.daemon?.hello || this.inflight) return;
+      const j = this.one("SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at, id LIMIT 1");
+      if (!j) return;
+      const reason = this.recheck(j);
+      if (reason) { this.setState(j, "refused", reason); continue; }
+      const c = this.contractRow(j.contract_id)!;
+      const ok = this.send({ type: "job", id: j.id, task: j.task, args: parse(j.args), contract: parse(c.body), contract_version: c.version });
+      if (!ok) return;
+      this.inflight = j.id;
+      this.setState(j, "running");
+      return;
+    }
+  }
+}
