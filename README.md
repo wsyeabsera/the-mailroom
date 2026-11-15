@@ -4,7 +4,7 @@ A small, personal service that lets software in the cloud ask the Claude Code on
 
 For personal use on the owner's own machine only. It is not a service for other people.
 
-**Status: v0.2.1.** Slice 1 (auth, contracts, keys, events, daemon, admin UI) and slice 2 (approvals, running a Claude Code task) are built and tested locally. It is not deployed anywhere yet.
+**Status: v0.2.1.** Slice 1 (auth, contracts, keys, events, daemon, admin UI) and slice 2 (approvals, running a Claude Code task) are built, tested locally, and deployed once to the owner's Cloudflare account (workers.dev).
 
 ## Parts
 
@@ -52,9 +52,9 @@ node scripts/ui-mock.mjs  # the UI against an in-memory mock on :8799, no Worker
 PLAYWRIGHT_CORE=/path/to/node_modules/playwright-core node scripts/extension-e2e.mjs   # the extension in a throwaway Chromium (needs a Playwright Chromium; downloads nothing)
 ```
 
-## Deploying (not done yet)
+## Deploying
 
-Needs your Cloudflare account (decision d28: personal account, workers.dev subdomain):
+The owner's copy is already deployed (its URL is not in this public repo). To deploy your own, you need a Cloudflare account (decision d28: personal account, workers.dev subdomain):
 
 ```sh
 npx wrangler login
@@ -63,7 +63,7 @@ npx wrangler secret put SESSION_SECRET
 npm run deploy
 ```
 
-Then `mailroom login --url https://the-mailroom.<you>.workers.dev` on the laptop and set that URL in the extension's options.
+Secrets can only be set once the Worker exists, so run `npm run deploy` first; until the secrets are set, sign-in fails closed (500) and no session is valid. Then `mailroom login --url https://the-mailroom.<you>.workers.dev` on the laptop and set that URL in the extension's options.
 
 ## Docs
 
