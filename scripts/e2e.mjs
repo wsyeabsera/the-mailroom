@@ -23,7 +23,9 @@ const procs = [];
 let failed = 0;
 const ok = (c, m) => { if (c) console.log(`  ok   ${m}`); else { failed++; console.log(`  FAIL ${m}`); } };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const cleanup = () => { for (const p of procs) try { p.kill("SIGKILL"); } catch {} try { rmSync(tmp, { recursive: true, force: true }); } catch {} };
+// Each child runs in its own process group so wrangler and workerd die with it (no orphans holding the port).
+const killGroup = p => { try { process.kill(-p.pid, "SIGKILL"); } catch { try { p.kill("SIGKILL"); } catch {} } };
+const cleanup = () => { for (const p of procs) killGroup(p); try { rmSync(tmp, { recursive: true, force: true }); } catch {} };
 process.on("exit", cleanup);
 
 let cookie = "";
@@ -38,10 +40,10 @@ const client = async (key, method, path, body) => {
   return { status: r.status, json: t ? JSON.parse(t) : null };
 };
 async function until(fn, ms = 15000) { const t = Date.now(); while (Date.now() - t < ms) { const v = await fn(); if (v) return v; await sleep(200); } return null; }
-const startDaemon = () => { const d = spawn("node", [join(root, "daemon/cli.ts"), "run"], { env: { ...process.env, HOME: home }, stdio: "ignore" }); procs.push(d); return d; };
+const startDaemon = () => { const d = spawn("node", [join(root, "daemon/cli.ts"), "run"], { env: { ...process.env, HOME: home }, stdio: "ignore", detached: true }); procs.push(d); return d; };
 
 console.log("starting wrangler dev ...");
-const w = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--inspector-port", "9351", "--persist-to", join(tmp, "state")], { cwd: root, stdio: "ignore" });
+const w = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--inspector-port", "9351", "--persist-to", join(tmp, "state")], { cwd: root, stdio: "ignore", detached: true });
 procs.push(w);
 if (!(await until(async () => { try { return (await fetch(BASE + "/admin/state")).status === 401; } catch { return false; } }, 60000))) { console.log("FAIL wrangler did not start"); process.exit(1); }
 
@@ -115,7 +117,7 @@ j = await waitJob(r.json.id, ["done", "failed", "refused"]);
 ok(j?.state === "done" && readFileSync(join(allowed, "note.md"), "utf8") === "approved text", "write runs after approval and the file is on disk");
 
 console.log("offline queue");
-d.kill("SIGKILL");
+killGroup(d);
 ok(await until(async () => !(await owner("GET", "/admin/laptop")).json.connected, 90000), "laptop shows away after the daemon dies");
 r = await client(key, "POST", "/api/jobs", { task: "echo", args: { text: "later" } });
 ok(r.json.state === "queued", "job queues while the laptop is away");
