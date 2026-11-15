@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docs · The Mailroom</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/docs/docs.css">
+<script src="/js/theme-init.js"></script>
+</head>
+<body data-slug="">
+<main id="doc">
+<h1>The Mailroom</h1>
+<p class="lede">A small private service that lets your other software ask the Claude Code on your laptop to do work, safely. Every request is checked twice: once in the cloud, and again on your laptop.</p>
+
+<div class="note"><p>Think of an office mailroom. Software drops a <strong>parcel</strong> at the front desk. The desk checks it against the sender's <strong>contract</strong>. Safe parcels go to your laptop, risky ones wait for you to say yes, and anything outside the rules is turned away and written down.</p></div>
+
+<figure class="dg">
+<svg viewBox="0 0 760 330" role="img" aria-labelledby="ov-t ov-d">
+  <title id="ov-t">The Mailroom at a glance</title>
+  <desc id="ov-d">Client apps send parcels with a key to the Hub in the cloud. Your laptop connects out to the Hub and does the approved work. You manage everything from the web app, the browser extension or Claude.</desc>
+  <rect class="n raised" x="16" y="52" width="170" height="92" rx="12"/>
+  <text class="t c" x="101" y="86">Your apps</text>
+  <text class="s c" x="101" y="106">send parcels,</text>
+  <text class="s c" x="101" y="123">each with a key</text>
+  <rect class="n acc" x="266" y="20" width="228" height="196" rx="14"/>
+  <text class="t c" x="380" y="48">The Hub</text>
+  <text class="s c" x="380" y="66">one Cloudflare Worker + one database</text>
+  <rect class="n" x="286" y="82" width="188" height="36" rx="8"/><text class="s c" x="380" y="105">keys and contracts</text>
+  <rect class="n" x="286" y="126" width="188" height="36" rx="8"/><text class="s c" x="380" y="149">parcel queue</text>
+  <rect class="n" x="286" y="170" width="188" height="36" rx="8"/><text class="s c" x="380" y="193">event log</text>
+  <rect class="n ok" x="574" y="52" width="170" height="92" rx="12"/>
+  <text class="t c" x="659" y="86">Your laptop</text>
+  <text class="s c" x="659" y="106">the mailroom daemon</text>
+  <text class="s c" x="659" y="123">checks again, does the work</text>
+  <rect class="n raised" x="236" y="262" width="288" height="52" rx="12"/>
+  <text class="t c" x="380" y="284">You</text>
+  <text class="s c" x="380" y="303">web app · browser extension · Claude</text>
+  <path class="e acc" d="M186 98 H266"/><text class="s c" x="226" y="90">parcel</text>
+  <path class="e dash" d="M574 86 H494"/><text class="s c" x="534" y="78">dials out</text>
+  <path class="e ok" d="M494 120 H574"/><text class="s c" x="534" y="138">job</text>
+  <path class="e" d="M380 262 V216"/><text class="s" x="390" y="244">approve, manage</text>
+</svg>
+<figcaption>The laptop always dials out to the Hub, so nothing on the internet can reach into your machine.</figcaption>
+</figure>
+
+<h2>Start here</h2>
+<div class="cards">
+  <a href="/docs/concepts"><b>The big picture</b><span>The mailroom idea and the few words you need.</span></a>
+  <a href="/docs/quickstart"><b>Set it up in 10 minutes</b><span>Run it, connect your laptop, send a first parcel.</span></a>
+  <a href="/docs/how-it-works"><b>How a parcel travels</b><span>The parts, and one parcel's journey end to end.</span></a>
+</div>
+
+<h2>What you can do with it</h2>
+<div class="cards">
+  <a href="/docs/keys-contracts"><b>Hand out keys</b><span>One key per app, each tied to a contract of what it may do.</span></a>
+  <a href="/docs/parcels"><b>Approve risky steps</b><span>Writes and other risky tasks wait for your yes.</span></a>
+  <a href="/docs/laptop"><b>Keep the laptop connected</b><span>The daemon runs in the background and queues work while you are away.</span></a>
+  <a href="/docs/extension"><b>Approve from your toolbar</b><span>A badge, a popup and notifications in Chrome.</span></a>
+  <a href="/docs/mcp"><b>Let Claude administer it</b><span>Scoped tokens, an MCP endpoint and a Claude Code plugin.</span></a>
+  <a href="/docs/security"><b>Know what protects what</b><span>The trust boundaries, and the honest limits.</span></a>
+</div>
+
+<h2>Reference</h2>
+<div class="cards">
+  <a href="/docs/cli"><b>The mailroom command</b><span>login, run, status, service, logout.</span></a>
+  <a href="/docs/api"><b>HTTP API</b><span>Routes for clients, the owner and the daemon.</span></a>
+  <a href="/docs/events"><b>Events</b><span>The log of everything that happens.</span></a>
+  <a href="/docs/troubleshooting"><b>Troubleshooting</b><span>"Out to lunch", "Checking...", and friends.</span></a>
+</div>
+</main>
+<script type="module" src="/docs/docs.js"></script>
+</body>
+</html>

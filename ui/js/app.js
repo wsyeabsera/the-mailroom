@@ -40,6 +40,7 @@ rail.append(
     h("div", { class: "grp" }, group),
     ...items.map(([key, label]) => (links[key] = h("a", { href: "#/" + key }, label, key === "approvals" ? badge : null))),
   ])),
+  h("nav", { "aria-label": "Help" }, h("div", { class: "grp" }, "Help"), h("a", { href: "/docs/" }, "Docs")),
   h("div", { class: "sp" }),
   h("a", { class: "lap", href: "#/laptop" }, lapDot, lapText));
 
