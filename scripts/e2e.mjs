@@ -45,6 +45,16 @@ const w = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--inspector-
 procs.push(w);
 if (!(await until(async () => { try { return (await fetch(BASE + "/admin/state")).status === 401; } catch { return false; } }, 60000))) { console.log("FAIL wrangler did not start"); process.exit(1); }
 
+console.log("signed out");
+for (const p of ["/login", "/css/app.css", "/js/login.js", "/js/theme-init.js", "/js/theme.js", "/js/dom.js", "/favicon.svg"]) {
+  const pr = await fetch(BASE + p, { redirect: "manual" });
+  ok(pr.status === 200, `the sign-in page can load ${p}`);
+}
+for (const p of ["/", "/index.html", "/js/app.js", "/js/api.js", "/js/pages/keys.js"]) {
+  const pr = await fetch(BASE + p, { redirect: "manual" });
+  ok(pr.status === 302 && pr.headers.get("location") === "/login", `${p} stays behind the login`);
+}
+
 console.log("owner");
 let r = await fetch(BASE + "/admin/login", { method: "POST", headers: { "content-type": "application/json", origin: BASE }, body: JSON.stringify({ password: "wrong" }) });
 ok(r.status === 401, "wrong password is 401");

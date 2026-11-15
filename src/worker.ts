@@ -6,7 +6,7 @@ export { Hub } from "./hub.ts";
 
 const json = (body: unknown, status: number) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 /** Files an unauthenticated visitor may load: the sign-in page and its own assets. */
-const PUBLIC = /^\/(login(\.html|\.js|\.css|\.svg)?|login\/.*)$/;
+const PUBLIC = new Set(["/login", "/login.html", "/css/app.css", "/favicon.svg", "/js/theme-init.js", "/js/theme.js", "/js/dom.js", "/js/login.js"]);
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -39,7 +39,7 @@ export default {
 
     if (request.method !== "GET" && request.method !== "HEAD") return json({ error: "not_found" }, 404);
     if (authed) return env.ASSETS.fetch(request);
-    if (PUBLIC.test(path)) {
+    if (PUBLIC.has(path)) {
       let res = await env.ASSETS.fetch(path === "/login" ? new Request(new URL("/login.html", url), request) : request);
       if (res.status >= 300 && res.status < 400 && res.headers.get("Location")) res = await env.ASSETS.fetch(new Request(new URL(res.headers.get("Location")!, url), request));
       return res;
