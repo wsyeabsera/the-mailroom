@@ -134,6 +134,11 @@ await owner("POST", `/admin/keys/${r.json.id}/revoke`);
 r = await client(k2, "POST", "/api/jobs", { task: "echo", args: { text: "x" } });
 ok(r.status === 401, "a revoked key stops at once");
 
+console.log("overview counts");
+r = await owner("GET", "/admin/state");
+ok(r.json.counts.done === 4 && r.json.counts.refused === 2 && r.json.counts.queued === 0, `today's counts are true (done ${r.json.counts.done}, refused ${r.json.counts.refused}, queued ${r.json.counts.queued})`);
+ok(r.json.daemon.connected === true, "overview says the laptop is connected");
+
 console.log("events");
 r = await owner("GET", "/admin/events?after=0&limit=500");
 const kinds = new Set(r.json.events.map(e => e.kind));

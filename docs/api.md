@@ -39,7 +39,7 @@ Nothing is updated in place except job state, key revocation and `daemon`; each 
 
 - `POST /admin/login {password}` -> 204 + `Set-Cookie`, or 401 `{error:"bad_password", tries_left}`, or 429.
 - `POST /admin/logout` -> 204.
-- `GET /admin/state` -> `{ daemon:{connected,last_seen,last_seq}, counts:{queued,waiting_approval,running,done,refused,failed}, needs_you:[Job], latest_events:[Event] (5), approvals:N }`.
+- `GET /admin/state` -> `{ daemon:{connected,last_seen,last_seq}, counts:{queued,waiting_approval,running,done,refused,failed} (queued, waiting_approval and running are current; done, refused, failed and the other finished states count only jobs finished since 00:00 UTC), needs_you:[Job], latest_events:[Event] (5), approvals:N }`.
 - Keys: `GET /admin/keys` -> `[{id,label,prefix,contract:{id,name},created_at,last_used_at,revoked_at}]`; `POST /admin/keys {label, contract_id}` -> 201 `{id, label, key:"mr_live_..."}` (the full key appears only in this response; label 1..60 chars else 422 `{errors:{label}}`; unknown contract 422); `GET /admin/keys/:id` -> key + `recent_jobs` (10) + `contract`; `POST /admin/keys/:id/revoke` -> `{id, revoked_at, cancelled:N}` (queued and waiting jobs of that key become `cancelled`).
 - Contracts: `GET /admin/contracts` -> `[{id, ...Contract, version, used_by:N}]`; `POST /admin/contracts` body = Contract -> 201, or 422 `{errors:{field:message}}` from `validateContract`; `PUT /admin/contracts/:id` same, bumps `version` (applies to the next job and to queued jobs at once); `GET /admin/contracts/:id`.
 - Jobs: `GET /admin/jobs?state=&limit=` -> `[Job]` newest first (default 50); `GET /admin/jobs/:id` -> Job + `timeline:[Event]` + `contract_check:{verdict,reason?}` (re-run now) + `key:{id,label}`.

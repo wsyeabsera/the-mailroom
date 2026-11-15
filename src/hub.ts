@@ -317,7 +317,10 @@ export class Hub extends DurableObject<Env> {
 
   private state() {
     const counts: Record<string, number> = {};
-    for (const s of STATES) counts[s] = this.one("SELECT COUNT(*) AS n FROM jobs WHERE state = ?", s)!.n;
+    // Active states are counted as they are now; finished ones only since 00:00 UTC, so "Today" on the overview is true.
+    const dayStart = Date.now() - (Date.now() % 86_400_000);
+    const active = new Set(["queued", "waiting_approval", "running"]);
+    for (const s of STATES) counts[s] = active.has(s) ? this.one("SELECT COUNT(*) AS n FROM jobs WHERE state = ?", s)!.n : this.one("SELECT COUNT(*) AS n FROM jobs WHERE state = ? AND updated_at >= ?", s, dayStart)!.n;
     const needs = this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'waiting_approval' ORDER BY created_at, id").map(this.jobOut);
     const latest = this.sql.all<Row>("SELECT * FROM events ORDER BY seq DESC LIMIT 5").map(this.evOut);
     const d = this.daemonInfo();
