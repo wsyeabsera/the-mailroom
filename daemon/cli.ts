@@ -54,10 +54,13 @@ async function main() {
       console.log(`url: ${cfg.url}`);
       const r = await probe(cfg);
       console.log(`hub: ${r}`);
-      return r === "accepted" ? 0 : 1;
+      return r.startsWith("accepted") ? 0 : 1;
     }
     case "service": {
-      const opts = { program: [process.execPath, fileURLToPath(new URL("./cli.ts", import.meta.url)), "run"] };
+      // MAILROOM_SERVICE_LABEL lets tests (and a second install) use their own launchd label; the default is the real one.
+      const label = process.env.MAILROOM_SERVICE_LABEL;
+      if (label !== undefined && !/^[A-Za-z0-9.-]{3,100}$/.test(label)) return fail("MAILROOM_SERVICE_LABEL may only contain letters, digits, dots and dashes.");
+      const opts = { label, program: [process.execPath, fileURLToPath(new URL("./cli.ts", import.meta.url)), "run"] };
       const sub = args[0];
       if (sub === "install") {
         if (!loadConfig()) return fail("Not logged in. Run `mailroom login` first, then install the service.");

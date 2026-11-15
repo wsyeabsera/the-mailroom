@@ -180,7 +180,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "mailroom_update_contract", scope: "write", soft: true,
-    description: "Replace a contract's rules (send all fields, not just changes). The version goes up, the new rules apply to the next parcel, and parcels already queued are re-checked against them at once (a parcel the new rules do not allow is refused). Returns the saved contract or what to fix. Never widen a contract (more folders, more tasks, fewer approvals, higher limit) without the owner's say-so.",
+    description: "Replace a contract's rules (send all fields, not just changes). The version goes up, the new rules apply to the next parcel, and parcels already queued are checked against them again just before they are sent to the laptop (one the new rules do not allow is refused then). Returns the saved contract or what to fix. Never widen a contract (more folders, more tasks, fewer approvals, higher limit) without the owner's say-so.",
     inputSchema: { type: "object", properties: { id: { type: "string", minLength: 1, maxLength: 40, description: "The contract id, like c_1000." }, ...CONTRACT_PROPS }, required: ["id", ...CONTRACT_REQUIRED], additionalProperties: false },
     target: idOf,
     run: (a, api) => { const { id, ...body } = a; return api.updateContract(id, body); },

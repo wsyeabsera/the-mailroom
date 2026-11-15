@@ -88,6 +88,15 @@ await new Promise(res => login.on("exit", res));
 ok(!out.includes(cred), "login never prints the credential");
 let d = startDaemon();
 ok(await until(async () => (await owner("GET", "/admin/laptop")).json.connected), "daemon connected");
+{ // The credential probe must not replace the running daemon.
+  const pr = await fetch(`${BASE}/daemon?probe=1`, { headers: { authorization: `Bearer ${cred}` } });
+  const pj = await pr.json();
+  ok(pr.status === 200 && pj.connected === true, "GET /daemon?probe=1 with the credential says accepted and that a laptop is connected");
+  const bad = await fetch(`${BASE}/daemon?probe=1`, { headers: { authorization: "Bearer mrd_" + "x".repeat(32) } });
+  ok(bad.status === 401, "a wrong credential on the probe is 401");
+  await sleep(1500);
+  ok((await owner("GET", "/admin/laptop")).json.connected, "the running daemon is still connected after the probe");
+}
 
 console.log("jobs");
 const waitJob = async (id, states) => until(async () => { const j = (await client(key, "GET", `/api/jobs/${id}`)).json; return states.includes(j.state) ? j : null; });
@@ -145,6 +154,12 @@ const kinds = new Set(r.json.events.map(e => e.kind));
 for (const k of ["key.created", "key.revoked", "contract.saved", "job.refused", "job.done", "daemon.connected", "daemon.disconnected", "daemon.rotated"]) ok(kinds.has(k), `event ${k} recorded`);
 const seqs = r.json.events.map(e => e.seq);
 ok(seqs.every((s, i) => i === 0 || s > seqs[i - 1]), "events are in order");
+{ // The Events page loads the LATEST events (tail), not the first ones.
+  const first = (await owner("GET", "/admin/events?after=0&limit=3")).json;
+  const tail = (await owner("GET", "/admin/events?after=0&limit=3&tail=1")).json;
+  ok(first.events.map(e => e.seq).join() === "1,2,3", "without tail, limit=3 gives the first three events (replay)");
+  ok(tail.events.length === 3 && tail.events.at(-1).seq === tail.last_seq && tail.events[0].seq === tail.last_seq - 2 && tail.events.every((e, i, a) => i === 0 || e.seq > a[i - 1].seq), "with tail=1, limit=3 gives the latest three, oldest first");
+}
 
 console.log(failed ? `\nE2E FAILED (${failed})` : "\nE2E PASSED");
 process.exit(failed ? 1 : 0);

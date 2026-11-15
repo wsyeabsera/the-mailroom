@@ -1,5 +1,6 @@
 // The contract rules, shared by the gateway (Worker) and the daemon. Pure: no I/O, no clock, no globals.
-// A contract says what a key may do. The daemon runs the same check again on its own copy.
+// A contract says what a key may do. The gateway checks it, and the daemon runs the same check again on the contract the Hub
+// sends with each job (with real paths and the laptop's home and clock). The daemon keeps no copy of its own.
 
 export const TASKS = ["echo", "read_file", "write_file", "claude"] as const;
 export type TaskName = (typeof TASKS)[number];
