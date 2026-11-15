@@ -1,0 +1,24 @@
+{
+  "name": "the-mailroom",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Lets software in the cloud ask the Claude Code on one laptop to do work, safely.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "node --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "deploy": "wrangler deploy"
+  },
+  "bin": { "mailroom": "daemon/cli.ts" },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261113.1",
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.6.0",
+    "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

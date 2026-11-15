@@ -1,0 +1,3 @@
+# Copy to .dev.vars (gitignored) for `wrangler dev`. In production: `wrangler secret put OWNER_PASSWORD` and `SESSION_SECRET`.
+OWNER_PASSWORD=change-me
+SESSION_SECRET=change-me-to-a-long-random-string
