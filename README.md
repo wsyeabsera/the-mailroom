@@ -4,7 +4,7 @@ A small, personal service that lets software in the cloud ask the Claude Code on
 
 For personal use on the owner's own machine only. It is not a service for other people.
 
-**Status: v0.2.1.** Slice 1 (auth, contracts, keys, events, daemon, admin UI) and slice 2 (approvals, running a Claude Code task) are built, tested locally, and deployed once to the owner's Cloudflare account (workers.dev).
+**Status: v0.3.0.** Slice 1 (auth, contracts, keys, events, daemon, admin UI) and slice 2 (approvals, running a Claude Code task) are built, tested locally, and deployed once to the owner's Cloudflare account (workers.dev).
 
 ## Parts
 
@@ -15,6 +15,8 @@ For personal use on the owner's own machine only. It is not a service for other 
 | Daemon | `daemon/` | `mailroom login / run / status / logout` on the laptop |
 | Admin UI | `ui/` | Plain HTML, CSS and ES modules, dark and light. Served by the Worker behind the owner login |
 | Browser extension | `extension/` | Chrome MV3: badge with the approvals waiting, popup, side panel, notifications. See `extension/README.md` |
+| MCP admin channel | `src/mcp.ts`, `POST /mcp` | A remote MCP server so other apps and Claude sessions can administer it with their own scoped tokens. See `docs/mcp.md` |
+| Claude Code plugin | `plugin/` | One install connects a Claude session to the MCP channel, with a skill of safety rules and two commands. See `plugin/README.md` |
 | API | `docs/api.md` | The interface everything is built against |
 
 ## Run it locally
@@ -41,12 +43,24 @@ curl -X POST localhost:8787/api/jobs -H "Authorization: Bearer mr_live_..." \
 
 Tasks: `echo`, `read_file`, `write_file`, `claude` (runs `claude -p` in a folder the contract allows). Paths must be `~/...` or absolute and inside a contract folder. A task the contract lists under "needs approval" waits on the Approvals page.
 
+## Administering it from other apps (MCP)
+
+In the UI open Access, Tokens, New token. A token is `read` only unless you tick `write` (create and revoke keys, create and edit contracts) or `approve` (release waiting parcels: whoever holds it can approve a risky step without you reading it, so give it sparingly). It is shown once. Then, in any MCP client that speaks Streamable HTTP, for example Claude Code:
+
+```sh
+claude mcp add --transport http mailroom https://<your-hub>/mcp --header "Authorization: Bearer mra_..."
+```
+
+or install the plugin in `plugin/` (see its README). Tokens are separate from client keys, the daemon credential and your sign-in, and a token of one kind never works as another. Every write is recorded as an `mcp.call` event. Details and the tool list: `docs/mcp.md`.
+
 ## Tests
 
 ```sh
-npm test                  # unit tests (contract rules, keys, sessions, daemon, extension)
+npm test                  # unit tests (contract rules, keys, sessions, daemon, extension, MCP protocol and tools)
 npm run typecheck
 node scripts/smoke.mjs    # needs `npm run dev` on 8787, or pass a URL: 59 checks against the Worker
+node scripts/mcp-smoke.mjs  # raw JSON-RPC against /mcp: scopes, audit, auth boundaries (needs `npm run dev`; pass a URL)
+node scripts/mcp-e2e.mjs  # Claude Code itself as the MCP client, through ./plugin, against its own local Worker
 node scripts/e2e.mjs      # starts its own Worker and a real daemon, uses real files, cleans up after itself
 node scripts/ui-mock.mjs  # the UI against an in-memory mock on :8799, no Worker needed
 PLAYWRIGHT_CORE=/path/to/node_modules/playwright-core node scripts/extension-e2e.mjs   # the extension in a throwaway Chromium (needs a Playwright Chromium; downloads nothing)
@@ -67,4 +81,4 @@ Secrets can only be set once the Worker exists, so run `npm run deploy` first; u
 
 ## Docs
 
-`docs/ideas.md` (what and why), `docs/architecture.md`, `docs/api.md`, `docs/ui-brief.md`, `docs/release-1.md` (designs), `docs/release-2.md` (this build).
+`docs/ideas.md` (what and why), `docs/architecture.md`, `docs/api.md`, `docs/ui-brief.md`, `docs/release-1.md` (designs), `docs/release-2.md` (the working system), `docs/release-3.md` (MCP channel and plugin), `docs/mcp.md`.

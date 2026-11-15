@@ -1,7 +1,8 @@
 // The Hub: the one Durable Object and the only writer. SQLite state, append-only events, SSE replay, the daemon WebSocket.
 import { DurableObject } from "cloudflare:workers";
 import { check, validateContract, type Contract } from "../shared/contract.ts";
-import { bearer, credentialHint, displayPrefix, generateDaemonCredential, generateKey, hashToken, makeId, safeEqual, safeEqualSecret, tokenKind } from "./keys.ts";
+import { bearer, credentialHint, displayPrefix, generateAdminToken, generateDaemonCredential, generateKey, hashToken, makeId, safeEqual, safeEqualSecret, tokenKind, validateTokenInput } from "./keys.ts";
+import { formatFieldErrors, handleMcpText, ToolError, type McpApi } from "./mcp.ts";
 import { checkLogin, clearFailures, LOGIN_TABLE, recordFailure, type Sql } from "./login-limit.ts";
 import { SESSION_SECONDS, sessionCookie, signSession } from "./session.ts";
 
@@ -14,6 +15,9 @@ export interface Env {
 
 const MAX_BODY = 256 * 1024;
 const RATE_PER_MIN = 60;
+const MCP_MAX_BODY = 64 * 1024;
+const MCP_RATE_PER_MIN = 120;
+const TOKEN_TOUCH_MS = 60_000;
 const PING_MS = 25_000;
 const DEAD_MS = 60_000;
 const SSE_PING_MS = 20_000;
@@ -38,6 +42,7 @@ export class Hub extends DurableObject<Env> {
   private subs = new Set<ReadableStreamDefaultController<Uint8Array>>();
   private sseTimer: ReturnType<typeof setInterval> | null = null;
   private rate = new Map<string, { start: number; n: number }>();
+  private mcpRate = new Map<string, { start: number; n: number }>();
   private enc = new TextEncoder();
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -51,6 +56,7 @@ export class Hub extends DurableObject<Env> {
       "CREATE INDEX IF NOT EXISTS jobs_key ON jobs (key_id, created_at)",
       "CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL)",
       "CREATE TABLE IF NOT EXISTS daemon (id INTEGER PRIMARY KEY CHECK (id = 1), hash TEXT NOT NULL, hint TEXT, rotated_at INTEGER NOT NULL, last_seen INTEGER, connected INTEGER NOT NULL DEFAULT 0)",
+      "CREATE TABLE IF NOT EXISTS admin_tokens (id TEXT PRIMARY KEY, label TEXT NOT NULL, prefix TEXT NOT NULL, hash TEXT NOT NULL, scopes TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER, last_used_at INTEGER)",
       "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL)",
       LOGIN_TABLE,
     ])
@@ -128,6 +134,7 @@ export class Hub extends DurableObject<Env> {
     try {
       if (path === "/daemon") return await this.daemonUpgrade(req);
       if (path === "/api/jobs" || path.startsWith("/api/jobs/")) return await this.clientRoute(req, path);
+      if (path === "/mcp") return await this.mcp(req);
       if (path === "/admin/login") return await this.login(req);
       if (path.startsWith("/admin/")) return await this.admin(req, url);
       return err(404, "not_found");
@@ -152,14 +159,14 @@ export class Hub extends DurableObject<Env> {
     return k;
   }
 
-  private rateLimited(keyId: string): boolean {
+  private rateLimited(keyId: string, map = this.rate, limit = RATE_PER_MIN): boolean {
     const now = Date.now();
-    const r = this.rate.get(keyId);
+    const r = map.get(keyId);
     if (!r || now - r.start >= 60_000) {
-      this.rate.set(keyId, { start: now, n: 1 });
+      map.set(keyId, { start: now, n: 1 });
       return false;
     }
-    return ++r.n > RATE_PER_MIN;
+    return ++r.n > limit;
   }
 
   private async clientRoute(req: Request, path: string): Promise<Response> {
@@ -246,10 +253,7 @@ export class Hub extends DurableObject<Env> {
       }
       const k = this.one("SELECT * FROM keys WHERE id = ?", seg[2]);
       if (!k) return err(404, "not_found");
-      if (seg.length === 3 && m === "GET") {
-        const c = this.contractRow(k.contract_id)!;
-        return json({ ...this.keyOut(k), recent_jobs: this.sql.all<Row>("SELECT * FROM jobs WHERE key_id = ? ORDER BY created_at DESC, id DESC LIMIT 10", k.id).map(this.jobOut), contract: this.contractOut(c) });
-      }
+      if (seg.length === 3 && m === "GET") return json(this.keyDetail(k));
       if (seg.length === 4 && seg[3] === "revoke") return m === "POST" ? this.revoke(k) : err(405, "method_not_allowed");
       return err(404, "not_found");
     }
@@ -272,10 +276,8 @@ export class Hub extends DurableObject<Env> {
     if (route === "jobs") {
       if (seg.length === 2) {
         if (m !== "GET") return err(405, "method_not_allowed");
-        const st = url.searchParams.get("state");
         const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") ?? "50", 10) || 50, 1), 500);
-        const rows = st ? this.sql.all<Row>("SELECT * FROM jobs WHERE state = ? ORDER BY created_at DESC, id DESC LIMIT ?", st, limit) : this.sql.all<Row>("SELECT * FROM jobs ORDER BY created_at DESC, id DESC LIMIT ?", limit);
-        return json(rows.map(this.jobOut));
+        return json(this.jobList(url.searchParams.get("state"), limit));
       }
       const j = this.one("SELECT * FROM jobs WHERE id = ?", seg[2]);
       if (!j) return err(404, "not_found");
@@ -285,14 +287,25 @@ export class Hub extends DurableObject<Env> {
       return err(404, "not_found");
     }
 
+    if (route === "tokens") {
+      if (seg.length === 2) {
+        if (m === "GET") return json(this.sql.all<Row>("SELECT * FROM admin_tokens ORDER BY created_at DESC, id DESC").map((t) => this.tokenOut(t)));
+        if (m === "POST") return this.createToken(req);
+        return err(405, "method_not_allowed");
+      }
+      const t = this.one("SELECT * FROM admin_tokens WHERE id = ?", seg[2]);
+      if (!t) return err(404, "not_found");
+      if (seg.length === 4 && seg[3] === "revoke") return m === "POST" ? this.revokeToken(t) : err(405, "method_not_allowed");
+      return err(404, "not_found");
+    }
+
     if (route === "events") {
       if (m !== "GET") return err(405, "method_not_allowed");
       const after = Math.max(parseInt(url.searchParams.get("after") ?? "0", 10) || 0, 0);
       if (seg[2] === "stream" && seg.length === 3) return this.stream(req, after);
       if (seg.length === 2) {
         const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") ?? "200", 10) || 200, 1), 1000);
-        const events = this.sql.all<Row>("SELECT * FROM events WHERE seq > ? ORDER BY seq LIMIT ?", after, limit).map(this.evOut);
-        return json({ events, last_seq: this.lastEventSeq() });
+        return json(this.eventList(after, limit));
       }
       return err(404, "not_found");
     }
@@ -315,7 +328,20 @@ export class Hub extends DurableObject<Env> {
     return { connected: !!this.daemon?.hello, last_seen: d?.last_seen ?? null, last_seq: this.lastSeq, rotated_at: d?.rotated_at ?? null, hint: d?.hint ?? null };
   }
 
-  private state() {
+  private jobList(state: string | null | undefined, limit: number) {
+    const rows = state ? this.sql.all<Row>("SELECT * FROM jobs WHERE state = ? ORDER BY created_at DESC, id DESC LIMIT ?", state, limit) : this.sql.all<Row>("SELECT * FROM jobs ORDER BY created_at DESC, id DESC LIMIT ?", limit);
+    return rows.map(this.jobOut);
+  }
+  private eventList(after: number, limit: number) {
+    return { events: this.sql.all<Row>("SELECT * FROM events WHERE seq > ? ORDER BY seq LIMIT ?", after, limit).map(this.evOut), last_seq: this.lastEventSeq() };
+  }
+  private keyDetail(k: Row) {
+    const c = this.contractRow(k.contract_id)!;
+    return { ...this.keyOut(k), recent_jobs: this.sql.all<Row>("SELECT * FROM jobs WHERE key_id = ? ORDER BY created_at DESC, id DESC LIMIT 10", k.id).map(this.jobOut), contract: this.contractOut(c) };
+  }
+
+  private state() { return json(this.stateObj()); }
+  private stateObj() {
     const counts: Record<string, number> = {};
     // Active states are counted as they are now; finished ones only since 00:00 UTC, so "Today" on the overview is true.
     const dayStart = Date.now() - (Date.now() % 86_400_000);
@@ -325,27 +351,35 @@ export class Hub extends DurableObject<Env> {
     const needs = this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'waiting_approval' ORDER BY created_at, id").map(j => ({ ...this.jobOut(j), key: { id: j.key_id, label: this.one("SELECT label FROM keys WHERE id = ?", j.key_id)?.label ?? null } }));
     const latest = this.sql.all<Row>("SELECT * FROM events ORDER BY seq DESC LIMIT 5").map(this.evOut);
     const d = this.daemonInfo();
-    return json({ daemon: { connected: d.connected, last_seen: d.last_seen, last_seq: d.last_seq }, counts, needs_you: needs, latest_events: latest, approvals: needs.length });
+    return { daemon: { connected: d.connected, last_seen: d.last_seen, last_seq: d.last_seq }, counts, needs_you: needs, latest_events: latest, approvals: needs.length };
   }
 
   private async createKey(req: Request): Promise<Response> {
     const r = await this.readJson(req);
     if (!r.ok) return r.res;
-    const label = typeof r.body.label === "string" ? r.body.label.trim() : "";
+    const o = await this.createKeyCore(r.body);
+    return "errors" in o ? invalid(o.errors) : json(o, 201);
+  }
+
+  /** The one place a client key is made (owner route and MCP). The clear key leaves here once. */
+  private async createKeyCore(body: Row): Promise<{ errors: Record<string, string> } | { id: string; label: string; key: string }> {
+    const label = typeof body.label === "string" ? body.label.trim() : "";
     const errors: Record<string, string> = {};
     if (label.length < 1 || label.length > 60) errors.label = "Label must be 1 to 60 characters.";
-    if (typeof r.body.contract_id !== "string" || !this.contractRow(r.body.contract_id)) errors.contract_id = "Unknown contract.";
-    if (Object.keys(errors).length) return invalid(errors);
+    if (typeof body.contract_id !== "string" || !this.contractRow(body.contract_id)) errors.contract_id = "Unknown contract.";
+    if (Object.keys(errors).length) return { errors };
     const key = generateKey();
     const id = makeId("k_", this.next("key"));
     const now = Date.now();
-    this.sql.run("INSERT INTO keys (id, label, prefix, hash, contract_id, created_at) VALUES (?, ?, ?, ?, ?, ?)", id, label, displayPrefix(key), await hashToken(key), r.body.contract_id, now);
+    this.sql.run("INSERT INTO keys (id, label, prefix, hash, contract_id, created_at) VALUES (?, ?, ?, ?, ?, ?)", id, label, displayPrefix(key), await hashToken(key), body.contract_id, now);
     this.event("key.created", { key_id: id, label });
-    return json({ id, label, key }, 201);
+    return { id, label, key };
   }
 
-  private revoke(k: Row): Response {
-    if (k.revoked_at) return json({ id: k.id, revoked_at: k.revoked_at, cancelled: 0 });
+  private revoke(k: Row): Response { return json(this.revokeCore(k)); }
+
+  private revokeCore(k: Row): { id: string; revoked_at: number; cancelled: number } {
+    if (k.revoked_at) return { id: k.id, revoked_at: k.revoked_at, cancelled: 0 };
     const now = Date.now();
     this.sql.run("UPDATE keys SET revoked_at = ? WHERE id = ?", now, k.id);
     this.event("key.revoked", { key_id: k.id, label: k.label });
@@ -360,30 +394,36 @@ export class Hub extends DurableObject<Env> {
       }
     }
     this.pushNext();
-    return json({ id: k.id, revoked_at: now, cancelled });
+    return { id: k.id, revoked_at: now, cancelled };
   }
 
   private async saveContract(req: Request, existing: Row | null): Promise<Response> {
     const r = await this.readJson(req);
     if (!r.ok) return r.res;
-    const v = validateContract(r.body);
-    if (!v.ok) return invalid(v.errors);
+    const o = this.saveContractCore(r.body, existing);
+    return "errors" in o ? invalid(o.errors) : json(o.out, existing ? 200 : 201);
+  }
+
+  private saveContractCore(body: unknown, existing: Row | null): { errors: Record<string, string> } | { out: ReturnType<Hub["contractOut"]> } {
+    const v = validateContract(body);
+    if (!v.ok) return { errors: v.errors };
     const now = Date.now();
     const id = existing?.id ?? makeId("c_", this.next("contract"));
     const version = existing ? existing.version + 1 : 1;
     this.sql.run("INSERT INTO contracts (id, name, body, version, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET name = excluded.name, body = excluded.body, version = excluded.version, updated_at = excluded.updated_at", id, v.contract.name, JSON.stringify(v.contract), version, now);
     this.event("contract.saved", { contract_id: id, name: v.contract.name, version });
     if (existing) this.pushNext(); // queued jobs are re-checked against the new text
-    return json(this.contractOut(this.contractRow(id)!), existing ? 200 : 201);
+    return { out: this.contractOut(this.contractRow(id)!) };
   }
 
-  private jobDetail(j: Row): Response {
+  private jobDetail(j: Row): Response { return json(this.jobDetailObj(j)); }
+  private jobDetailObj(j: Row) {
     const c = this.contractRow(j.contract_id)!;
     const now = Date.now();
     const v = check(parse(c.body), { task: j.task, args: parse(j.args) }, { now, usedToday: this.usedToday(j.key_id, now, j.id) });
     const k = this.one("SELECT id, label FROM keys WHERE id = ?", j.key_id);
     const timeline = this.sql.all<Row>("SELECT * FROM events WHERE json_extract(payload, '$.job_id') = ? ORDER BY seq", j.id).map(this.evOut);
-    return json({ ...this.jobOut(j), timeline, contract_check: v.verdict === "refuse" ? { verdict: v.verdict, reason: v.reason } : { verdict: v.verdict }, key: k ?? { id: j.key_id, label: "" } });
+    return { ...this.jobOut(j), timeline, contract_check: v.verdict === "refuse" ? { verdict: v.verdict, reason: v.reason } : { verdict: v.verdict }, key: k ?? { id: j.key_id, label: "" } };
   }
 
   /** Re-check a job against its contract's current text. Returns a refusal reason or null. */
@@ -396,20 +436,130 @@ export class Hub extends DurableObject<Env> {
   }
 
   private approve(j: Row): Response {
-    if (j.state !== "waiting_approval") return err(409, "conflict", { message: `job is ${j.state}` });
+    const o = this.approveCore(j);
+    return "conflict" in o ? err(409, "conflict", { message: o.conflict }) : json(o.job);
+  }
+  private approveCore(j: Row) {
+    if (j.state !== "waiting_approval") return { conflict: `job is ${j.state}` };
     const reason = this.recheck(j);
     if (reason) this.setState(j, "refused", reason);
     else {
       this.setState(j, "queued", null, undefined, "job.approved");
       this.pushNext();
     }
-    return json(this.jobOut(this.one("SELECT * FROM jobs WHERE id = ?", j.id)!));
+    return { job: this.jobOut(this.one("SELECT * FROM jobs WHERE id = ?", j.id)!) };
   }
 
   private decline(j: Row): Response {
-    if (j.state !== "waiting_approval") return err(409, "conflict", { message: `job is ${j.state}` });
-    this.setState(j, "refused", "declined by owner", undefined, "job.declined");
-    return json(this.jobOut(this.one("SELECT * FROM jobs WHERE id = ?", j.id)!));
+    const o = this.declineCore(j);
+    return "conflict" in o ? err(409, "conflict", { message: o.conflict }) : json(o.job);
+  }
+  private declineCore(j: Row, note?: string) {
+    if (j.state !== "waiting_approval") return { conflict: `job is ${j.state}` };
+    this.setState(j, "refused", note ? `declined by owner: ${note}` : "declined by owner", undefined, "job.declined");
+    return { job: this.jobOut(this.one("SELECT * FROM jobs WHERE id = ?", j.id)!) };
+  }
+
+  // ---- admin tokens (owner routes) ----
+  private tokenOut = (t: Row) => ({ id: t.id, label: t.label, prefix: t.prefix, scopes: parse(t.scopes) as string[], created_at: t.created_at, last_used_at: t.last_used_at, revoked_at: t.revoked_at });
+
+  private async createToken(req: Request): Promise<Response> {
+    const r = await this.readJson(req);
+    if (!r.ok) return r.res;
+    const v = validateTokenInput(r.body);
+    if (!v.ok) return invalid(v.errors);
+    const token = generateAdminToken();
+    const id = makeId("t_", this.next("token"));
+    this.sql.run("INSERT INTO admin_tokens (id, label, prefix, hash, scopes, created_at) VALUES (?, ?, ?, ?, ?, ?)", id, v.label, displayPrefix(token), await hashToken(token), JSON.stringify(v.scopes), Date.now());
+    this.event("token.created", { token_id: id, label: v.label, scopes: v.scopes });
+    return json({ id, label: v.label, scopes: v.scopes, token }, 201);
+  }
+
+  private revokeToken(t: Row): Response {
+    if (t.revoked_at) return json({ id: t.id, revoked_at: t.revoked_at });
+    const now = Date.now();
+    this.sql.run("UPDATE admin_tokens SET revoked_at = ? WHERE id = ?", now, t.id);
+    this.event("token.revoked", { token_id: t.id, label: t.label, scopes: parse(t.scopes) });
+    return json({ id: t.id, revoked_at: now });
+  }
+
+  // ---- MCP admin channel ----
+  private async mcpAuth(req: Request): Promise<Row | null> {
+    const tok = bearer(req.headers.get("Authorization"));
+    // Always hash, so a missing or wrong-kind token costs the same as a wrong one.
+    const hash = await hashToken(tok ?? "");
+    if (!tok || tokenKind(tok) !== "admin") return null;
+    const t = this.sql.all<Row>("SELECT * FROM admin_tokens WHERE prefix = ? AND revoked_at IS NULL", displayPrefix(tok)).find((r) => safeEqual(r.hash, hash));
+    if (!t) return null;
+    const now = Date.now();
+    if (t.last_used_at == null || now - t.last_used_at >= TOKEN_TOUCH_MS) {
+      this.sql.run("UPDATE admin_tokens SET last_used_at = ? WHERE id = ?", now, t.id);
+      t.last_used_at = now;
+    }
+    return t;
+  }
+
+  private async mcp(req: Request): Promise<Response> {
+    if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405, { Allow: "POST" });
+    const origin = req.headers.get("Origin");
+    if (origin !== null && origin !== new URL(req.url).origin) return err(403, "bad_origin");
+    const t = await this.mcpAuth(req);
+    if (!t) return json({ error: "unauthorized" }, 401, { "WWW-Authenticate": "Bearer" });
+    if (this.rateLimited(t.id, this.mcpRate, MCP_RATE_PER_MIN)) return json({ error: "rate_limited", retry_after: 60 }, 429, { "Retry-After": "60" });
+    if (Number(req.headers.get("content-length") ?? 0) > MCP_MAX_BODY) return err(413, "too_large");
+    const text = await req.text();
+    if (this.enc.encode(text).length > MCP_MAX_BODY) return err(413, "too_large");
+
+    const scopes = parse(t.scopes) as string[];
+    const res = await handleMcpText(text, {
+      scopes,
+      api: this.mcpApi(),
+      audit: (e) => void this.event("mcp.call", { token_id: t.id, label: t.label, tool: e.tool, ok: e.ok, ...(e.target ? { target: e.target } : {}) }),
+    });
+    return res === null ? new Response(null, { status: 202, headers: { "cache-control": "no-store" } }) : json(res);
+  }
+
+  /** The MCP tools call the same cores the owner routes use; nothing here re-implements a rule. */
+  private mcpApi(): McpApi {
+    const need = <T>(v: T | undefined, what: string): T => { if (v === undefined) throw new ToolError(`${what} not found.`); return v; };
+    const fields = (errors: Record<string, string>) => new ToolError(`Nothing was saved. ${formatFieldErrors(errors)}`, errors);
+    return {
+      status: async () => this.stateObj(),
+      listParcels: async ({ state, limit }) => this.jobList(state, limit),
+      getParcel: async (id) => this.jobDetailObj(need(this.one("SELECT * FROM jobs WHERE id = ?", id), `Parcel ${id}`)),
+      listKeys: async () => this.sql.all<Row>("SELECT * FROM keys ORDER BY created_at DESC, id DESC").map((k) => this.keyOut(k)),
+      getKey: async (id) => this.keyDetail(need(this.one("SELECT * FROM keys WHERE id = ?", id), `Key ${id}`)),
+      listContracts: async () => this.sql.all<Row>("SELECT * FROM contracts ORDER BY updated_at DESC, id DESC").map((c) => this.contractOut(c)),
+      getContract: async (id) => this.contractOut(need(this.contractRow(id), `Contract ${id}`)),
+      events: async ({ after, limit }) => this.eventList(after, limit),
+      laptop: async () => this.laptop(),
+      createContract: async (body) => {
+        const o = this.saveContractCore(body, null);
+        if ("errors" in o) throw fields(o.errors);
+        return o.out;
+      },
+      updateContract: async (id, body) => {
+        const o = this.saveContractCore(body, need(this.contractRow(id), `Contract ${id}`));
+        if ("errors" in o) throw fields(o.errors);
+        return o.out;
+      },
+      createKey: async (a) => {
+        const o = await this.createKeyCore(a);
+        if ("errors" in o) throw fields(o.errors);
+        return o;
+      },
+      revokeKey: async (id) => this.revokeCore(need(this.one("SELECT * FROM keys WHERE id = ?", id), `Key ${id}`)),
+      approveParcel: async (id) => {
+        const o = this.approveCore(need(this.one("SELECT * FROM jobs WHERE id = ?", id), `Parcel ${id}`));
+        if ("conflict" in o) throw new ToolError(`Parcel ${id} cannot be approved: ${o.conflict}. Only parcels waiting for approval can be.`);
+        return { id: o.job.id, state: o.job.state, ...(o.job.reason ? { reason: o.job.reason } : {}) };
+      },
+      declineParcel: async (id, reason) => {
+        const o = this.declineCore(need(this.one("SELECT * FROM jobs WHERE id = ?", id), `Parcel ${id}`), reason);
+        if ("conflict" in o) throw new ToolError(`Parcel ${id} cannot be declined: ${o.conflict}. Only parcels waiting for approval can be.`);
+        return { id: o.job.id, state: o.job.state };
+      },
+    };
   }
 
   // ---- events: SSE ----

@@ -169,3 +169,7 @@ ol.steps2 { margin: 0 0 20px; padding-left: 20px; color: var(--faint); font-size
 .card > form, form.card { padding: 0; }
 .ctr .card .btn { width: 100%; text-align: center; }
 .card[href], a.card:hover { text-decoration: none; }
+.snip { margin-bottom: 4px; }
+.snip .keybox { align-items: flex-start; }
+.snip pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; min-width: 0; }
+.opt:has(input:disabled) { cursor: default; }

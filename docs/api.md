@@ -19,7 +19,7 @@ A client key is never a daemon credential or a session, and the reverse. Owner r
 - `jobs(id TEXT PK 'p_'+4..8 base36 counter-based, key_id, contract_id, contract_version, task, args JSON, state, reason, result JSON, created_at, updated_at)`: state is `queued | waiting_approval | running | done | failed | refused | expired | cancelled`.
 - `events(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts, kind, payload JSON)`: append-only. Every state change appends one.
 - `daemon(id INTEGER PK CHECK(id=1), hash, rotated_at, last_seen, connected)`: at most one row.
-- Event kinds: `key.created`, `key.revoked`, `contract.saved`, `job.queued`, `job.waiting_approval`, `job.refused`, `job.approved`, `job.declined`, `job.running`, `job.done`, `job.failed`, `job.cancelled`, `daemon.connected`, `daemon.disconnected`, `daemon.rotated`.
+- Event kinds: `key.created`, `key.revoked`, `contract.saved`, `job.queued`, `job.waiting_approval`, `job.refused`, `job.approved`, `job.declined`, `job.running`, `job.done`, `job.failed`, `job.cancelled`, `daemon.connected`, `daemon.disconnected`, `daemon.rotated`, `token.created`, `token.revoked`, `mcp.call`.
 
 Nothing is updated in place except job state, key revocation and `daemon`; each such change also appends an event. The Hub is the only writer.
 
@@ -36,6 +36,8 @@ Nothing is updated in place except job state, key revocation and `daemon`; each 
 `GET /api/jobs/:id` -> `{id, state, reason?, result?, created_at, updated_at}` only for jobs of that key, else 404.
 
 ## Owner routes (cookie session; 401 `{error:"signed_out"}` without one)
+
+- Admin tokens for the MCP channel (`mra_...`, scopes `read|write|approve`): `GET /admin/tokens`, `POST /admin/tokens {label, scopes}` (the token is returned once), `POST /admin/tokens/:id/revoke`. The channel itself is `POST /mcp`; both are specified in `docs/mcp.md`. Events: `token.created`, `token.revoked`, and `mcp.call` for every write or approve tool call.
 
 - `POST /admin/login {password}` -> 204 + `Set-Cookie`, or 401 `{error:"bad_password", tries_left}`, or 429.
 - `POST /admin/logout` -> 204.

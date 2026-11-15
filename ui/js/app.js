@@ -5,13 +5,13 @@ import { themeSwitch } from "./theme.js";
 
 const NAV = [
   ["Work", [["overview", "Overview"], ["parcels", "Parcels"], ["approvals", "Approvals"]]],
-  ["Access", [["keys", "Keys"], ["contracts", "Contracts"]]],
+  ["Access", [["keys", "Keys"], ["contracts", "Contracts"], ["tokens", "Tokens"]]],
   ["System", [["laptop", "Laptop"], ["events", "Events"]]],
 ];
-const TITLES = { overview: "Overview", parcels: "Parcels", approvals: "Approvals", keys: "Keys", contracts: "Contracts", laptop: "Laptop", events: "Events" };
+const TITLES = { overview: "Overview", parcels: "Parcels", approvals: "Approvals", keys: "Keys", contracts: "Contracts", tokens: "Tokens", laptop: "Laptop", events: "Events" };
 const PAGES = {
   overview: () => import("./pages/overview.js"), parcels: () => import("./pages/parcels.js"), approvals: () => import("./pages/approvals.js"),
-  keys: () => import("./pages/keys.js"), contracts: () => import("./pages/contracts.js"), events: () => import("./pages/events.js"), laptop: () => import("./pages/laptop.js"),
+  keys: () => import("./pages/keys.js"), contracts: () => import("./pages/contracts.js"), tokens: () => import("./pages/tokens.js"), events: () => import("./pages/events.js"), laptop: () => import("./pages/laptop.js"),
 };
 
 const rail = document.getElementById("rail");
