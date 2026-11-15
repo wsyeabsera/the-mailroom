@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>The Mailroom settings</title><link rel="stylesheet" href="theme.css">
+<style>body{max-width:480px;margin:40px auto;padding:0 16px} label{display:block;margin:16px 0 6px} input{width:100%;padding:8px;font:inherit;background:var(--panel);color:var(--text);border:1px solid var(--hair);border-radius:6px} .row{display:flex;gap:8px;margin-top:12px;align-items:center} #status{margin-top:16px} .err{color:var(--warn)}</style></head>
+<body>
+<h1 style="display:flex;gap:8px;align-items:center;font-size:18px"><svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.5" fill="none" stroke="#f2703a" stroke-width="2"/><path d="M7.5 16.5V7.5l4.5 5 4.5-5v9" fill="none" stroke="#f2703a" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg> The Mailroom</h1>
+<form id="form">
+<label for="hub">Hub URL</label>
+<input id="hub" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://mailroom.example.com">
+<p class="muted">https://... or http://localhost:8787. No path. The extension only talks to this address.</p>
+<div class="row"><button class="primary" type="submit">Save and connect</button><span id="msg" role="status"></span></div>
+</form>
+<div id="status" class="chip" hidden></div>
+<script type="module" src="options.js"></script>
+</body></html>

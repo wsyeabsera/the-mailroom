@@ -4,11 +4,66 @@ A small, personal service that lets software in the cloud ask the Claude Code on
 
 For personal use on the owner's own machine only. It is not a service for other people.
 
-**Status: release 1 (v0.1.0) is the designs only. No running code yet.**
+**Status: v0.2.0.** Slice 1 (auth, contracts, keys, events, daemon, admin UI) and slice 2 (approvals, running a Claude Code task) are built and tested locally. It is not deployed anywhere yet.
 
-- `docs/ideas.md`: what it is and why
-- `docs/architecture.md`: parties, credentials, data, job flow
-- `docs/ui-brief.md`: the admin UI brief and journeys
-- `docs/release-1.md`: what release 1 contains, the decisions, the evidence
+## Parts
 
-Designs are in Lite (project `the-mailroom`, canvases `v2` dark and `v2-light`). To open them, export `LITE_TOKEN` and approve the `lite` server in `.mcp.json`.
+| Part | Where | What |
+|---|---|---|
+| Gateway + Hub | `src/` | Worker and one Durable Object (SQLite): keys, contracts, jobs, events, owner login, daemon socket |
+| Contract rules | `shared/contract.ts` | The one pure rule, used by the gateway and the daemon |
+| Daemon | `daemon/` | `mailroom login / run / status / logout` on the laptop |
+| Admin UI | `ui/` | Plain HTML, CSS and ES modules, dark and light. Served by the Worker behind the owner login |
+| Browser extension | `extension/` | Chrome MV3: badge with the approvals waiting, popup, side panel, notifications. See `extension/README.md` |
+| API | `docs/api.md` | The interface everything is built against |
+
+## Run it locally
+
+```sh
+npm install
+cp .dev.vars.example .dev.vars        # set OWNER_PASSWORD and SESSION_SECRET
+npm run dev                           # http://localhost:8787, sign in with OWNER_PASSWORD
+```
+
+In the UI: **Contracts** → New contract, **Keys** → New key (copy it, it is shown once), **Laptop** → Rotate credential (copy it, shown once). Then on the laptop:
+
+```sh
+node daemon/cli.ts login --url http://localhost:8787 --credential mrd_...
+node daemon/cli.ts run
+```
+
+A client then sends work with its key:
+
+```sh
+curl -X POST localhost:8787/api/jobs -H "Authorization: Bearer mr_live_..." \
+  -H 'content-type: application/json' -d '{"task":"echo","args":{"text":"hello"}}'
+```
+
+Tasks: `echo`, `read_file`, `write_file`, `claude` (runs `claude -p` in a folder the contract allows). Paths must be `~/...` or absolute and inside a contract folder. A task the contract lists under "needs approval" waits on the Approvals page.
+
+## Tests
+
+```sh
+npm test                  # unit tests (contract rules, keys, sessions, daemon, extension)
+npm run typecheck
+node scripts/smoke.mjs    # needs `npm run dev` on 8787, or pass a URL: 59 checks against the Worker
+node scripts/e2e.mjs      # starts its own Worker and a real daemon, uses real files, cleans up after itself
+node scripts/ui-mock.mjs  # the UI against an in-memory mock on :8799, no Worker needed
+```
+
+## Deploying (not done yet)
+
+Needs your Cloudflare account (decision d28: personal account, workers.dev subdomain):
+
+```sh
+npx wrangler login
+npx wrangler secret put OWNER_PASSWORD
+npx wrangler secret put SESSION_SECRET
+npm run deploy
+```
+
+Then `mailroom login --url https://the-mailroom.<you>.workers.dev` on the laptop and set that URL in the extension's options.
+
+## Docs
+
+`docs/ideas.md` (what and why), `docs/architecture.md`, `docs/api.md`, `docs/ui-brief.md`, `docs/release-1.md` (designs), `docs/release-2.md` (this build).
