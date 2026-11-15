@@ -321,7 +321,8 @@ export class Hub extends DurableObject<Env> {
     const dayStart = Date.now() - (Date.now() % 86_400_000);
     const active = new Set(["queued", "waiting_approval", "running"]);
     for (const s of STATES) counts[s] = active.has(s) ? this.one("SELECT COUNT(*) AS n FROM jobs WHERE state = ?", s)!.n : this.one("SELECT COUNT(*) AS n FROM jobs WHERE state = ? AND updated_at >= ?", s, dayStart)!.n;
-    const needs = this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'waiting_approval' ORDER BY created_at, id").map(this.jobOut);
+    // Each waiting parcel carries its key's label, so the UI and the extension need no second request.
+    const needs = this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'waiting_approval' ORDER BY created_at, id").map(j => ({ ...this.jobOut(j), key: { id: j.key_id, label: this.one("SELECT label FROM keys WHERE id = ?", j.key_id)?.label ?? null } }));
     const latest = this.sql.all<Row>("SELECT * FROM events ORDER BY seq DESC LIMIT 5").map(this.evOut);
     const d = this.daemonInfo();
     return json({ daemon: { connected: d.connected, last_seen: d.last_seen, last_seq: d.last_seq }, counts, needs_you: needs, latest_events: latest, approvals: needs.length });
