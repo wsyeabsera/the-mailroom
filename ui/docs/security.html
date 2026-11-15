@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Security model · The Mailroom</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/docs/docs.css">
+<script src="/js/theme-init.js"></script>
+</head>
+<body data-slug="security">
+<main id="doc">
+<h1>Security model</h1>
+<p class="lede">What protects what, which secret opens which door, and where the protection stops.</p>
+
+<div class="note"><p>There are four kinds of secret, and none works as another. Every parcel (a request) is checked twice: at the desk (the Hub) and again on the laptop. The laptop never accepts a connection from outside. The limits are real, and they are listed at the end of this page.</p></div>
+
+<h2>Who talks to whom</h2>
+<p>Four parties are involved. Each line between them carries one kind of secret. Read the picture from the outside in.</p>
+<figure class="dg">
+<svg viewBox="0 0 760 390" role="img" aria-labelledby="sec-tb-t sec-tb-d">
+  <title id="sec-tb-t">Trust boundaries and the secret that crosses each one</title>
+  <desc id="sec-tb-d">Client apps on the internet send parcels to the Hub with a client key. A Claude or MCP app talks to the Hub with an admin token. The owner's browser talks to the Hub with a session cookie. The laptop opens an outbound connection to the Hub with a daemon credential. The Hub checks every parcel first, and the laptop checks it again. Nothing connects in to the laptop.</desc>
+  <text class="s" x="16" y="22">The internet</text>
+  <text class="s" x="290" y="22">Cloudflare</text>
+  <text class="s" x="564" y="22">Your Mac</text>
+  <rect class="n raised" x="16" y="40" width="180" height="90" rx="12"/>
+  <text class="t c" x="106" y="74">Client apps</text>
+  <text class="s c" x="106" y="96">send parcels</text>
+  <rect class="n raised" x="16" y="250" width="180" height="90" rx="12"/>
+  <text class="t c" x="106" y="284">Claude or an MCP app</text>
+  <text class="s c" x="106" y="306">looks and manages</text>
+  <rect class="n acc" x="290" y="30" width="180" height="320" rx="14"/>
+  <text class="t c" x="380" y="58">The Hub</text>
+  <rect class="n" x="306" y="76" width="148" height="52" rx="8"/><text class="t c" x="380" y="98">Check 1</text><text class="s c" x="380" y="116">gateway, every parcel</text>
+  <rect class="n" x="306" y="140" width="148" height="52" rx="8"/><text class="t c" x="380" y="162">Sign-in gate</text><text class="s c" x="380" y="180">for the whole app</text>
+  <rect class="n" x="306" y="204" width="148" height="52" rx="8"/><text class="t c" x="380" y="226">Secrets stored</text><text class="s c" x="380" y="244">as hashes only</text>
+  <rect class="n" x="306" y="268" width="148" height="52" rx="8"/><text class="t c" x="380" y="290">Event log</text><text class="s c" x="380" y="308">never holds a secret</text>
+  <rect class="n ok" x="564" y="40" width="180" height="120" rx="12"/>
+  <text class="t c" x="654" y="70">Your laptop</text>
+  <text class="s c" x="654" y="92">the daemon</text>
+  <text class="s c" x="654" y="112">Check 2, on real paths</text>
+  <text class="s c" x="654" y="132">never listens</text>
+  <rect class="n raised" x="564" y="250" width="180" height="90" rx="12"/>
+  <text class="t c" x="654" y="284">Your browser</text>
+  <text class="s c" x="654" y="306">the owner, signed in</text>
+  <path class="e acc" d="M196 80 H290"/>
+  <text class="s c" x="243" y="62">client key</text><text class="s m c" x="243" y="76">mr_live_</text>
+  <path class="e dash" d="M564 100 H470"/>
+  <text class="s c" x="517" y="84">daemon</text><text class="s m c" x="517" y="118">mrd_</text>
+  <path class="e" d="M196 300 H290"/>
+  <text class="s c" x="243" y="282">admin token</text><text class="s m c" x="243" y="296">mra_</text>
+  <path class="e" d="M564 300 H470"/>
+  <text class="s c" x="517" y="282">cookie</text><text class="s m c" x="517" y="296">mr_session</text>
+  <path class="e ok" d="M470 140 H564"/>
+  <text class="s c" x="517" y="156">job</text>
+</svg>
+<figcaption>The dashed line is the laptop dialling out. The solid green line is the answer on that same connection: the Hub sends a job back down it. Nothing ever connects in to the laptop.</figcaption>
+</figure>
+
+<h2>The four secrets</h2>
+<table>
+<thead><tr><th>Secret</th><th>Held by, and what it can do</th><th>Stored how</th><th>It cannot</th><th>Revoke</th></tr></thead>
+<tbody>
+<tr><td><strong>Client key</strong><br><code>mr_live_...</code></td><td>One app. Sends parcels and reads the status of its own parcels, only inside its contract.</td><td>SHA-256 hash, plus the first 12 characters to show in lists. Shown once.</td><td>Read another key's parcels, use the owner routes, use <code>/mcp</code>, or connect as a laptop.</td><td>Keys page, Revoke. Its queued, waiting and running parcels are cancelled at once (a running one is also stopped on the laptop).</td></tr>
+<tr><td><strong>Daemon credential</strong><br><code>mrd_...</code></td><td>Your laptop. Opens the one connection to the Hub, receives jobs, returns results.</td><td>Hash in the Hub. On the laptop it sits in a private file in <code>~/.mailroom</code> (owner-only permissions). Shown once.</td><td>Send parcels, use the owner routes or <code>/mcp</code>.</td><td>Laptop page, rotate. The old one dies at once and the live connection is closed.</td></tr>
+<tr><td><strong>Owner session</strong><br>cookie <code>mr_session</code></td><td>Your browser after you sign in. Does everything the web app does, including making keys and tokens.</td><td>Not stored in the Hub. It is a signed value (HMAC-SHA256) that carries its own expiry, 7 days.</td><td>Act as a client key, a daemon or an admin token.</td><td>Sign out clears it in that browser. To end every session at once, change the <code>SESSION_SECRET</code> secret.</td></tr>
+<tr><td><strong>Admin token</strong><br><code>mra_...</code></td><td>Claude or another MCP app. Only what its scopes allow (<a href="/docs/mcp">read, write, approve</a>).</td><td>SHA-256 hash, plus the first 12 characters. Shown once.</td><td>Create or revoke tokens, rotate the laptop credential, sign in as the owner, or send parcels.</td><td>Access, Tokens, Revoke. Effective on its next request.</td></tr>
+</tbody>
+</table>
+<p>The secrets are long random strings (32 characters after the prefix). That is why a plain SHA-256 hash is enough to store them. The Hub never keeps the original, so it cannot show one again.</p>
+
+<h2>Two checks, not one</h2>
+<p>A <strong>contract</strong> says what one key may do: which folders, which tasks, how many parcels a day, when it expires, and which tasks wait for you. The rule that applies it lives in one shared file. Both sides run it.</p>
+<ol class="steps">
+<li><p><strong>The Hub checks first.</strong> A parcel that breaks the contract is refused, recorded, and never sent to the laptop. The Hub checks again just before it hands a queued parcel over.</p></li>
+<li><p><strong>The laptop checks again</strong> before it does anything. The Hub sends the contract inside every job, and the laptop checks that contract again. This catches real-path tricks only the laptop can see, and Hub bugs or stale state. It does not protect against a compromised Hub, which could simply send a wider contract.</p></li>
+</ol>
+<p>The second check also catches tricks that text alone hides. The laptop expands <code>~</code> with its own home folder and checks expiry and the task list with its own clock. Say a contract allows <code>~/projects</code>.</p>
+<ul>
+<li><strong>Dot-dot:</strong> <code>~/projects/../.ssh/key</code> is tidied to <code>~/.ssh/key</code>, which is outside the folder, so it is refused. Both the Hub and the laptop catch this one.</li>
+<li><strong>Symlink:</strong> a <strong>symlink</strong> is a file that points somewhere else. <code>~/projects/shortcut</code> may look inside the folder but point at <code>/etc</code>. The Hub only sees the text. The laptop resolves the real path first, sees <code>/etc</code>, and refuses. Only the laptop can catch this one.</li>
+</ul>
+<div class="tip"><p>make a contract for one folder, then send a <code>read_file</code> parcel with a path like <code>~/that-folder/../other</code>. The parcel is refused and the Events page shows why.</p></div>
+
+<h2>What protects what</h2>
+<table>
+<thead><tr><th>Protection</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td>Constant-time comparison</td><td>Keys, credentials and the password are compared in a way that takes the same time whether they are close or not. A wrong or wrong-kind token costs the same as a wrong one.</td></tr>
+<tr><td>Origin check on writes</td><td>A POST, PUT or DELETE to an owner route is refused (403 <code>bad_origin</code>) if its <code>Origin</code> header names another site. This stops another web page from using your signed-in browser. Reads are not checked, so the browser extension can read.</td></tr>
+<tr><td>Session cookie flags</td><td>HttpOnly (scripts cannot read it), SameSite=Strict (not sent from other sites) and Secure (HTTPS only; the one exception is localhost for development).</td></tr>
+<tr><td>Login limiter</td><td>5 wrong passwords per 15 minutes per IP address. After that, sign-in answers 429 with the seconds to wait.</td></tr>
+<tr><td>Sign-in gate</td><td>The Worker answers every request before any file is served (<code>run_worker_first</code>). Without a session you get only the sign-in page and its own files. This includes these docs.</td></tr>
+<tr><td>Size and rate limits</td><td>Client API: body up to 256 KB, 60 requests a minute per key. MCP: body up to 64 KB, 120 requests a minute per token. Files the laptop reads or writes: up to 200 KB. A <code>claude</code> task has a 5 minute timeout and its output is cut at 200 KB.</td></tr>
+<tr><td>Daily limit</td><td>Each contract caps parcels per key per UTC day: two keys on one contract each get the full limit. Cancelled parcels count; refused ones do not. The Hub counts them, not the client.</td></tr>
+<tr><td>No inbound connection</td><td>The daemon only dials out. It runs no server, so there is nothing to attack from the internet.</td></tr>
+</tbody>
+</table>
+
+<h2>What is logged, and what is not</h2>
+<p><strong>Logged:</strong> every state change, as an <a href="/docs/events">event</a>: who (job events carry the key id; only key, token and MCP-call events carry a label), what task, the parcel id, and the refusal reason when there is one. The log only grows and cannot be edited.</p>
+<p><strong>Never logged:</strong> keys, tokens, daemon credentials, the owner password, session values, or file contents.</p>
+<div class="warn"><p>One thing is stored but not logged. A parcel's arguments and result (for example the text of a file a client asked to read) are kept with the parcel in the Hub database, so you can see what happened. Treat the Hub as holding that content. A refusal reason can also quote a path.</p></div>
+
+<h2>Limits and risks</h2>
+<p>This is the honest part. None of it is alarming, but you should know it.</p>
+<ul>
+<li><strong>A contract limits where and which task. It does not limit what <code>claude</code> does inside the folder.</strong> The <code>claude</code> task runs Claude Code on your laptop in the folder you allowed, with a prompt the sender wrote. Allow it only to keys you trust, keep the folder narrow, and put <code>claude</code> in the approval list so you read the prompt first.</li>
+<li><strong>An approve token is power.</strong> Whoever holds one can release any risky step. See <a href="/docs/mcp">Claude and other apps</a>.</li>
+<li><strong>The owner password is the root of trust.</strong> Anyone who has it can do everything: make keys, tokens and contracts. Make it long and unique. A stolen session cookie works until it expires (7 days) or you change <code>SESSION_SECRET</code>.</li>
+<li><strong>The sign-in page is public.</strong> Anyone on the internet can reach it. The limiter slows guessing per IP address, not across many addresses, so password strength matters.</li>
+<li><strong>One owner only.</strong> There are no users, roles or separate logins.</li>
+<li><strong>No third-party audit.</strong> The code has its own tests, but nobody outside has reviewed it.</li>
+<li><strong>The interface was tested with simulated users only.</strong> They were small Claude models, two runs per task. Treat that as a signal, not proof.</li>
+<li><strong>The laptop trusts the Hub for what a contract says.</strong> The laptop's check cannot stop a compromised Hub, because the Hub sends the contract. A laptop-side ceiling (folders and tasks set on the laptop that the daemon will never go beyond) is the planned next hardening step. It is not built yet.</li>
+<li><strong>Your laptop is in the loop.</strong> The second check does not protect you from someone who already controls the laptop itself.</li>
+</ul>
+<p>To report or fix a problem, start with <a href="/docs/troubleshooting">Troubleshooting</a>. For the exact routes and error codes, see the <a href="/docs/api">HTTP API</a>.</p>
+</main>
+<script type="module" src="/docs/docs.js"></script>
+</body>
+</html>

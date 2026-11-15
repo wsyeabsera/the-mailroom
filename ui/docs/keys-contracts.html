@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keys and contracts · The Mailroom</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/docs/docs.css">
+<script src="/js/theme-init.js"></script>
+</head>
+<body data-slug="keys-contracts">
+<main id="doc">
+<h1>Keys and contracts</h1>
+<p class="lede">A key says who is sending. A contract says what that sender may do. Every parcel is measured against the contract before anything runs.</p>
+
+<div class="note"><p>You make a contract first (folders, tasks, a daily limit, an expiry, and which tasks need your yes). Then you make a key and tie it to that contract. The app sends the key with every parcel. The Hub looks up the contract and decides: allow, wait for you, or refuse with a reason. The Hub sends the contract along with every job, and your laptop checks that contract again before it does the work.</p></div>
+
+<h2>Keys</h2>
+<p>A key is a long secret string that an app sends with each parcel. It looks like this:</p>
+<pre><code>mr_live_...</code></pre>
+<p>After <code>mr_live_</code> come 32 random letters and digits. The examples in these docs are never real.</p>
+<ul>
+<li><strong>Shown once.</strong> When you make a key, you see the whole thing one time. Copy it then.</li>
+<li><strong>Only a hash is stored.</strong> The Hub keeps a one-way fingerprint (a SHA-256 hash), not the key. Nobody, including you, can read it back. The admin app lists only the first 12 characters, so you can tell keys apart.</li>
+<li><strong>One key, one contract.</strong> A key is tied to a single contract. To change what an app may do, change the contract (see below) or make a new key.</li>
+<li><strong>Revoke applies at once.</strong> On the key's page, press <strong>Revoke key</strong>. Its next request gets a 401, and its queued, waiting and running parcels become <code>cancelled</code>.</li>
+</ul>
+<div class="warn"><p>If you lose a key, you cannot recover it. Revoke it and make a new one. Give each app its own key, so you can revoke one without stopping the others.</p></div>
+<p>A key is not the same as the laptop's credential (<code>mrd_...</code>) or an MCP token (<code>mra_...</code>). Each kind works only for its own job.</p>
+
+<h2>Contracts</h2>
+<p>A contract has these parts:</p>
+<table>
+<thead><tr><th>Part</th><th>What it means</th></tr></thead>
+<tbody>
+<tr><td>Name</td><td>A short label, up to 60 characters. Letters, digits, spaces and <code>_ . ( ) -</code> only.</td></tr>
+<tr><td>Folders</td><td>Where file work may happen. Each must start with <code>~/</code> (your home folder) or <code>/</code>. You must list at least one. <code>~</code> or <code>/</code> alone is not accepted, because it would mean anywhere.</td></tr>
+<tr><td>Tasks</td><td>What the key may ask for. At least one of the four below.</td></tr>
+<tr><td>Daily limit</td><td>A whole number from 1 to 100000: how many parcels per day (UTC) this key may send.</td></tr>
+<tr><td>Expires</td><td>A date such as <code>2026-12-31</code>, or empty for never. A date means the <em>start</em> of that day in UTC: with <code>2026-12-31</code> the contract stops working at 00:00 UTC on the 31st, not at the end of it.</td></tr>
+<tr><td>Needs approval</td><td>Tasks that wait for you before they run. Only tasks the contract allows can be listed.</td></tr>
+</tbody>
+</table>
+
+<h3>The four tasks</h3>
+<table>
+<thead><tr><th>Task</th><th>What it does</th><th>Path it needs</th></tr></thead>
+<tbody>
+<tr><td><code>echo</code></td><td>Sends your text straight back. A safe test.</td><td>none</td></tr>
+<tr><td><code>read_file</code></td><td>Reads one file (up to 200 KB).</td><td><code>path</code></td></tr>
+<tr><td><code>write_file</code></td><td>Writes one file (up to 200 KB). Creates folders inside the allowed folder if needed.</td><td><code>path</code></td></tr>
+<tr><td><code>claude</code></td><td>Runs <code>claude -p</code> with your prompt in a folder. Times out after 5 minutes.</td><td><code>cwd</code> (the folder to work in)</td></tr>
+</tbody>
+</table>
+<div class="warn"><p>The "daily limit" counts every parcel the key sent since 00:00 UTC except refused ones. Cancelled parcels still count. The laptop does not count it again, so the limit is enforced only by the Hub.</p></div>
+
+<h2>How a parcel is checked</h2>
+<p>The checks run in this order. The first one that fails ends it.</p>
+<figure class="dg">
+<svg viewBox="0 0 760 430" role="img" aria-labelledby="kc-t kc-d">
+  <title id="kc-t">The contract check</title>
+  <desc id="kc-d">Five questions in order. Has the contract expired? Is the task in the contract? Is today's count under the daily limit? Is every path inside an allowed folder? Is the task marked needs approval? Failing any of the first four refuses the parcel with a reason. Passing all of them allows it, or makes it wait for approval if the task is marked.</desc>
+  <rect class="n" x="16" y="12" width="330" height="48" rx="10"/><text class="t c" x="181" y="41">1 Has the contract expired?</text>
+  <rect class="n" x="16" y="84" width="330" height="48" rx="10"/><text class="t c" x="181" y="113">2 Is the task in the contract?</text>
+  <rect class="n" x="16" y="156" width="330" height="48" rx="10"/><text class="t c" x="181" y="185">3 Is today's count under the daily limit?</text>
+  <rect class="n" x="16" y="228" width="330" height="48" rx="10"/><text class="t c" x="181" y="257">4 Is every path inside an allowed folder?</text>
+  <rect class="n" x="16" y="300" width="330" height="48" rx="10"/><text class="t c" x="181" y="329">5 Is the task marked "needs approval"?</text>
+  <rect class="n ok" x="16" y="372" width="330" height="48" rx="10"/><text class="t c" x="181" y="393">Allow</text><text class="s c" x="181" y="411">state queued, goes to the laptop</text>
+  <rect class="n warn" x="420" y="300" width="320" height="48" rx="10"/><text class="t c" x="580" y="329">Wait for you (waiting_approval)</text>
+
+  <rect class="n err" x="420" y="12" width="320" height="48" rx="10"/><text class="t c" x="580" y="33">Refuse</text><text class="s m c" x="580" y="51">contract expired</text>
+  <rect class="n err" x="420" y="84" width="320" height="48" rx="10"/><text class="t c" x="580" y="105">Refuse</text><text class="s m c" x="580" y="123">task "x" is not in the contract</text>
+  <rect class="n err" x="420" y="156" width="320" height="48" rx="10"/><text class="t c" x="580" y="177">Refuse</text><text class="s m c" x="580" y="195">daily limit of 50 reached</text>
+  <rect class="n err" x="420" y="228" width="320" height="48" rx="10"/><text class="t c" x="580" y="249">Refuse</text><text class="s m c" x="580" y="267">~/x is outside the contract</text>
+
+  <path class="e" d="M181 60 V84"/><text class="s" x="190" y="76">no</text>
+  <path class="e" d="M181 132 V156"/><text class="s" x="190" y="148">yes</text>
+  <path class="e" d="M181 204 V228"/><text class="s" x="190" y="220">yes</text>
+  <path class="e" d="M181 276 V300"/><text class="s" x="190" y="292">yes</text>
+  <path class="e ok" d="M181 348 V372"/><text class="s" x="190" y="364">no</text>
+
+  <path class="e err" d="M346 36 H420"/><text class="s c" x="383" y="28">yes</text>
+  <path class="e err" d="M346 108 H420"/><text class="s c" x="383" y="100">no</text>
+  <path class="e err" d="M346 180 H420"/><text class="s c" x="383" y="172">no</text>
+  <path class="e err" d="M346 252 H420"/><text class="s c" x="383" y="244">no</text>
+  <path class="e" d="M346 324 H420"/><text class="s c" x="383" y="316">yes</text>
+</svg>
+<figcaption>The decision, top to bottom. The Hub runs it when the parcel arrives. The laptop runs it again before doing the work, with real file paths.</figcaption>
+</figure>
+
+<h3>How paths are judged</h3>
+<ul>
+<li>A path must start with <code>~/</code> or <code>/</code>. A relative path such as <code>notes/a.txt</code> is refused.</li>
+<li><code>..</code> is worked out first. <code>~/notes/../secrets/a.txt</code> becomes <code>~/secrets/a.txt</code>, which is outside <code>~/notes</code>, so it is refused. A path that climbs above its root is refused outright.</li>
+<li>A folder only matches whole names. With the folder <code>~/notes</code>, the path <code>~/notes-old/a.txt</code> is <strong>outside</strong>, because it is a sibling that merely starts with the same letters. <code>~/notes/a.txt</code> is inside.</li>
+<li><strong>The laptop looks at real paths.</strong> It follows shortcuts (symlinks) to where a file really lives. A symlink inside an allowed folder that points outside it is refused with "resolves outside the contract folders".</li>
+</ul>
+
+<h2>Worked examples</h2>
+<p>Take a contract with folder <code>~/notes</code>, tasks <code>read_file</code> and <code>write_file</code>, and <code>write_file</code> marked "needs approval".</p>
+<table>
+<thead><tr><th>Parcel</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td><code>read_file</code> <code>~/notes/todo.txt</code></td><td><span class="pill">queued</span> Allowed. It goes to the laptop.</td></tr>
+<tr><td><code>write_file</code> <code>~/notes/new.txt</code></td><td><span class="pill warn">waiting_approval</span> Allowed, but it waits for you.</td></tr>
+<tr><td><code>read_file</code> <code>~/notes/../.ssh/id_rsa</code></td><td><span class="pill err">refused</span> <code>~/notes/../.ssh/id_rsa is outside the contract</code></td></tr>
+<tr><td><code>read_file</code> <code>~/notes-old/a.txt</code></td><td><span class="pill err">refused</span> <code>~/notes-old/a.txt is outside the contract</code></td></tr>
+<tr><td><code>claude</code> in <code>~/notes</code></td><td><span class="pill err">refused</span> <code>task “claude” is not in the contract</code></td></tr>
+</tbody>
+</table>
+
+<h2>Editing a contract</h2>
+<ol class="steps">
+<li>Open <strong>Contracts</strong> and pick the contract. The page says how many keys use it.</li>
+<li>Change what you need. The "In plain words" box on the right reads the contract back, so you can check it says what you mean.</li>
+<li>Press <strong>Save contract</strong>. Mistakes show next to the field and nothing is saved.</li>
+</ol>
+<p>The change applies to the next parcel. Parcels already in the system are checked again at these moments:</p>
+<ul>
+<li><strong>Queued parcels</strong> are checked again just before the Hub sends them to the laptop. If the new contract no longer allows one, it becomes <span class="pill err">refused</span> with the reason.</li>
+<li><strong>Waiting parcels</strong> are checked again when you approve. If they now break the contract, the approval turns into a refusal.</li>
+<li><strong>Running parcels</strong> are not stopped.</li>
+</ul>
+<div class="warn"><p>Editing a contract never rescues a parcel that was already refused. Send it again after you widen the contract.</p></div>
+<div class="tip"><p>Make a contract with folder <code>~/mailroom-play</code> and the task <code>echo</code> only. Send a <code>read_file</code> parcel and read the refusal reason. Then add <code>read_file</code> to the contract, save, and send it again.</p></div>
+
+<details>
+<summary>Under the hood: what the Hub records</summary>
+<ul>
+<li>Saving a contract adds a <code>contract.saved</code> event and raises its version number. Each parcel remembers the version it was last checked against.</li>
+<li>The gateway turns away a key whose contract has expired with a 401 before the check, so the "contract expired" reason appears only for parcels already in the system when the expiry passes.</li>
+<li>The daemon calls the same <code>check()</code> function on the contract the Hub sent with the job, using its own clock, then resolves real paths. Its home folder replaces <code>~</code>, which the Hub never expands. This is a second look at the same contract, so it does not protect you against a compromised Hub. A ceiling kept on the laptop itself is planned, not built.</li>
+</ul>
+</details>
+<p>Next: <a href="/docs/parcels">Parcels and approvals</a>. For the full threat story see <a href="/docs/security">Security model</a>.</p>
+</main>
+<script type="module" src="/docs/docs.js"></script>
+</body>
+</html>

@@ -23,7 +23,7 @@ Screens, in rail order: Sign in (wrong password, locked out), Overview (empty, l
 Each is recorded in ws-command as a lasting decision (d25 to d30). All can be reversed.
 
 1. **Approvals live in the web UI** (d25), with a preview of what each step changes. A terminal prompt can be added later.
-2. **A contract is what a key may do** (d26): allowed folders, allowed tasks, daily limit, expiry, which steps need approval. The daemon re-checks its own copy.
+2. **A contract is what a key may do** (d26): allowed folders, allowed tasks, daily limit, expiry, which steps need approval. The daemon re-checks the contract the Hub sends with each job (it holds no copy of its own).
 3. **The daemon and CLI are called `mailroom`** (d27): `mailroom login`, `mailroom run`.
 4. **Slice 1 deploys to a personal Cloudflare account on a workers.dev subdomain** (d28). A custom domain comes before any client other than Dunder Miffbot.
 5. **Build from v2** (d29): dark primary with a light twin, including the "Needs you" block on the overview. The row-actions variant is dropped.

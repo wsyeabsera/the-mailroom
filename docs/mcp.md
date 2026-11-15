@@ -40,7 +40,7 @@ All names start with `mailroom_`. `id`s are the Hub's ids (`k_1000`, `c_1000`, `
 | `mailroom_events` | read | `after?` (seq), `limit?` (1-500) | `{events, last_seq}` |
 | `mailroom_laptop` | read | none | `GET /admin/laptop` object (connected, last_seen, queue) |
 | `mailroom_create_contract` | write | `name, folders[], tasks[], dailyLimit, expires?, approval[]` | the saved contract, or the validation errors |
-| `mailroom_update_contract` | write | `id` + the same fields | the saved contract (version bumped; queued parcels are re-checked) |
+| `mailroom_update_contract` | write | `id` + the same fields | the saved contract (version bumped; queued parcels are checked again just before they are sent) |
 | `mailroom_create_key` | write | `label, contract_id` | `{id, label, key:"mr_live_..."}`: **the only time the key exists in clear**; the tool description tells the model to hand it to the owner, not to paste it elsewhere |
 | `mailroom_revoke_key` | write | `id` | `{id, revoked_at, cancelled}` |
 | `mailroom_approve_parcel` | approve | `id` | `{id, state}` (must be `waiting_approval`) |
@@ -61,7 +61,7 @@ Not exposed on purpose: rotate the daemon credential, anything about admin token
 Bundles the connection and the rules for using it:
 - `.mcp.json`: an HTTP server `mailroom` at `${MAILROOM_URL}/mcp` with header `Authorization: Bearer ${MAILROOM_TOKEN}` (environment variables, so no secret is stored in the plugin).
 - `skills/mailroom-admin/SKILL.md`: when and how to use the tools, and the safety rules (read first; never approve a parcel without showing the owner what it will do; never print or store a key from `create_key` anywhere but the reply to the owner; widen a contract only with the owner's say-so).
-- `commands/`: `/mailroom:status`, `/mailroom:approvals` (list what waits, with what each will do).
+- `commands/`: `/the-mailroom:status`, `/the-mailroom:approvals` (list what waits, with what each will do). Claude Code prefixes a plugin's commands with the plugin name.
 - `README.md`: how to create a token in the UI, set the two environment variables, and install (`claude --plugin-dir ./plugin` to try it; add as a marketplace entry to share).
 
 ## Where the code lives

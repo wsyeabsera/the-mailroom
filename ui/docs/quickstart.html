@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Set it up in 10 minutes · The Mailroom</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/docs/docs.css">
+<script src="/js/theme-init.js"></script>
+</head>
+<body data-slug="quickstart">
+<main id="doc">
+<h1>Set it up in 10 minutes</h1>
+<p class="lede">Run the Mailroom on your machine, connect your laptop, and watch a first parcel arrive; then, if you want, put the Hub in the cloud.</p>
+
+<div class="note"><p>Path A runs everything on your own computer, so you can try it with nothing to pay for. Path B puts the Hub on Cloudflare, so apps in the cloud can reach it. The order is always the same: start the Hub, sign in, make a contract, make a key, connect the laptop, send a parcel.</p></div>
+
+<figure class="dg">
+<svg viewBox="0 0 760 150" role="img" aria-labelledby="qs-t qs-d">
+  <title id="qs-t">The setup order</title>
+  <desc id="qs-d">Six steps in order: start the Hub, sign in, make a contract, make a key, connect the laptop, send a parcel.</desc>
+  <rect class="n acc" x="8" y="40" width="108" height="64" rx="10"/>
+  <text class="t c" x="62" y="68">Start the</text><text class="t c" x="62" y="86">Hub</text>
+  <rect class="n" x="136" y="40" width="108" height="64" rx="10"/>
+  <text class="t c" x="190" y="77">Sign in</text>
+  <rect class="n" x="264" y="40" width="108" height="64" rx="10"/>
+  <text class="t c" x="318" y="68">Make a</text><text class="t c" x="318" y="86">contract</text>
+  <rect class="n" x="392" y="40" width="108" height="64" rx="10"/>
+  <text class="t c" x="446" y="68">Make a</text><text class="t c" x="446" y="86">key</text>
+  <rect class="n ok" x="520" y="40" width="108" height="64" rx="10"/>
+  <text class="t c" x="574" y="68">Connect the</text><text class="t c" x="574" y="86">laptop</text>
+  <rect class="n" x="648" y="40" width="104" height="64" rx="10"/>
+  <text class="t c" x="700" y="68">Send a</text><text class="t c" x="700" y="86">parcel</text>
+  <path class="e" d="M116 72 H136"/><path class="e" d="M244 72 H264"/><path class="e" d="M372 72 H392"/><path class="e" d="M500 72 H520"/><path class="e" d="M628 72 H648"/>
+  <g class="badge"><circle cx="62" cy="26" r="10"/><text x="62" y="26">1</text></g>
+  <g class="badge"><circle cx="190" cy="26" r="10"/><text x="190" y="26">2</text></g>
+  <g class="badge"><circle cx="318" cy="26" r="10"/><text x="318" y="26">3</text></g>
+  <g class="badge"><circle cx="446" cy="26" r="10"/><text x="446" y="26">4</text></g>
+  <g class="badge"><circle cx="574" cy="26" r="10"/><text x="574" y="26">5</text></g>
+  <g class="badge"><circle cx="700" cy="26" r="10"/><text x="700" y="26">6</text></g>
+  <text class="s c" x="380" y="134">The Hub must exist before you can sign in, and the laptop needs a credential from the Hub.</text>
+</svg>
+<figcaption>The setup order. Path A and Path B differ only in step 1, where the Hub runs, and in the Hub address the laptop uses.</figcaption>
+</figure>
+
+<h2>Before you start</h2>
+<ul>
+<li>A Mac, and Node.js. The Mailroom was built and tested on Node 24. The daemon runs TypeScript files directly, so your Node must be able to run <code>.ts</code> files without a build step.</li>
+<li>The project folder, <code>the-mailroom</code>, open in a terminal.</li>
+<li>For the laptop to run <code>claude</code> tasks, Claude Code installed. You do not need it for the echo test below.</li>
+<li>For path B only: a Cloudflare account.</li>
+</ul>
+
+<h2 id="path-a">Path A: try it on your machine</h2>
+<ol class="steps">
+<li><strong>Install.</strong> <pre><code>npm install</code></pre> You should see the packages install with no errors.</li>
+<li><strong>Make your settings file.</strong> <pre><code>cp .dev.vars.example .dev.vars</code></pre> Open <code>.dev.vars</code> and set <code>OWNER_PASSWORD</code> (what you type to sign in) and <code>SESSION_SECRET</code> (a long random string). Both are placeholders until you change them.</li>
+<li><strong>Start the Hub.</strong> <pre><code>npm run dev</code></pre> You should see Wrangler say it is ready on <code>http://localhost:8787</code>. Leave this terminal open.</li>
+<li><strong>Sign in.</strong> Open <code>http://localhost:8787</code> and type your <code>OWNER_PASSWORD</code>. You should land on the Overview page. It says the laptop is "out to lunch". That is right: no laptop is connected yet.</li>
+<li><strong>Make a contract.</strong> Go to <strong>Contracts</strong> and press <strong>New contract</strong>. Give it a name, one folder (for example <code>~/mailroom-play</code>), keep <code>echo</code> ticked, and save. The box on the right, "In plain words", reads the contract back to you.</li>
+<li><strong>Make a key.</strong> Go to <strong>Keys</strong> and make a new key. Pick the contract. You should see the key once, starting with <code>mr_live_</code>. Copy it now and keep it for step 9. It is never shown again.</li>
+<li><strong>Get the laptop credential.</strong> Go to <strong>Laptop</strong> and press <strong>Rotate credential</strong>. Confirm. You should see a credential starting with <code>mrd_</code>, once. Copy it.</li>
+<li><strong>Connect the laptop.</strong> In a second terminal, in the project folder:
+<pre><code>node daemon/cli.ts login --url http://localhost:8787 --credential mrd_...
+node daemon/cli.ts run</code></pre>
+You should see "Saved to ..." and then <code>mailroom daemon -&gt; http://localhost:8787</code>. On the Laptop page the status turns to <strong>connected</strong>. (Once you have a <code>mailroom</code> command, you can type <code>mailroom login</code> and <code>mailroom run</code> instead. There is no ready-made file: run <code>npm link</code> in the project folder, or put a one-line script on your PATH. <a href="/docs/cli">The mailroom command</a> shows how.)</li>
+<li><strong>Send an echo parcel.</strong> In a third terminal, with your key:
+<pre><code>curl -X POST localhost:8787/api/jobs \
+  -H "Authorization: Bearer mr_live_..." \
+  -H 'content-type: application/json' \
+  -d '{"task":"echo","args":{"text":"hello"}}'</code></pre>
+You should get back something like <code>{"id":"p_...","state":"queued"}</code>.</li>
+<li><strong>Watch it arrive.</strong> Open <strong>Parcels</strong>. Your parcel is there and, a moment later, it says <span class="pill ok">done</span>. Open it to see the tracking steps and the result, <code>{"echo":"hello"}</code>.</li>
+</ol>
+<div class="tip"><p>Stop the daemon with <kbd>Ctrl</kbd>+<kbd>C</kbd> and send another parcel. It sits as <code>queued</code> and the Laptop page shows it in "In the queue". Start the daemon again and it runs by itself.</p></div>
+<div class="tip"><p><strong>Try a refusal.</strong> Send <code>{"task":"read_file","args":{"path":"~/mailroom-play/a.txt"}}</code>. The contract did not allow <code>read_file</code>, so you get a 403 and a reason, and the parcel shows as <span class="pill err">refused</span>.</p></div>
+
+<h3>Keep the laptop connected</h3>
+<p><code>run</code> stops when you close the terminal. To keep the laptop connected after a reboot, install the background service (macOS only). These lines assume you have the <code>mailroom</code> command (see <a href="/docs/cli">The mailroom command</a>); otherwise use <code>node daemon/cli.ts</code> in its place:</p>
+<pre><code>mailroom login                 # asks for the Hub URL and the credential (hidden)
+mailroom service install       # starts at login, restarts if it stops
+mailroom service status        # installed? running? does the Hub accept the credential?</code></pre>
+<p>You should see "Running (pid ...)". The log is <code>~/Library/Logs/mailroom-daemon.log</code>.</p>
+<div class="warn"><p>Run only one daemon: the service or a manual <code>run</code>, not both. They would take over from each other.</p></div>
+<div class="warn"><p>If you rotate the credential, the running daemon exits and the service retries every 30 seconds until it has the new one. Run <code>mailroom login</code> with the new credential, then <code>mailroom service install</code> again.</p></div>
+
+<h2 id="path-b">Path B: put the Hub on Cloudflare</h2>
+<p>Do steps 5 to 10 of path A again afterwards, with your own Hub address instead of <code>localhost:8787</code>.</p>
+<ol class="steps">
+<li><strong>Log in to Cloudflare.</strong> <pre><code>npx wrangler login</code></pre> A browser window opens. Approve it.</li>
+<li><strong>Deploy first.</strong> <pre><code>npm run deploy</code></pre> The Worker has to exist before it can hold secrets. You should see the address of your Worker, on <code>workers.dev</code>. Until the secrets are set, sign-in fails closed with an error. That is safe, not a bug.</li>
+<li><strong>Set the two secrets.</strong> <pre><code>npx wrangler secret put OWNER_PASSWORD
+npx wrangler secret put SESSION_SECRET</code></pre> Wrangler asks you to type each value. Use a strong password and a long random string.</li>
+<li><strong>Sign in.</strong> Open <code>https://&lt;your-hub&gt;</code> and type the password. You should see the Overview page. Make a contract, a key and a laptop credential exactly as in path A, steps 5 to 7.</li>
+<li><strong>Point the laptop at the Hub.</strong> <pre><code>mailroom login --url https://&lt;your-hub&gt; --credential mrd_...
+mailroom run</code></pre> The Laptop page shows <strong>connected</strong>.</li>
+<li><strong>Point the extension at the Hub.</strong> If you use the browser extension, put the same address in its options page. See <a href="/docs/extension">The browser extension</a>.</li>
+<li><strong>Send a parcel</strong> with the same <code>curl</code> command, using <code>https://&lt;your-hub&gt;/api/jobs</code>.</li>
+</ol>
+<div class="warn"><p>Only your sign-in page is reachable without signing in. Everything else, including these docs, is behind the owner sign-in. Pick a password you do not use elsewhere.</p></div>
+
+<details>
+<summary>Under the hood: what each step changed</summary>
+<ul>
+<li><code>.dev.vars</code> is read only by <code>npm run dev</code>. In the cloud the same two values are Worker secrets.</li>
+<li>Making a key stores only a hash of it. Making a laptop credential does the same. That is why each is shown once.</li>
+<li><code>mailroom login</code> writes the Hub URL and the credential to a private file in <code>~/.mailroom</code> (readable only by you).</li>
+<li>The first time you rotate, the Laptop page shows "none yet" before and a hint of the new credential after.</li>
+</ul>
+</details>
+
+<h2>If something looks wrong</h2>
+<table>
+<thead><tr><th>You see</th><th>Likely cause</th></tr></thead>
+<tbody>
+<tr><td><code>401 bad_key</code> from curl</td><td>The key is mistyped, revoked, or its contract has expired.</td></tr>
+<tr><td>Parcel stays <code>queued</code></td><td>The laptop is not connected. Check the Laptop page.</td></tr>
+<tr><td>Daemon exits at once</td><td>The credential was rotated or is wrong. Run <code>mailroom login</code> again.</td></tr>
+</tbody>
+</table>
+<p>More in <a href="/docs/troubleshooting">Troubleshooting</a>. Next: <a href="/docs/how-it-works">How a parcel travels</a>.</p>
+</main>
+<script type="module" src="/docs/docs.js"></script>
+</body>
+</html>

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Events · The Mailroom</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/docs/docs.css">
+<script src="/js/theme-init.js"></script>
+</head>
+<body data-slug="events">
+<main id="doc">
+<h1>Events</h1>
+<p class="lede">The Mailroom's logbook: one line for everything that happens, in order, never changed afterwards.</p>
+
+<div class="note"><p>Each time something changes (a parcel arrives, a key is made, the laptop connects) the Hub adds one <strong>event</strong> to the log. Each event has a number, <code>seq</code>, that only goes up. You can read the log, replay what you missed with <code>?after=&lt;seq&gt;</code>, or watch it live. There are 18 kinds of event. None of them holds a secret.</p></div>
+
+<h2>What the log is</h2>
+<p>Think of the mailroom logbook on the desk. Staff write a line for each thing that happens and never rub one out. The event log works the same way. It is <strong>append-only</strong>: new events go on the end, and old ones are never edited or removed.</p>
+<p>That is useful. When something looks wrong, the log tells you what happened and in what order, and nobody can quietly tidy it up afterwards.</p>
+<figure class="dg">
+<svg viewBox="0 0 760 250" role="img" aria-labelledby="ev-t ev-d">
+  <title id="ev-t">The event log and who reads it</title>
+  <desc id="ev-d">The event log is a numbered row of events. Each new event is added at the end, shown by a dashed box for the next number. Three readers use it: the Events page in the web app, which replays and then watches live, the browser extension, which shows the latest five, and Claude through the MCP events tool.</desc>
+  <text class="s" x="16" y="22">The event log, oldest on the left</text>
+  <rect class="n" x="16" y="34" width="140" height="56" rx="8"/><text class="s m" x="30" y="58">#38</text><text class="t" x="30" y="78">job.queued</text>
+  <rect class="n" x="172" y="34" width="140" height="56" rx="8"/><text class="s m" x="186" y="58">#39</text><text class="t" x="186" y="78">key.created</text>
+  <rect class="n" x="328" y="34" width="140" height="56" rx="8"/><text class="s m" x="342" y="58">#40</text><text class="t" x="342" y="78">job.running</text>
+  <rect class="n acc" x="484" y="34" width="140" height="56" rx="8"/><text class="s m" x="498" y="58">#41</text><text class="t" x="498" y="78">job.done</text>
+  <rect class="n raised" x="640" y="34" width="104" height="56" rx="8" stroke-dasharray="5 4"/><text class="s m" x="654" y="58">#42</text><text class="s" x="654" y="78">next one</text>
+  <rect class="n raised" x="16" y="160" width="220" height="64" rx="12"/><text class="t c" x="126" y="188">Events page</text><text class="s c" x="126" y="208">replays, then goes live</text>
+  <rect class="n raised" x="270" y="160" width="220" height="64" rx="12"/><text class="t c" x="380" y="188">Browser extension</text><text class="s c" x="380" y="208">shows the latest 5</text>
+  <rect class="n raised" x="524" y="160" width="220" height="64" rx="12"/><text class="t c" x="634" y="188">Claude (MCP)</text><text class="s c" x="634" y="208">mailroom_events tool</text>
+  <path class="life" d="M126 160 V126 H634 V160 M380 126 V92"/>
+</svg>
+<figcaption>Readers never change the log. The Hub is the only writer.</figcaption>
+</figure>
+
+<h2>The shape of an event</h2>
+<pre><code>{
+  "seq": 41,
+  "ts": 1767225600000,
+  "kind": "job.done",
+  "payload": {"job_id":"p_1000","key_id":"k_1000","task":"echo"}
+}</code></pre>
+<p><code>seq</code> is the number. <code>ts</code> is the time, in milliseconds since 1970. <code>kind</code> says what happened. <code>payload</code> holds the details.</p>
+
+<h2>Every kind of event</h2>
+<h3>Parcels</h3>
+<p>All parcel events carry <code>job_id</code>, <code>key_id</code> and <code>task</code>. Some add <code>reason</code>. They carry the key's id, not its label. Only the key, token and MCP events below carry labels (<code>key.*</code>, <code>token.*</code> and <code>mcp.call</code>).</p>
+<table>
+<thead><tr><th>Kind</th><th>In plain words</th><th>Extra field</th></tr></thead>
+<tbody>
+<tr><td><code>job.queued</code></td><td>A parcel was accepted and is waiting for the laptop. It also appears when a parcel goes back in the queue because the laptop dropped.</td><td><code>reason</code> on a requeue</td></tr>
+<tr><td><code>job.waiting_approval</code></td><td>A parcel is allowed but waits for your yes.</td><td></td></tr>
+<tr><td><code>job.refused</code></td><td>A parcel was turned away by the contract or by the laptop's own check.</td><td><code>reason</code></td></tr>
+<tr><td><code>job.approved</code></td><td>You (or an approve token) said yes. It goes back to the queue.</td><td></td></tr>
+<tr><td><code>job.declined</code></td><td>You (or an approve token) said no.</td><td><code>reason</code></td></tr>
+<tr><td><code>job.running</code></td><td>The Hub sent the parcel to the laptop.</td><td></td></tr>
+<tr><td><code>job.done</code></td><td>The laptop finished it.</td><td></td></tr>
+<tr><td><code>job.failed</code></td><td>The laptop tried and it failed.</td><td><code>reason</code></td></tr>
+<tr><td><code>job.cancelled</code></td><td>The parcel's key was revoked, so it was stopped.</td><td><code>reason</code></td></tr>
+</tbody>
+</table>
+<h3>Keys, contracts, the laptop and tokens</h3>
+<table>
+<thead><tr><th>Kind</th><th>In plain words</th><th>Payload fields</th></tr></thead>
+<tbody>
+<tr><td><code>key.created</code></td><td>A client key was made.</td><td><code>key_id, label</code></td></tr>
+<tr><td><code>key.revoked</code></td><td>A client key was cut off.</td><td><code>key_id, label</code></td></tr>
+<tr><td><code>contract.saved</code></td><td>A contract was made or changed.</td><td><code>contract_id, name, version</code></td></tr>
+<tr><td><code>daemon.connected</code></td><td>The laptop connected.</td><td>none</td></tr>
+<tr><td><code>daemon.disconnected</code></td><td>The laptop went away.</td><td>none</td></tr>
+<tr><td><code>daemon.rotated</code></td><td>You made a new laptop credential. The old one stopped working.</td><td>none</td></tr>
+<tr><td><code>token.created</code></td><td>An admin token was made.</td><td><code>token_id, label, scopes</code></td></tr>
+<tr><td><code>token.revoked</code></td><td>An admin token was revoked.</td><td><code>token_id, label, scopes</code></td></tr>
+<tr><td><code>mcp.call</code></td><td>An MCP app used a write or approve tool, whether it worked or was refused. Reads are not logged.</td><td><code>token_id, label, tool, ok</code>, and <code>target</code> (an id) when there is one</td></tr>
+</tbody>
+</table>
+<p>A normal parcel that needs no approval leaves this trail: <code>job.queued</code>, <code>job.running</code>, <code>job.done</code>. One that needs approval leaves <code>job.waiting_approval</code>, <code>job.approved</code>, <code>job.running</code>, <code>job.done</code>.</p>
+
+<h2>Who reads the log</h2>
+<ul>
+<li><strong>The Events page</strong> in the web app loads the latest 100 events when you open it, newest at the top, then opens the live stream from there. Older events are not on that page. If the stream drops, it tells you ("Lost the line"), counts what you missed, and a Catch up button fetches it.</li>
+<li><strong>The browser extension</strong> shows the latest 5 events from the overview, not the full log.</li>
+<li><strong>Claude</strong> can read it with the <code>mailroom_events</code> tool (see <a href="/docs/mcp">Claude and other apps</a>).</li>
+</ul>
+
+<h2>Replay and live</h2>
+<p>Every reader remembers the last <code>seq</code> it saw. To catch up, it asks for everything after that number. These are owner routes, so they need your session cookie.</p>
+<pre><code>curl "https://&lt;your-hub&gt;/admin/events?after=38&amp;limit=200" \
+  -b "mr_session=..."
+
+{"events":[
+  {"seq":39,"ts":1767225540000,"kind":"key.created","payload":{"key_id":"k_1001","label":"notes-bot"}},
+  {"seq":40,"ts":1767225580000,"kind":"job.running","payload":{"job_id":"p_1000","key_id":"k_1000","task":"echo"}}
+ ],
+ "last_seq":40}</code></pre>
+<p><code>last_seq</code> is the newest number in the whole log, so you can tell if there is more. The default <code>limit</code> is 200 and the most you can ask for is 1000. Without <code>tail</code> you get the first <code>limit</code> events after <code>after</code>, which suits replay and catch-up. Add <code>&amp;tail=1</code> to get the last <code>limit</code> events instead (still oldest first), which suits a first load: the Events page asks for <code>?limit=100&amp;tail=1</code>.</p>
+<p>To watch live, open the stream. It replays everything after <code>after</code> first, then stays open and sends each new event. A <code>: ping</code> line arrives every 20 seconds as a heartbeat.</p>
+<pre><code>curl -N "https://&lt;your-hub&gt;/admin/events/stream?after=40" \
+  -b "mr_session=..."
+
+: open
+
+id: 41
+data: {"seq":41,"ts":1767225600000,"kind":"job.done","payload":{...}}</code></pre>
+<div class="tip"><p>Use <code>-N</code> so curl prints each event as it arrives. Open the Events page next to it, then send an echo parcel and watch both.</p></div>
+
+<h2>What is never in the log</h2>
+<p>Keys, admin tokens, daemon credentials, the owner password and session values are never written to an event. Neither are file contents or a parcel's arguments and result. Events carry ids, labels, task names and short reasons only.</p>
+<div class="warn"><p>A <code>reason</code> can quote text. A refusal such as "~/secret/a.txt is outside the contract" contains the path, and a failure may contain a short error message from the laptop. Do not put secrets in file names.</p></div>
+<p>The parcel itself (its arguments and result) is stored in the Hub database. See <a href="/docs/security">Security model</a>. For the routes in one table, see the <a href="/docs/api">HTTP API</a>.</p>
+</main>
+<script type="module" src="/docs/docs.js"></script>
+</body>
+</html>

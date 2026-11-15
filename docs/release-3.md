@@ -32,3 +32,7 @@ Own credential and scopes (above); `approve` is opt-in and the UI warns that it 
 - Only Claude Code was tried as an MCP client. It asked for protocol `2025-11-25`, which the server does not list, so the server answered `2025-06-18` (the server supports `2025-06-18`, `2025-03-26` and `2024-11-05`) and Claude accepted that; its `server/discover` probe gets a standard "method not found" and Claude carried on. Other clients should work because the server follows the spec, but they are untested.
 - The plugin's commands were not run, only the tool wiring; the marketplace snippet in `plugin/README.md` is unvalidated.
 - A token holder with `write` can create a key on any contract and widen a contract; that is the scope, not a bug. The narrowest useful token is `read`.
+
+## Correction to earlier notes
+
+Earlier notes and docs said the daemon enforces the contract "on its own copy" so that a compromised Hub could not widen what the laptop does. That was wrong: the Hub sends the contract inside every job and the daemon checks that. The second check is still useful (real paths and symlinks, `~` expansion, the laptop's clock, catching Hub bugs) but it does not protect against a compromised Hub. The next hardening step is a laptop-side ceiling: folders and tasks set on the laptop that the daemon refuses to go beyond whatever contract arrives.

@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The browser extension · The Mailroom</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/docs/docs.css">
+<script src="/js/theme-init.js"></script>
+</head>
+<body data-slug="extension">
+<main id="doc">
+<h1>The browser extension</h1>
+<p class="lede">A small Chrome extension puts the number of parcels waiting for your approval on your toolbar, so you do not have to keep the admin app open.</p>
+
+<div class="note"><p>It only <strong>looks</strong>. It shows a badge, a popup and a side panel, and it can send a notification when a new parcel needs you. To approve or decline, it opens the admin app. It talks only to the Hub address you give it.</p></div>
+
+<h2>What it shows</h2>
+<p>The badge on the toolbar icon tells you the state at a glance. The extension asks the Hub every 30 seconds.</p>
+
+<figure class="dg">
+<svg viewBox="0 0 760 290" role="img" aria-labelledby="ex1-t ex1-d">
+  <title id="ex1-t">The six badge states</title>
+  <desc id="ex1-d">An orange number means that many parcels wait for approval and the laptop is connected. An amber number means the same but the laptop is away. An amber exclamation mark means nothing is waiting but the laptop is away. No badge means all is quiet. A grey x means signed out. A grey question mark means the Hub cannot be reached.</desc>
+  <rect class="n" x="16" y="16" width="232" height="118" rx="12"/>
+  <rect class="n acc" x="32" y="38" width="44" height="32" rx="8"/><text class="t c" x="54" y="59">2</text>
+  <text class="t" x="88" y="46">Needs you</text><text class="s" x="88" y="68">2 await your yes</text><text class="s" x="88" y="88">laptop is connected</text>
+  <rect class="n" x="264" y="16" width="232" height="118" rx="12"/>
+  <rect class="n warn" x="280" y="38" width="44" height="32" rx="8"/><text class="t c" x="302" y="59">2</text>
+  <text class="t" x="336" y="46">Needs you</text><text class="s" x="336" y="68">2 await your yes</text><text class="s" x="336" y="88">laptop out to lunch</text>
+  <rect class="n" x="512" y="16" width="232" height="118" rx="12"/>
+  <rect class="n warn" x="528" y="38" width="44" height="32" rx="8"/><text class="t c" x="550" y="59">!</text>
+  <text class="t" x="584" y="46">Laptop away</text><text class="s" x="584" y="68">nothing to approve</text><text class="s" x="584" y="88">laptop out to lunch</text>
+  <rect class="n" x="16" y="150" width="232" height="118" rx="12"/>
+  <rect class="n raised" x="32" y="172" width="44" height="32" rx="8"/><text class="s c" x="54" y="193">none</text>
+  <text class="t" x="88" y="180">All quiet</text><text class="s" x="88" y="202">nothing waiting</text><text class="s" x="88" y="222">laptop is connected</text>
+  <rect class="n" x="264" y="150" width="232" height="118" rx="12"/>
+  <rect class="n raised" x="280" y="172" width="44" height="32" rx="8"/><text class="t c" x="302" y="193">x</text>
+  <text class="t" x="336" y="180">Signed out</text><text class="s" x="336" y="202">sign in on the Hub,</text><text class="s" x="336" y="222">then check again</text>
+  <rect class="n" x="512" y="150" width="232" height="118" rx="12"/>
+  <rect class="n raised" x="528" y="172" width="44" height="32" rx="8"/><text class="t c" x="550" y="193">?</text>
+  <text class="t" x="584" y="180">No answer</text><text class="s" x="584" y="202">wrong address, no</text><text class="s" x="584" y="222">network, or Hub down</text>
+</svg>
+<figcaption>Orange is normal. Amber means the laptop is away. Grey means the extension cannot get an answer.</figcaption>
+</figure>
+
+<ul>
+  <li><strong>The count wins.</strong> If parcels are waiting you see the number, orange when the laptop is connected and amber when it is away. Approvals work while the laptop is away, so the number matters more than the warning.</li>
+  <li>Over 99 waiting shows <code>99+</code>.</li>
+  <li>If nothing is waiting but the laptop is away, you see an amber <strong>!</strong> instead.</li>
+  <li>If you have not set a Hub address yet, there is no badge, and the tooltip says to set it in Settings.</li>
+  <li>Hover the icon for the plain-words version, such as "The Mailroom: 2 waiting for your approval (laptop is out to lunch)".</li>
+</ul>
+
+<h2>The popup</h2>
+<p>Click the icon. The popup shows the laptop status, today's counts, the parcels that need you (each with a <strong>Review</strong> button) and the five latest events.</p>
+<figure class="shot" style="max-width:340px"><img src="/docs/img/ext-popup.jpg" alt="The extension popup in dark mode. A chip says Out to lunch. Counts show 2 waiting for you, 1 queued, 0 running, 0 done today and 1 refused. Two write_file parcels from Dunder Miffbot (prod) each have a Review button. Below are the latest events and links to open the app, the side panel and the settings." width="340" height="558"><figcaption>The popup, at its real size, with test data.</figcaption></figure>
+<ul>
+  <li><strong>Review</strong> opens that parcel in the admin app in a new tab.</li>
+  <li><strong>Open The Mailroom</strong> jumps to a tab you already have open, or opens one.</li>
+  <li><strong>Open side panel</strong> shows the same lists in Chrome's side panel. It is read-only and refreshes by itself every 15 seconds.</li>
+  <li>If something is wrong the popup says so, with one button: "Open settings" (no address yet), "Sign in" (you are signed out) or "Retry" (cannot reach the Hub).</li>
+</ul>
+
+<h2>Notifications</h2>
+<p>When a parcel <strong>newly</strong> starts waiting for your approval, you get one desktop notification: "<code>p_1001</code> is waiting for your approval". Click it to open the Approvals page.</p>
+<ul>
+  <li><strong>Once per parcel.</strong> Another check will not notify again for the same parcel.</li>
+  <li><strong>Not on the first check.</strong> Right after you install it, or change the Hub address, parcels that are already waiting do not all ring at once. It only tells you about new ones. The same holds after you close and reopen the browser: the list of notified parcels is cleared then, so the first check afterwards never notifies. A parcel that began waiting while Chrome was closed gives no notification; look at the badge or the popup.</li>
+  <li>The list of parcels it has already told you about lives in session storage only. It is not saved to disk and is cleared when the browser closes.</li>
+</ul>
+
+<h2>Install it</h2>
+<p>The extension is not in the Chrome store. You load it from the project folder. This works in Chrome 116 or newer.</p>
+<ol class="steps">
+  <li><p>Open <code>chrome://extensions</code> and switch on <strong>Developer mode</strong> (top right).</p></li>
+  <li><p>Click <strong>Load unpacked</strong> and choose the <code>extension</code> folder inside the project.</p></li>
+  <li><p>Open the extension's settings: right-click its icon and choose <strong>Options</strong>.</p></li>
+  <li><p>Paste the Hub address, for example <code>https://&lt;your-hub&gt;</code>. No path after it. Click <strong>Save and connect</strong>.</p></li>
+  <li><p>Chrome asks you to allow access to that one address. Allow it.</p></li>
+  <li><p>Sign in to the Hub in a normal tab once. The extension uses that sign-in. When it works, the settings page says "Connected as owner".</p></li>
+</ol>
+<p>Plain <code>http://</code> is accepted only for <code>localhost</code> and <code>127.0.0.1</code>, so you can try it against a local copy. Anything else must be <code>https://</code>.</p>
+<div class="tip"><p>Pin the icon: click the puzzle piece in Chrome's toolbar, then the pin next to The Mailroom. Then the badge is always visible.</p></div>
+
+<h2>What it can and cannot do</h2>
+<table>
+<thead><tr><th>It can</th><th>It cannot</th></tr></thead>
+<tbody>
+<tr><td>Show how many parcels wait, who sent them and what task they are</td><td>Approve or decline a parcel</td></tr>
+<tr><td>Show the laptop status and the latest events</td><td>Create or revoke keys, edit contracts, rotate the credential</td></tr>
+<tr><td>Notify you about a new waiting parcel</td><td>Sign in for you, or see your password</td></tr>
+<tr><td>Open the right page of the admin app</td><td>Talk to any address other than your Hub</td></tr>
+</tbody>
+</table>
+<p><strong>Why no approve button?</strong> Every action in the admin app is checked by the Hub: it only accepts them from its own pages. An extension is a different origin, so the Hub would refuse it. That is a good thing. A decision should happen on a page that shows you the full text of what will run, and Review takes you there in one click.</p>
+
+<h2>Privacy</h2>
+<ul>
+  <li>It only talks to the Hub address you set. No analytics, no remote code, no other hosts.</li>
+  <li>Chrome only lets it reach that one address, because you allow it in step 5.</li>
+  <li>The address is kept in Chrome's synced storage, so it may follow your browser profile to other computers. The list of notified parcels stays in session storage and is cleared when the browser closes.</li>
+  <li>It reads with your normal sign-in cookie. It never asks for or stores your password.</li>
+</ul>
+
+<div class="warn"><p><strong>Not tested.</strong> The extension was checked in a real Chromium with a throwaway profile against a real local Worker: the badge, the notifications logic, the popup, the side panel and the signed-out states. Three things were not tested.</p>
+<ul>
+  <li>The permission prompt from step 5. Automation cannot click it, so the test granted access to <code>localhost</code> ahead of time.</li>
+  <li>Google Chrome and Brave. Only Chromium was used.</li>
+  <li>The operating system's notification itself. The test checks that the extension asked for one, not that it appeared on screen.</li>
+</ul>
+<p>If one of these breaks for you, it is a real finding. Tell the project owner.</p></div>
+
+<p>Stuck on "Checking..."? See <a href="/docs/troubleshooting">Troubleshooting</a>. For how a parcel gets into the waiting state, read <a href="/docs/parcels">Parcels and approvals</a>.</p>
+</main>
+<script type="module" src="/docs/docs.js"></script>
+</body>
+</html>

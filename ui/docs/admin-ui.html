@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The admin app · The Mailroom</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/docs/docs.css">
+<script src="/js/theme-init.js"></script>
+</head>
+<body data-slug="admin-ui">
+<main id="doc">
+<h1>The admin app</h1>
+<p class="lede">The admin app is the website where you, the owner, run the Mailroom: see what arrived, approve risky steps, and hand out or take back keys.</p>
+
+<div class="note"><p>It has eight pages in three groups, plus a link to these docs. <strong>Work</strong> is what is happening now. <strong>Access</strong> is who may send. <strong>System</strong> is the laptop and the log. Only you can open it, with one password. The screenshots below are from a throwaway test copy with made-up data.</p></div>
+
+<h2>How the app is laid out</h2>
+<figure class="dg">
+<svg viewBox="0 0 760 330" role="img" aria-labelledby="ad1-t ad1-d">
+  <title id="ad1-t">The layout of the admin app</title>
+  <desc id="ad1-d">A left rail with four groups: Work with Overview, Parcels and Approvals; Access with Keys, Contracts and Tokens; System with Laptop and Events; Help with Docs. At the bottom of the rail is the laptop status. A top bar shows where you are, the Dark, Light and System switch and Sign out. The rest is the page content.</desc>
+  <rect class="n" x="16" y="16" width="728" height="298" rx="12"/>
+  <rect class="n raised" x="24" y="24" width="158" height="282" rx="8"/>
+  <text class="t" x="38" y="46">The Mailroom</text>
+  <text class="s" x="38" y="68">WORK</text>
+  <text class="s" x="38" y="84">Overview</text><text class="s" x="38" y="100">Parcels</text><text class="s" x="38" y="116">Approvals</text>
+  <rect class="n acc" x="146" y="103" width="24" height="16" rx="8"/><text class="t c" x="158" y="115">7</text>
+  <text class="s" x="38" y="138">ACCESS</text>
+  <text class="s" x="38" y="154">Keys</text><text class="s" x="38" y="170">Contracts</text><text class="s" x="38" y="186">Tokens</text>
+  <text class="s" x="38" y="208">SYSTEM</text>
+  <text class="s" x="38" y="224">Laptop</text><text class="s" x="38" y="240">Events</text>
+  <text class="s" x="38" y="260">HELP</text><text class="s" x="38" y="276">Docs</text>
+  <rect class="n warn" x="34" y="282" width="138" height="18" rx="6"/><text class="s c" x="103" y="295">Laptop away</text>
+  <rect class="n" x="194" y="24" width="542" height="34" rx="8"/>
+  <text class="s" x="208" y="45">Parcels / p_1001</text>
+  <rect class="n raised" x="508" y="30" width="156" height="22" rx="6"/><text class="s c" x="586" y="45">Dark | Light | System</text>
+  <text class="s" x="676" y="45">Sign out</text>
+  <rect class="n" x="194" y="66" width="542" height="240" rx="8"/>
+  <text class="t" x="210" y="92">Page title</text>
+  <text class="s" x="210" y="110">one line that says what the page is for</text>
+  <rect class="n raised" x="210" y="124" width="330" height="170" rx="8"/>
+  <text class="t" x="224" y="150">Main card</text><text class="s" x="224" y="170">a list, a form or one detail</text>
+  <rect class="n raised" x="552" y="124" width="168" height="170" rx="8"/>
+  <text class="t" x="566" y="150">Side card</text><text class="s" x="566" y="170">status or summary</text>
+  <g class="badge"><circle cx="182" cy="150" r="10"/><text x="182" y="150">1</text></g>
+  <g class="badge"><circle cx="736" cy="41" r="10"/><text x="736" y="41">2</text></g>
+  <g class="badge"><circle cx="736" cy="100" r="10"/><text x="736" y="100">3</text></g>
+  <g class="badge"><circle cx="182" cy="291" r="10"/><text x="182" y="291">4</text></g>
+</svg>
+<figcaption>1: the rail with its groups and the orange count of approvals waiting. 2: the top bar. 3: the page. 4: the laptop status, always visible, and a link to the Laptop page. The count and the status refresh every 15 seconds.</figcaption>
+</figure>
+<p>Every page has its own address after a <code>#</code>, such as <code>/#/approvals</code>. That means the browser's back button and bookmarks work.</p>
+
+<h2>Signing in</h2>
+<p>Open the Hub's address. You see "Owner entrance" and one password box. There is no user name: there is only one owner.</p>
+<ul>
+  <li>A wrong password tells you how many tries are left.</li>
+  <li><strong>After 5 wrong passwords from the same address within 15 minutes, the door locks.</strong> The page shows "Door is locked" with a countdown. The 15 minutes count from the first wrong try.</li>
+  <li><strong>Sign out</strong> in the top bar ends the session and returns you to this page.</li>
+</ul>
+
+<h2>The pages</h2>
+
+<h3>Overview</h3>
+<p>The home page. It greets you, says in one line how things are, and shows what needs you.</p>
+<figure class="shot"><img src="/docs/img/app-overview.jpg" alt="The Overview page in dark mode. A banner says the laptop is out to lunch. A Needs you card lists two write_file parcels from Dunder Miffbot (prod) with Approve and Review buttons. Below are one parcel waiting for the laptop and the latest events. On the right are the laptop status and today's counts." width="1280" height="900"><figcaption>Overview: "Needs you" first, then the queue and the latest events. Approve works right here.</figcaption></figure>
+<ul>
+  <li><strong>Needs you</strong>: parcels waiting for your yes, each with <strong>Approve</strong> and <strong>Review</strong>.</li>
+  <li><strong>Waiting for the laptop</strong>: shown only when the laptop is away.</li>
+  <li><strong>Today</strong>: counts of done, running, queued, refused and failed. The finished ones count from midnight UTC.</li>
+</ul>
+
+<h3>Parcels</h3>
+<p>The newest parcels (up to 200), newest first. Filter tabs (All, Waiting for you, Queued, Running, Done, Refused, Failed) show how many of those are in each state, and a tab with a zero count is hidden. Click a row to open one parcel: a step-by-step <strong>Tracking</strong> timeline, the contract check, what was asked and the result.</p>
+<figure class="shot"><img src="/docs/img/app-parcel-refused.jpg" alt="A refused parcel p_1000 from Dunder Miffbot (prod). A timeline shows received, contract check failed, refused and that nothing reached the laptop. A card says it was refused because the path is outside the contract, compares the asked path with the allowed folder, and offers Widen the contract or Leave it refused." width="1280" height="736"><figcaption>A refused parcel. "Why it was refused" shows what was asked next to what the contract allows.</figcaption></figure>
+<p>On a refused parcel, <strong>Widen the contract</strong> opens the contract editor. Only do that if you really want the key to do it.</p>
+
+<h3>Approvals</h3>
+<p>Parcels that wait for you. Each card shows the key, the task, the path and a one-line preview of the change. <strong>Approve</strong> sends it on, <strong>Decline</strong> refuses it (reason "declined by owner"), <strong>Review</strong> opens the full text of what it will do and the contract that asked for approval.</p>
+<figure class="shot"><img src="/docs/img/app-approvals.jpg" alt="The Approvals page listing two waiting write_file parcels, each with the file path, the size in bytes and Approve, Review and Decline buttons." width="1280" height="600"><figcaption>Approvals. Read the preview before you press Approve.</figcaption></figure>
+
+<h3>Keys</h3>
+<p>One key per client app. The list shows label, contract, last used, created and status (active or revoked). <strong>New key</strong> asks for a label and a contract, then shows the key <strong>once</strong>.</p>
+<figure class="shot"><img src="/docs/img/app-keys-new.jpg" alt="The slip shown after creating a key called Release notes bot. A warning says this is the only time the key is shown. The key starts with mr_live_ and has a Copy button. The Done button is greyed out until you copy." width="1280" height="600"><figcaption>The shown-once slip. This key belongs to a throwaway test copy. "Done" stays greyed until you copy the key.</figcaption></figure>
+<p>A key's page lists its contract and recent parcels. <strong>Revoke key</strong> stops it at once and cancels its queued, waiting and running parcels. It cannot be undone: you hand out a new key.</p>
+
+<h3>Contracts</h3>
+<p>A contract says what a key may do: folders, tasks, a daily limit, an expiry and which tasks need approval. The editor shows <strong>In plain words</strong> on the right, a sentence that updates as you type. Saving applies to the next parcel. Queued parcels are checked again just before the Hub sends them to the laptop, and waiting ones when you approve. Running parcels are not stopped, and a refused parcel is never re-run.</p>
+<figure class="shot"><img src="/docs/img/app-contract-editor.jpg" alt="The contract editor for Notes writer: name, allowed folders, allowed tasks echo, read_file and write_file, a daily limit of 50, an empty expiry and write_file ticked under Needs your approval. A card on the right says in plain words what keys on this contract can do." width="1280" height="674"><figcaption>The contract editor and its plain-words summary.</figcaption></figure>
+<p>Mistakes show next to the field and as a banner ("Not saved. Fix 2 things below."). Only tasks you allow can be set to need approval.</p>
+
+<h3>Tokens</h3>
+<p>Tokens let other apps and Claude sessions manage the Mailroom from outside. They are separate from client keys. A token is <strong>read</strong> only unless you also tick <strong>write</strong> or <strong>approve</strong>. The page warns that whoever holds <strong>approve</strong> can release a risky step without you reading it. A new token is shown once, with ready-to-paste commands. See <a href="/docs/mcp">Claude and other apps</a>.</p>
+<figure class="shot"><img src="/docs/img/app-tokens.jpg" alt="The Tokens page listing three tokens: Old experiment, revoked, with read and approve; Release helper with read and write; and Claude Code on the laptop with read." width="1280" height="600"><figcaption>Tokens, with a revoked one struck through.</figcaption></figure>
+
+<h3>Laptop</h3>
+<p>Shows whether the daemon is connected, when it was last seen, the credential hint (only its last four characters) and the queue. <strong>Rotate credential</strong> asks you to confirm, then shows the new one once. See <a href="/docs/laptop">The laptop and the daemon</a>.</p>
+<figure class="shot"><img src="/docs/img/app-laptop.jpg" alt="The Laptop page. A banner says the laptop is out to lunch. A Status card says away and last seen never. A Daemon credential card has a Rotate credential button. An In the queue card lists one echo parcel." width="1280" height="600"><figcaption>The Laptop page when no daemon is connected.</figcaption></figure>
+
+<h3>Events</h3>
+<p>The log of everything that happened, read-only. It loads the latest 100 events and then streams new ones live, with the newest at the top. It updates live: the badge next to the title says <strong>Live</strong>. If the line drops it says "Reconnecting...", shows "Lost the line" and offers <strong>Catch up</strong>, which fetches what you missed. See <a href="/docs/events">Events</a>.</p>
+<figure class="shot"><img src="/docs/img/app-events.jpg" alt="The Events page with a Live badge and a table of numbered events: a parcel queued, two waiting for approval, one refused, a key created, two contracts saved and token events." width="1280" height="746"><figcaption>Events, live.</figcaption></figure>
+
+<h3>Docs</h3>
+<p>The rail's Help group links to these docs. They are behind the same sign-in.</p>
+
+<h2>Empty, loading and error states</h2>
+<ul>
+  <li><strong>Loading</strong>: grey placeholder bars where the content will be.</li>
+  <li><strong>Empty</strong>: a short message and one button, for example "No keys yet. Nobody can knock until you hand out a key." with <strong>Hand out a key</strong>.</li>
+  <li><strong>Error</strong>: "The post got lost on the way", the reason, and <strong>Try again</strong>. If a whole page fails to load you see "This page failed to load.".</li>
+  <li><strong>Decisions</strong>: a green banner such as "Decision recorded." after an action. If a parcel is no longer waiting (someone else decided first), you get "is no longer waiting" and nothing changes.</li>
+</ul>
+
+<h2>Dark, Light or System</h2>
+<p>The switch in the top bar (and on the sign-in page and in these docs) has three settings. <strong>Dark</strong> and <strong>Light</strong> are fixed. <strong>System</strong> follows your computer. The choice is remembered in this browser only, so a different browser starts on System.</p>
+
+<div class="tip"><p>Open the <strong>Approvals</strong> page with nothing waiting. You see "The counter is clear.". Then open <strong>Parcels</strong> and click the <strong>Refused</strong> tab to see what the Hub has turned away.</p></div>
+
+<p>Next: <a href="/docs/extension">the browser extension</a>, or read how <a href="/docs/parcels">parcels and approvals</a> work.</p>
+</main>
+<script type="module" src="/docs/docs.js"></script>
+</body>
+</html>

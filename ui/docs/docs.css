@@ -104,7 +104,8 @@ ol.steps > li > :last-child { margin-bottom: 0; }
 .cards span { color: var(--muted); font-size: 14px; line-height: 1.5; display: block; }
 .pill { display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 9px; border-radius: 10px; background: var(--raised); color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
 .pill.ok { background: var(--ok-bg); color: var(--ok); border-color: transparent; }
-.pill.warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+.pill.warn { display: inline-block; margin: 0; padding: 1px 9px; border: 1px solid transparent; border-radius: 10px; background: var(--warn-bg); color: var(--warn); }
+.pill.warn::before { content: none; }
 .pill.err { background: var(--err-bg); color: var(--err); border-color: transparent; }
 .pill.acc { background: var(--accent-bg); color: var(--accent-text); border-color: transparent; }
 figure.shot { margin: 0 0 24px; }
@@ -162,7 +163,8 @@ svg .badge text { fill: var(--accent-ink); font: 700 11px Inter, system-ui, sans
   h1 { font-size: 28px; } .lede { font-size: 16px; }
   .dx-pn { grid-template-columns: 1fr; } .dx-pn .next, .dx-pn .prev { grid-column: 1; text-align: left; }
   .dx-brand small { display: none; }
-  .dx-top { padding: 0 16px; } .dx-top-r { gap: 10px; } .dx-top-r > a { display: none; }
+  .dx-top { padding: 0 12px; gap: 8px; } .dx-top-r { gap: 8px; } .dx-top-r > a { display: none; }
+  .seg button { padding: 1px 7px; } .dx-menu { padding: 4px 8px; } .dx-brand { gap: 8px; font-size: 14px; }
   figure.dg::before { content: "Swipe sideways to see the whole diagram"; display: block; font-size: 12px; color: var(--faint); margin-bottom: 8px; }
 }
 @media print { .dx-top, .dx-side, .dx-toc, .dx-pn, .copy { display: none !important; } .dx-body { display: block; } }

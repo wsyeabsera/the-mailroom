@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The mailroom command · The Mailroom</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/docs/docs.css">
+<script src="/js/theme-init.js"></script>
+</head>
+<body data-slug="cli">
+<main id="doc">
+<h1>The mailroom command</h1>
+<p class="lede">Five commands run on your laptop to connect it to the Hub, keep it connected and check on it.</p>
+
+<div class="note"><p><code>mailroom login</code> saves where the Hub is and the laptop's secret. <code>mailroom run</code> connects and does the work. <code>mailroom service install</code> does the same in the background on a Mac. <code>mailroom status</code> asks the Hub "do you accept me?". <code>mailroom logout</code> forgets the secret.</p></div>
+
+<h2>Which command, when</h2>
+<table>
+<thead><tr><th>You want to</th><th>Run</th></tr></thead>
+<tbody>
+<tr><td>Connect this laptop for the first time</td><td><code>mailroom login</code>, then <code>mailroom run</code> or <code>mailroom service install</code></td></tr>
+<tr><td>Try it in a terminal and watch what happens</td><td><code>mailroom run</code></td></tr>
+<tr><td>Keep it connected after a reboot or a closed terminal (macOS)</td><td><code>mailroom service install</code></td></tr>
+<tr><td>Find out if the Hub accepts this laptop</td><td><code>mailroom status</code> (or <code>mailroom service status</code> for the background copy too)</td></tr>
+<tr><td>Use a new credential after rotating</td><td><code>mailroom login</code>, then <code>mailroom service install</code> again</td></tr>
+<tr><td>Stop the background copy</td><td><code>mailroom service uninstall</code></td></tr>
+<tr><td>Remove the saved secret from this laptop</td><td><code>mailroom logout</code></td></tr>
+</tbody>
+</table>
+
+<p><code>mailroom</code> is not installed by itself: the project has no ready-made file called <code>mailroom</code>. To get the command, either run <code>npm link</code> in the project folder (it uses the <code>bin</code> entry in <code>package.json</code>), or put a one-line script named <code>mailroom</code> on your PATH: <code>exec node /path/to/the-mailroom/daemon/cli.ts "$@"</code>. Without either, run <code>node daemon/cli.ts &lt;command&gt;</code> from the project folder wherever this page says <code>mailroom &lt;command&gt;</code>. Run it with no arguments to print the help.</p>
+
+<h2>login</h2>
+<p>Saves the Hub address and the daemon credential. Both come from a flag, or from an environment variable, or from a prompt, in that order.</p>
+<pre><code>mailroom login [--url URL] [--credential mrd_...]</code></pre>
+<p>The credential prompt is <strong>hidden</strong>: your typing does not appear, so nobody looking over your shoulder (or at a screen recording) sees it. Paste it and press Enter.</p>
+<ul>
+  <li>The URL must be <code>http://</code> or <code>https://</code>. A trailing slash is removed.</li>
+  <li>The credential must start with <code>mrd_</code>. Anything else is refused and nothing is saved.</li>
+  <li><code>login</code> does <em>not</em> contact the Hub. Run <code>mailroom status</code> afterwards to find out if it works.</li>
+</ul>
+<div class="warn"><p>A value passed as <code>--credential mrd_...</code> ends up in your shell history and shows in the process list. For a real credential, use the hidden prompt, or <code>MAILROOM_CREDENTIAL</code> from a safe place.</p></div>
+
+<h2>run</h2>
+<p>Connects to the Hub, receives jobs and does them. It runs until you stop it with <kbd>Ctrl</kbd>+<kbd>C</kbd>. If the connection drops it reconnects by itself. If you have not logged in it says "Not logged in. Run <code>mailroom login</code> first." and exits with 1.</p>
+<p>It stops by itself in two cases, and says why: the credential was rotated or is wrong, or another daemon took over. Details are on <a href="/docs/laptop">The laptop and the daemon</a>.</p>
+
+<h2>status</h2>
+<p>Shows the saved settings and then makes one plain HTTP request to the Hub to see how it answers. It opens no daemon connection and never prints the credential.</p>
+<table>
+<thead><tr><th><code>hub:</code> line</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>accepted (a laptop is connected)</code></td><td>The Hub knows this credential and a laptop is connected right now. Exit code 0.</td></tr>
+<tr><td><code>accepted (no laptop connected right now)</code></td><td>The Hub knows this credential, but no daemon is connected. Exit code 0.</td></tr>
+<tr><td><code>rejected (credential not accepted)</code></td><td>Wrong or rotated credential. Run <code>mailroom login</code>. Exit code 1.</td></tr>
+<tr><td><code>unreachable (...)</code></td><td>No answer within 8 seconds: wrong address, no network, or the Hub is down. The message in brackets says what the network reported.</td></tr>
+<tr><td><code>unknown (this Hub is older than v0.3.3 and has no safe check; redeploy the Hub, or use `mailroom run`)</code></td><td>The Hub is too old to answer the check. Redeploy it.</td></tr>
+<tr><td><code>unexpected HTTP &lt;n&gt;</code></td><td>The Hub answered with a status the check does not know. See Troubleshooting.</td></tr>
+</tbody>
+</table>
+<p>Exit code 0 only when the line starts with <code>accepted</code>; every other result exits with 1.</p>
+<div class="tip"><p><code>mailroom status</code> and <code>mailroom service status</code> ask the Hub a read-only question: does it accept my credential, and is a laptop connected? They never connect as a daemon and never replace the running one, so they are safe to run while the daemon is working. A Hub older than v0.3.3 has no such check, and <code>status</code> says so instead of guessing: redeploy the Hub.</p></div>
+
+<h2>logout</h2>
+<p>Deletes <code>~/.mailroom/config.json</code>. It prints "Logged out." or "Nothing to delete.". It does not touch the background service. A daemon that is already running keeps its connection until it stops, and after that it cannot start again. To fully stop, run <code>mailroom service uninstall</code> first, then <code>mailroom logout</code>.</p>
+
+<h2>service install, uninstall, status</h2>
+<p>macOS only. They manage a launchd user agent (the system's own way to keep a program running) that starts <code>mailroom run</code> at login and restarts it if it stops.</p>
+<ul>
+  <li><code>install</code> needs you to be logged in. It writes the definition, loads it and waits a couple of seconds to see if the daemon is running. Running it again replaces the running copy. It prints where the log is. Exit 0 if it is running, 1 if not.</li>
+  <li><code>uninstall</code> stops it and deletes the definition: "Service removed." or "No service was installed.".</li>
+  <li><code>status</code> prints one line, then asks the Hub the same question as <code>mailroom status</code>. Exit 0 only if the service is running.</li>
+</ul>
+
+<h2>Environment variables</h2>
+<table>
+<thead><tr><th>Variable</th><th>Used by</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>MAILROOM_URL</code></td><td><code>login</code></td><td>The Hub address, if you did not pass <code>--url</code>.</td></tr>
+<tr><td><code>MAILROOM_CREDENTIAL</code></td><td><code>login</code></td><td>The daemon credential, if you did not pass <code>--credential</code>.</td></tr>
+<tr><td><code>MAILROOM_CLAUDE_TIMEOUT_MS</code></td><td><code>run</code></td><td>How long a <code>claude</code> task may run, in milliseconds. Default 5 minutes (300000).</td></tr>
+</tbody>
+</table>
+<p>A flag always beats the matching variable. One more, <code>MAILROOM_SERVICE_LABEL</code>, overrides the launchd label used by <code>service</code> (default <code>dev.mailroom.daemon</code>).</p>
+<div class="warn"><p>The Claude plugin also reads <code>MAILROOM_URL</code> (plus <code>MAILROOM_TOKEN</code>, which only the plugin uses). If you have exported <code>MAILROOM_URL</code> for the plugin, <code>mailroom login</code> silently takes it as the Hub address and does not ask you. Unset it first, or pass <code>--url</code>. See <a href="/docs/mcp">Claude and other apps</a>.</p></div>
+
+<h2>Exit codes</h2>
+<table>
+<thead><tr><th>Code</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>0</code></td><td>It worked. Also: no command given (help is printed).</td></tr>
+<tr><td><code>1</code></td><td>It did not work: not logged in, bad input to <code>login</code>, credential rejected or rotated, Hub not accepting, service not running, unknown command.</td></tr>
+<tr><td><code>2</code></td><td>Only <code>run</code>: replaced by another daemon.</td></tr>
+</tbody>
+</table>
+
+<h2>Files it creates</h2>
+<figure class="dg">
+<svg viewBox="0 0 760 310" role="img" aria-labelledby="cl1-t cl1-d">
+  <title id="cl1-t">Which command writes which file</title>
+  <desc id="cl1-d">The login command writes the config file. The run command writes the state file as it goes. The service install command writes the launchd definition, and launchd sends the daemon's output to the log file.</desc>
+  <rect class="n raised" x="16" y="20" width="170" height="40" rx="10"/>
+  <text class="t" x="30" y="37">mailroom login</text><text class="s" x="30" y="53">saves URL + credential</text>
+  <rect class="n raised" x="16" y="86" width="170" height="40" rx="10"/>
+  <text class="t" x="30" y="103">mailroom run</text><text class="s" x="30" y="119">remembers its place</text>
+  <rect class="n raised" x="16" y="158" width="170" height="40" rx="10"/>
+  <text class="t" x="30" y="175">service install</text><text class="s" x="30" y="191">keeps it running</text>
+  <rect class="n acc" x="470" y="18" width="274" height="44" rx="10"/>
+  <text class="s m" x="484" y="36">~/.mailroom/config.json</text><text class="s" x="484" y="53">the only place the secret lives</text>
+  <rect class="n" x="470" y="84" width="274" height="44" rx="10"/>
+  <text class="s m" x="484" y="102">~/.mailroom/state.json</text><text class="s" x="484" y="119">the last event number it saw</text>
+  <rect class="n" x="470" y="150" width="274" height="56" rx="10"/>
+  <text class="s m" x="484" y="168">~/Library/LaunchAgents/</text><text class="s m" x="484" y="186">dev.mailroom.daemon.plist</text>
+  <rect class="n" x="470" y="232" width="274" height="56" rx="10"/>
+  <text class="s m" x="484" y="250">~/Library/Logs/</text><text class="s m" x="484" y="268">mailroom-daemon.log</text>
+  <path class="e acc" d="M186 40 H470"/><text class="s c" x="328" y="32">writes, owner-only</text>
+  <path class="e" d="M186 106 H470"/><text class="s c" x="328" y="98">writes as it goes</text>
+  <path class="e" d="M186 178 H470"/><text class="s c" x="328" y="170">writes, no secret inside</text>
+  <path class="e dash" d="M607 206 V232"/><text class="s" x="617" y="224">output goes here</text>
+</svg>
+<figcaption>Only <code>config.json</code> holds the secret. The service definition and the log do not.</figcaption>
+</figure>
+
+<table>
+<thead><tr><th>File</th><th>Mode</th><th>Holds</th></tr></thead>
+<tbody>
+<tr><td><code>~/.mailroom/</code></td><td><code>0700</code></td><td>The folder. Only you can open it.</td></tr>
+<tr><td><code>~/.mailroom/config.json</code></td><td><code>0600</code></td><td>The Hub address and the daemon credential.</td></tr>
+<tr><td><code>~/.mailroom/state.json</code></td><td><code>0600</code></td><td>The last event number it saw. Lets the Hub and the daemon pick up where they left off.</td></tr>
+<tr><td><code>~/Library/LaunchAgents/dev.mailroom.daemon.plist</code></td><td><code>0644</code></td><td>The service definition: the command to run, its PATH and your home folder. No secret.</td></tr>
+<tr><td><code>~/Library/Logs/mailroom-daemon.log</code></td><td>default</td><td>Everything the background daemon prints.</td></tr>
+</tbody>
+</table>
+<p>Files in <code>~/.mailroom</code> are written to a temporary file and renamed, so a crash cannot leave a half-written config.</p>
+
+<h2>Example sessions</h2>
+<h3>First connection</h3>
+<pre><code>$ mailroom login
+Hub URL (https://the-mailroom.&lt;sub&gt;.workers.dev): https://&lt;your-hub&gt;
+Daemon credential (mrd_...):
+Saved to /Users/you/.mailroom/config.json
+
+$ mailroom status
+config: yes (/Users/you/.mailroom/config.json)
+url: https://&lt;your-hub&gt;
+hub: accepted (a laptop is connected)
+
+$ mailroom service install
+Installed /Users/you/Library/LaunchAgents/dev.mailroom.daemon.plist
+Running (pid 4821). It starts at login and restarts if it stops. Log: ~/Library/Logs/mailroom-daemon.log</code></pre>
+<p>The line after <code>Daemon credential (mrd_...):</code> is empty on purpose: that is where you pasted the secret, and the terminal did not show it.</p>
+
+<h3>The credential was rotated</h3>
+<pre><code>$ mailroom service status
+service: installed, not running, last exit 1
+hub: rejected (credential not accepted)
+
+$ mailroom login --url https://&lt;your-hub&gt;
+Daemon credential (mrd_...):
+Saved to /Users/you/.mailroom/config.json
+
+$ mailroom service install
+Installed /Users/you/Library/LaunchAgents/dev.mailroom.daemon.plist
+Running (pid 5107). It starts at login and restarts if it stops. Log: ~/Library/Logs/mailroom-daemon.log</code></pre>
+
+<div class="tip"><p>Do a dry run without touching your real setup: <code>HOME=/tmp/mr-test mailroom login</code> writes its files under <code>/tmp/mr-test/.mailroom</code> instead. (Use this only for <code>login</code>, <code>status</code> and <code>run</code>, not for the service commands.) Delete the folder when you are done.</p></div>
+
+<p>See also: <a href="/docs/troubleshooting">Troubleshooting</a> and <a href="/docs/quickstart">Set it up in 10 minutes</a>.</p>
+</main>
+<script type="module" src="/docs/docs.js"></script>
+</body>
+</html>

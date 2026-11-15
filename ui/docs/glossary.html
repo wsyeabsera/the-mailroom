@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glossary · The Mailroom</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/docs/docs.css">
+<script src="/js/theme-init.js"></script>
+<style>
+.gl-jump { display: flex; flex-wrap: wrap; gap: 6px 12px; margin: 0 0 20px; font-weight: 600; }
+dl.gl { margin: 0 0 24px; }
+dl.gl dt.gl-l { font-size: 12px; letter-spacing: .08em; color: var(--faint); font-weight: 700; margin: 28px 0 4px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+dl.gl dt.gl-t { font-weight: 650; margin: 14px 0 2px; }
+dl.gl dd { margin: 0; color: var(--muted); }
+</style>
+</head>
+<body data-slug="glossary">
+<main id="doc">
+<h1>Glossary</h1>
+<p class="lede">Every word the Mailroom uses, in plain language, with a link to where it is explained in full.</p>
+
+<div class="note"><p>The Mailroom is an office mailroom. A <strong>parcel</strong> is a request. A <strong>key</strong> says who is sending. A <strong>contract</strong> says what that sender may do. The <strong>desk</strong> is the Hub in the cloud. The <strong>laptop</strong> is where the work is done.</p></div>
+
+<h2>The words</h2>
+<p class="gl-jump"><a href="#gl-a">A</a> <a href="#gl-c">C</a> <a href="#gl-d">D</a> <a href="#gl-e">E</a> <a href="#gl-h">H</a> <a href="#gl-k">K</a> <a href="#gl-l">L</a> <a href="#gl-m">M</a> <a href="#gl-o">O</a> <a href="#gl-p">P</a> <a href="#gl-q">Q</a> <a href="#gl-r">R</a> <a href="#gl-s">S</a> <a href="#gl-t">T</a> <a href="#gl-w">W</a></p>
+<dl class="gl">
+<dt class="gl-l" id="gl-a">A</dt>
+<dt class="gl-t">Admin token</dt>
+<dd>A secret that starts with <code>mra_</code>. It lets Claude or another MCP app look at, and maybe manage, your Mailroom. Only you can make one. <a href="/docs/mcp">Claude and other apps</a></dd>
+<dt class="gl-t">Append-only</dt>
+<dd>A log you can only add to. Old lines are never edited or removed. The event log works this way. <a href="/docs/events">Events</a></dd>
+<dt class="gl-t">Approval</dt>
+<dd>The yes you give before a risky parcel runs. The contract lists which tasks wait for one. <a href="/docs/parcels">Parcels and approvals</a></dd>
+<dt class="gl-t">Approve (scope)</dt>
+<dd>The admin-token scope that can approve or decline waiting parcels. It is the dangerous one, because it releases a risky step. <a href="/docs/mcp">Claude and other apps</a></dd>
+<dt class="gl-t">Audit trail</dt>
+<dd>The record of what an admin token did. Each write or approve call adds an <code>mcp.call</code> event. <a href="/docs/mcp">Claude and other apps</a></dd>
+<dt class="gl-l" id="gl-c">C</dt>
+<dt class="gl-t">Client</dt>
+<dd>An app or program that sends parcels to the Mailroom with a client key. <a href="/docs/concepts">The big picture</a></dd>
+<dt class="gl-t">Client key</dt>
+<dd>The secret an app uses to send parcels. It starts with <code>mr_live_</code> and is tied to one contract. <a href="/docs/keys-contracts">Keys and contracts</a></dd>
+<dt class="gl-t">Contract</dt>
+<dd>The list of what one key may do: which folders, which tasks, how many parcels a day, when it expires and which tasks wait for you. <a href="/docs/keys-contracts">Keys and contracts</a></dd>
+<dt class="gl-t">Credential</dt>
+<dd>Any secret that proves who you are. The Mailroom has four kinds: client key, daemon credential, owner session and admin token. <a href="/docs/security">Security model</a></dd>
+<dt class="gl-l" id="gl-d">D</dt>
+<dt class="gl-t">Daemon</dt>
+<dd>The small program called <code>mailroom</code> that runs on your laptop. It connects out to the Hub, checks again the contract the Hub sends with each job (real paths, its own clock) and does the work. <a href="/docs/laptop">The laptop and the daemon</a></dd>
+<dt class="gl-t">Daemon credential</dt>
+<dd>The secret the laptop uses to connect. It starts with <code>mrd_</code>. You can rotate it from the Laptop page. <a href="/docs/laptop">The laptop and the daemon</a></dd>
+<dt class="gl-t">Daily limit</dt>
+<dd>The most parcels a key may send per UTC day, set in its contract. The Hub counts them. <a href="/docs/keys-contracts">Keys and contracts</a></dd>
+<dt class="gl-t">Desk</dt>
+<dd>The mailroom word for the Hub: where parcels arrive and are checked. <a href="/docs/concepts">The big picture</a></dd>
+<dt class="gl-t">Durable Object</dt>
+<dd>A Cloudflare feature: one small program with its own storage, with one copy that handles requests one at a time. The Hub is one. <a href="/docs/how-it-works">How a parcel travels</a></dd>
+<dt class="gl-l" id="gl-e">E</dt>
+<dt class="gl-t">Event</dt>
+<dd>One line in the log: a number, a time, a kind and some details. It records that something happened. <a href="/docs/events">Events</a></dd>
+<dt class="gl-t">Expiry</dt>
+<dd>The moment a contract stops working. A date such as 2026-12-31 means the start of that day in UTC. It is optional. <a href="/docs/keys-contracts">Keys and contracts</a></dd>
+<dt class="gl-l" id="gl-h">H</dt>
+<dt class="gl-t">Hub</dt>
+<dd>The part in the cloud that does the checking and keeps the records: keys, contracts, the parcel queue and the event log. It is one Cloudflare Worker and one Durable Object. <a href="/docs/how-it-works">How a parcel travels</a></dd>
+<dt class="gl-l" id="gl-k">K</dt>
+<dt class="gl-t">Key</dt>
+<dd>The secret an app shows with every parcel, so the Hub knows who is sending. See client key. <a href="/docs/keys-contracts">Keys and contracts</a></dd>
+<dt class="gl-l" id="gl-l">L</dt>
+<dt class="gl-t">Laptop</dt>
+<dd>Where the work is really done: your own computer, running the daemon and Claude Code. <a href="/docs/laptop">The laptop and the daemon</a></dd>
+<dt class="gl-l" id="gl-m">M</dt>
+<dt class="gl-t">MCP</dt>
+<dd>Model Context Protocol. A standard way for an AI app, such as Claude, to call tools on another service. The Hub offers one at <code>/mcp</code>. <a href="/docs/mcp">Claude and other apps</a></dd>
+<dt class="gl-l" id="gl-o">O</dt>
+<dt class="gl-t">Origin check</dt>
+<dd>The Hub refuses a change that comes from a web page on another site. It stops other sites from using your signed-in browser. <a href="/docs/security">Security model</a></dd>
+<dt class="gl-t">Owner</dt>
+<dd>You. The one person who signs in to the web app and decides everything. <a href="/docs/concepts">The big picture</a></dd>
+<dt class="gl-t">Owner session</dt>
+<dd>The signed-in state of your browser: a cookie called <code>mr_session</code> that lasts 7 days. <a href="/docs/security">Security model</a></dd>
+<dt class="gl-l" id="gl-p">P</dt>
+<dt class="gl-t">Parcel</dt>
+<dd>One request that an app sends. The Hub calls it a job in the code and in the API. The Mailroom calls it a parcel everywhere else. <a href="/docs/parcels">Parcels and approvals</a></dd>
+<dt class="gl-t">Plugin</dt>
+<dd>A bundle for Claude Code. The Mailroom plugin connects it to the Hub and adds safety rules and two commands. <a href="/docs/mcp">Claude and other apps</a></dd>
+<dt class="gl-l" id="gl-q">Q</dt>
+<dt class="gl-t">Queue</dt>
+<dd>The line of parcels waiting for the laptop. They wait there while it is away and run in order when it returns. <a href="/docs/parcels">Parcels and approvals</a></dd>
+<dt class="gl-l" id="gl-r">R</dt>
+<dt class="gl-t">Read (scope)</dt>
+<dd>The base admin-token scope. It can look at everything but change nothing. <a href="/docs/mcp">Claude and other apps</a></dd>
+<dt class="gl-t">Refused</dt>
+<dd>A parcel that was turned away. The contract said no, the laptop's check said no, or you declined it. The reason is kept. <a href="/docs/parcels">Parcels and approvals</a></dd>
+<dt class="gl-t">Revoke</dt>
+<dd>Cut a key or token off for good. It stops working on its next use, and a revoked key's waiting, queued and running parcels are cancelled. <a href="/docs/keys-contracts">Keys and contracts</a></dd>
+<dt class="gl-t">Rotate</dt>
+<dd>Replace a secret with a new one. Rotating the daemon credential kills the old one at once, so the laptop must be given the new one. <a href="/docs/laptop">The laptop and the daemon</a></dd>
+<dt class="gl-l" id="gl-s">S</dt>
+<dt class="gl-t">Scope</dt>
+<dd>One permission on an admin token: read, write or approve. <a href="/docs/mcp">Claude and other apps</a></dd>
+<dt class="gl-t">Session</dt>
+<dd>The period you are signed in. See owner session. <a href="/docs/security">Security model</a></dd>
+<dt class="gl-t">Shown once</dt>
+<dd>A secret appears on screen one time, when it is made. The Hub keeps only a hash, so it cannot show it again. <a href="/docs/security">Security model</a></dd>
+<dt class="gl-t">State</dt>
+<dd>Where a parcel is in its life: queued, waiting_approval, running, done, failed, refused or cancelled. <a href="/docs/api">HTTP API</a></dd>
+<dt class="gl-t">Symlink</dt>
+<dd>A file that points to another place. A symlink inside an allowed folder can point outside it, so the laptop looks at the real path before it acts. <a href="/docs/security">Security model</a></dd>
+<dt class="gl-l" id="gl-t">T</dt>
+<dt class="gl-t">Task</dt>
+<dd>The kind of work a parcel asks for: <code>echo</code>, <code>read_file</code>, <code>write_file</code> or <code>claude</code>. <a href="/docs/parcels">Parcels and approvals</a></dd>
+<dt class="gl-t">Token</dt>
+<dd>A secret string that proves who is calling. Here it usually means an admin token. <a href="/docs/mcp">Claude and other apps</a></dd>
+<dt class="gl-l" id="gl-w">W</dt>
+<dt class="gl-t">Worker</dt>
+<dd>A Cloudflare Worker is a small program that answers web requests. It is the front gate of the Hub and checks sign-in before anything else. <a href="/docs/how-it-works">How a parcel travels</a></dd>
+<dt class="gl-t">Write (scope)</dt>
+<dd>The admin-token scope that adds creating and revoking keys, and creating and editing contracts. <a href="/docs/mcp">Claude and other apps</a></dd>
+</dl>
+<h2>Where to go next</h2>
+<p>A word missing? See <a href="/docs/concepts">The big picture</a> for the idea in one page, or <a href="/docs/troubleshooting">Troubleshooting</a> if something looks wrong.</p>
+</main>
+<script type="module" src="/docs/docs.js"></script>
+</body>
+</html>
