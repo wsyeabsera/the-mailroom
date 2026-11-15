@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "lite": {
+      "type": "http",
+      "url": "https://lite.tvdash-hub.workers.dev/mcp",
+      "headers": {
+        "Authorization": "Bearer ${LITE_TOKEN}"
+      }
+    }
+  }
+}
