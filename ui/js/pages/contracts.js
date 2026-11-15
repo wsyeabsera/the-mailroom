@@ -14,7 +14,7 @@ export function render(view, params, ctx) {
 function list(body, ctx) {
   loadInto(body, () => api("/admin/contracts"), (cs) => {
     const flash = ctx.takeFlash();
-    body.append(pageHead("Contracts", "What a key may do. Edits apply to the next parcel, and to queued ones at once.", h("a", { class: "btn", href: "#/contracts/new" }, "New contract")));
+    body.append(pageHead("Contracts", "What a key may do. Edits apply to the next parcel, and queued ones are checked again just before they are sent.", h("a", { class: "btn", href: "#/contracts/new" }, "New contract")));
     if (flash) body.append(banner(flash.kind, flash.text));
     if (!cs.length) { body.append(emptyState("No contracts yet", "A contract says what a key may do. Write one, then hand out a key.", h("a", { class: "btn", href: "#/contracts/new" }, "New contract"))); return; }
     body.append(h("div", { class: "card tblwrap" }, h("table", null,

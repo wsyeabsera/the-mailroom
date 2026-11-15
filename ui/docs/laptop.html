@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The laptop and the daemon · The Mailroom</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/docs/docs.css">
+<script src="/js/theme-init.js"></script>
+</head>
+<body data-slug="laptop">
+<main id="doc">
+<h1>The laptop and the daemon</h1>
+<p class="lede">Your laptop is where the real work happens, and a small program called the daemon is what lets it receive parcels without opening a single door to the internet.</p>
+
+<div class="note"><p>The <strong>daemon</strong> is a small program you start with <code>mailroom run</code>. It phones the Hub, keeps the line open, and waits for work. Before it does anything it checks the contract again. If the laptop is away, parcels queue at the desk and run in order when it comes back.</p></div>
+
+<h2>What the daemon is</h2>
+<p>In the mailroom picture, the <strong>desk</strong> is the Hub in the cloud and the <strong>laptop</strong> is the back room where parcels are opened. The daemon is the clerk in that back room. It does three things:</p>
+<ul>
+  <li>It connects to the Hub with its own secret, the <strong>daemon credential</strong> (it starts with <code>mrd_</code>). This is not a client key. A client key never works as a daemon credential.</li>
+  <li>It receives jobs from the Hub, one at a time.</li>
+  <li>It checks each job again, does it, and sends back the result.</li>
+</ul>
+
+<h2>Why it dials out</h2>
+<p>The laptop opens the connection to the Hub. The Hub never opens one to the laptop. So your laptop needs no public address, no open port and no router settings. Nothing on the internet can start a conversation with it.</p>
+
+<figure class="dg">
+<svg viewBox="0 0 760 260" role="img" aria-labelledby="lp1-t lp1-d">
+  <title id="lp1-t">The laptop dials out to the Hub</title>
+  <desc id="lp1-d">Apps send parcels with a key to the Hub. The laptop opens one connection to the Hub and keeps it open. Jobs travel down it and results travel back. Anyone else on the internet has no way to connect to the laptop.</desc>
+  <rect class="n raised" x="16" y="40" width="120" height="70" rx="12"/>
+  <text class="t c" x="76" y="70">Your apps</text>
+  <text class="s c" x="76" y="90">send parcels</text>
+  <rect class="n acc" x="240" y="20" width="180" height="110" rx="14"/>
+  <text class="t c" x="330" y="64">The Hub</text>
+  <text class="s c" x="330" y="84">the desk, in the cloud</text>
+  <text class="s c" x="330" y="102">holds the queue</text>
+  <rect class="n ok" x="580" y="20" width="164" height="110" rx="14"/>
+  <text class="t c" x="662" y="64">Your laptop</text>
+  <text class="s c" x="662" y="84">the daemon</text>
+  <text class="s c" x="662" y="102">does the work</text>
+  <path class="e acc" d="M136 75 H240"/><text class="s c" x="188" y="66">parcel + key</text>
+  <path class="e ok" marker-start="url(#dg-arrow-ok)" d="M580 75 H420"/>
+  <text class="s c" x="500" y="64">opened by the laptop</text>
+  <text class="s c" x="500" y="98">jobs down, results up</text>
+  <rect class="n err" x="580" y="180" width="164" height="56" rx="12"/>
+  <text class="t c" x="662" y="204">Anyone else</text>
+  <text class="s c" x="662" y="222">on the internet</text>
+  <path class="e err dash" d="M662 180 V130"/>
+  <text class="s" x="650" y="160" text-anchor="end">no way in</text>
+</svg>
+<figcaption>One connection, opened from the laptop side. The Hub can only talk to the laptop through that open line.</figcaption>
+</figure>
+
+<details>
+<summary>Under the hood</summary>
+<p>The connection is a WebSocket to <code>/daemon</code> on the Hub. The daemon sends its credential in an <code>Authorization</code> header. If the line drops, the daemon reconnects after about 1 second, then waits longer each time (up to about 30 seconds). The Hub pings the daemon every 25 seconds. If it hears nothing for 60 seconds, it treats the laptop as gone. Only one daemon can be connected at a time: a second valid connection replaces the first. So if you run the background service and also a manual <code>mailroom run</code>, they take over from each other: the one that loses exits with code 2, and launchd restarts the service about 30 seconds later.</p>
+</details>
+
+<h2>When the laptop is away</h2>
+<p>Laptop asleep, lid closed, or no network? The Hub notices and the app says <strong>out to lunch</strong>. New parcels that the contract allows are not lost. They wait at the desk in the order they arrived. When the daemon reconnects, the Hub sends them one by one, oldest first.</p>
+
+<figure class="dg">
+<svg viewBox="0 0 760 260" role="img" aria-labelledby="lp2-t lp2-d">
+  <title id="lp2-t">Parcels queue while the laptop is away</title>
+  <desc id="lp2-d">A timeline. The laptop is connected, then out to lunch, then back. Three parcels arrive at the Hub while it is away and wait in order. When the laptop returns they run one at a time, oldest first.</desc>
+  <rect class="lane" x="16" y="16" width="728" height="76" rx="10"/>
+  <rect class="lane" x="16" y="106" width="728" height="108" rx="10"/>
+  <text class="t" x="28" y="60">Laptop</text>
+  <rect class="n ok" x="100" y="38" width="140" height="36" rx="8"/><text class="s c" x="170" y="61">connected</text>
+  <rect class="n warn" x="240" y="38" width="280" height="36" rx="8"/><text class="s c" x="380" y="61">out to lunch (lid closed)</text>
+  <rect class="n ok" x="520" y="38" width="212" height="36" rx="8"/><text class="s c" x="626" y="61">back, connected again</text>
+  <text class="t" x="28" y="136">The Hub</text>
+  <text class="s" x="28" y="154">the queue</text>
+  <rect class="n" x="262" y="124" width="64" height="32" rx="8"/><text class="s c" x="294" y="144">parcel 1</text>
+  <rect class="n" x="342" y="124" width="64" height="32" rx="8"/><text class="s c" x="374" y="144">parcel 2</text>
+  <rect class="n" x="422" y="124" width="64" height="32" rx="8"/><text class="s c" x="454" y="144">parcel 3</text>
+  <text class="s" x="262" y="184">arrive while you are away and wait in order</text>
+  <path class="e ok" d="M486 140 H548"/>
+  <rect class="n ok" x="548" y="124" width="52" height="32" rx="8"/><text class="s c" x="574" y="144">run 1</text>
+  <rect class="n ok" x="608" y="124" width="52" height="32" rx="8"/><text class="s c" x="634" y="144">run 2</text>
+  <rect class="n ok" x="668" y="124" width="52" height="32" rx="8"/><text class="s c" x="694" y="144">run 3</text>
+  <text class="s" x="548" y="184">one at a time, oldest first</text>
+  <path class="e" d="M16 238 H744"/><text class="s" x="700" y="256">time</text>
+</svg>
+<figcaption>Nothing is dropped while the laptop is away. The queue is on the Hub, not on the laptop.</figcaption>
+</figure>
+
+<p>You can see this in the app. The Overview and Laptop pages show a banner, the time the laptop was last seen, and the list of parcels in the queue. The rail at the bottom left says "Laptop away".</p>
+<ul>
+  <li>If the laptop drops <em>while</em> a job is running, the Hub puts that job back in the queue and the daemon stops it. It runs again after the reconnect.</li>
+  <li>If you revoke the key that sent a parcel, its queued, waiting and running parcels are cancelled. If you edit the contract, queued parcels are checked again just before the Hub sends them.</li>
+  <li>Parcels that wait for your approval are held at the Hub and are not affected by the laptop being away. You can approve them while it is out. They run when it returns.</li>
+</ul>
+
+<h2>The daemon checks again</h2>
+<p>The Hub checks every parcel against its contract before sending it. The daemon checks again. It runs <strong>the same contract check itself</strong>. The laptop keeps no copy of the contract: the Hub sends the contract inside every job, and the daemon checks that one. This catches Hub bugs and stale state. It is not a defence against a compromised Hub, which could send a wider contract; a laptop-side ceiling is a planned hardening step, not built yet.</p>
+<p>The daemon also does one thing the Hub cannot: it asks the real disk where a path ends up. It expands <code>~</code> with the laptop's own home folder, cleans up <code>..</code>, then follows every symlink on the way (a symlink is a file that points somewhere else). If the real location is outside the contract's folders, the job is refused and nothing is read or written.</p>
+
+<figure class="dg">
+<svg viewBox="0 0 760 300" role="img" aria-labelledby="lp3-t lp3-d">
+  <title id="lp3-t">The daemon refuses a symlink that points outside the folder</title>
+  <desc id="lp3-d">A parcel asks to write notes/link.md. The Hub reads the text of the path and sees it is inside the allowed folder, so it passes the job on. The daemon asks the disk. link.md is a symlink to a file in the secret ssh folder, which is outside the allowed folder, so the daemon refuses.</desc>
+  <rect class="n raised" x="16" y="110" width="150" height="70" rx="12"/>
+  <text class="t c" x="91" y="132">Parcel</text>
+  <text class="s c" x="91" y="150">write_file</text>
+  <text class="s c m" x="91" y="168">~/notes/link.md</text>
+  <rect class="n ok" x="216" y="30" width="210" height="90" rx="12"/>
+  <text class="t c" x="321" y="56">1 The Hub reads the text</text>
+  <text class="s c" x="321" y="78">the path starts with ~/notes</text>
+  <text class="s c" x="321" y="98">it looks inside: pass</text>
+  <rect class="n err" x="216" y="170" width="210" height="100" rx="12"/>
+  <text class="t c" x="321" y="196">2 The daemon asks the disk</text>
+  <text class="s c" x="321" y="218">link.md is really</text>
+  <text class="s c m" x="321" y="238">~/.ssh/config</text>
+  <text class="s c" x="321" y="258">outside ~/notes: refuse</text>
+  <path class="e acc" d="M91 110 V75 H216"/>
+  <path class="e acc" d="M91 180 V220 H216"/>
+  <path class="e" d="M321 120 V170"/><text class="s" x="331" y="150">job sent on</text>
+  <rect class="n" x="500" y="30" width="244" height="110" rx="12"/>
+  <text class="t" x="514" y="54">Allowed folder ~/notes</text>
+  <rect class="n raised" x="520" y="68" width="204" height="52" rx="8"/>
+  <text class="s c m" x="622" y="90">link.md</text>
+  <text class="s c" x="622" y="108">a symlink</text>
+  <path class="e err dash" d="M622 140 V190"/><text class="s" x="632" y="170">points to</text>
+  <rect class="n err" x="500" y="190" width="244" height="60" rx="12"/>
+  <text class="s c m" x="622" y="216">~/.ssh/config</text>
+  <text class="s c" x="622" y="236">outside the folder</text>
+  <path class="e err" d="M426 220 H500"/><text class="s c" x="463" y="212">real path</text>
+</svg>
+<figcaption>The text of the path looks harmless. The daemon follows the link, sees where it really ends, and refuses.</figcaption>
+</figure>
+
+<p>A refusal from the daemon shows up on the parcel as <strong>refused</strong> with the reason "<code>&lt;path&gt;</code> resolves outside the contract folders". The parcel page then compares what was asked with what the contract allows.</p>
+
+<div class="warn"><p>The daemon does not count the daily limit. Only the Hub counts parcels per day. The daemon re-checks the expiry, the allowed tasks and the folders.</p></div>
+
+<h2>The four tasks</h2>
+<p>A <strong>task</strong> is the kind of work a parcel asks for. The laptop knows exactly four. The daemon runs one job at a time.</p>
+<table>
+<thead><tr><th>Task</th><th>What it does</th><th>Limits</th></tr></thead>
+<tbody>
+<tr><td><code>echo</code></td><td>Sends your text straight back. Use it to test the whole route.</td><td>None.</td></tr>
+<tr><td><code>read_file</code></td><td>Reads one file and returns its text.</td><td>The path must be a file inside a contract folder. Larger than 200 KB: the job fails with "file is bigger than 200 KB".</td></tr>
+<tr><td><code>write_file</code></td><td>Writes the given text to a file. It makes missing folders inside the allowed folder. It writes to a temporary file first, then renames it into place.</td><td>Content over 200 KB fails. You choose per contract which tasks wait for your approval.</td></tr>
+<tr><td><code>claude</code></td><td>Runs <code>claude -p "&lt;prompt&gt;"</code> in a folder (<code>cwd</code>) the contract allows and returns what it prints.</td><td>5 minute timeout, then it is stopped and the job fails with "claude timed out". Only the first 200 KB of output is kept. Needs <code>claude</code> on the daemon's PATH.</td></tr>
+</tbody>
+</table>
+
+<div class="warn"><p>A <code>claude</code> task runs with whatever permissions <code>claude -p</code> has on that machine. The contract limits <em>which folder</em> it starts in. It does not limit what Claude does inside it. Keep <code>claude</code> out of contracts you do not trust.</p></div>
+
+<details>
+<summary>Under the hood: changing the 5 minutes</summary>
+<p>The timeout is 5 minutes unless the environment variable <code>MAILROOM_CLAUDE_TIMEOUT_MS</code> is set to a number of milliseconds. Set it in the shell that starts <code>mailroom run</code>. The background service does not pass your shell's variables on, and <code>mailroom service install</code> writes its definition afresh each time, so treat this as a setting for <code>mailroom run</code> in a terminal.</p>
+</details>
+
+<h2>If the credential is rotated</h2>
+<p>Rotating the credential (Laptop page, "Rotate credential") kills the old one at once. This is the move to make if you think the credential leaked. The Hub closes the daemon's connection. The daemon prints "The daemon credential was rotated. Run <code>mailroom login</code> with the new credential." and exits. It does not retry, because retrying cannot work.</p>
+<ol class="steps">
+  <li><p>In the app, open <strong>Laptop</strong> and rotate. Copy the new credential. It is shown once.</p></li>
+  <li><p>On the laptop run <code>mailroom login</code> and paste it at the hidden prompt.</p></li>
+  <li><p>If you use the background service, run <code>mailroom service install</code> again. It replaces the running copy at once. Otherwise start <code>mailroom run</code>.</p></li>
+  <li><p>Check with <code>mailroom service status</code>. The queued parcels then run.</p></li>
+</ol>
+
+<h2>Keep it running in the background</h2>
+<p>Running <code>mailroom run</code> in a terminal stops when you close it. On macOS, let the system do it for you:</p>
+<pre><code>mailroom login               # once: Hub URL and credential
+mailroom service install     # start now, and at every login
+mailroom service status      # installed? running? does the Hub accept it?
+mailroom service uninstall   # remove it</code></pre>
+
+<p><code>service install</code> sets up a <strong>launchd user agent</strong>. launchd is the macOS program that starts and watches background jobs. It creates two things and nothing else:</p>
+<table>
+<thead><tr><th>What</th><th>Where</th></tr></thead>
+<tbody>
+<tr><td>The service definition</td><td><code>~/Library/LaunchAgents/dev.mailroom.daemon.plist</code></td></tr>
+<tr><td>The log (output and errors)</td><td><code>~/Library/Logs/mailroom-daemon.log</code></td></tr>
+</tbody>
+</table>
+<ul>
+  <li><strong>It starts when you log in</strong> to your Mac (not before), and launchd starts it again if it stops. If it exits repeatedly, launchd waits 30 seconds between tries.</li>
+  <li><strong>It holds no secret.</strong> The credential stays in <code>~/.mailroom/config.json</code>, readable only by you. The service definition holds the command, a PATH and your home folder.</li>
+  <li>The PATH it gives the daemon contains Node's folder, <code>~/.local/bin</code>, <code>/opt/homebrew/bin</code>, <code>/usr/local/bin</code> and the system folders. launchd normally gives programs almost no PATH, and the <code>claude</code> task needs to find <code>claude</code>.</li>
+</ul>
+<p>The log is plain text. A start and one reconnect look like this (the number in brackets is a connection close code, so yours may differ):</p>
+<pre><code>mailroom daemon -&gt; https://&lt;your-hub&gt;
+connected to the Hub
+disconnected (1006); reconnecting in 1.1s
+connected to the Hub</code></pre>
+
+<div class="warn"><p><code>mailroom service</code> works on macOS only. On Linux or Windows, run <code>mailroom run</code> under your own supervisor (systemd, for example).</p></div>
+<div class="tip"><p><code>mailroom status</code> and <code>mailroom service status</code> ask the Hub a read-only question: does it accept my credential, and is a laptop connected? They never connect as a daemon, so they are safe to run while the daemon is working. A Hub older than v0.3.3 has no such check, and <code>status</code> says so instead of guessing: redeploy the Hub.</p></div>
+
+<p>Next: <a href="/docs/cli">every command in detail</a>, or <a href="/docs/troubleshooting">when something looks wrong</a>. For how contracts are checked, see <a href="/docs/keys-contracts">Keys and contracts</a>.</p>
+</main>
+<script type="module" src="/docs/docs.js"></script>
+</body>
+</html>

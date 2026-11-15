@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HTTP API · The Mailroom</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/docs/docs.css">
+<script src="/js/theme-init.js"></script>
+</head>
+<body data-slug="api">
+<main id="doc">
+<h1>HTTP API</h1>
+<p class="lede">Every route the Hub answers, who may call it, and what comes back.</p>
+
+<div class="note"><p>There are three audiences and one extra door. <strong>Clients</strong> (apps) send parcels with a key. The <strong>owner</strong> (you, in a browser) manages everything with a session cookie. The <strong>daemon</strong> (your laptop) holds a WebSocket open. <strong>Claude and other MCP apps</strong> use <code>/mcp</code>, described in <a href="/docs/mcp">Claude and other apps</a>. Everything is JSON over HTTPS, and errors always look like <code>{"error":"&lt;code&gt;"}</code>.</p></div>
+
+<h2>The doors into the Hub</h2>
+<figure class="dg">
+<svg viewBox="0 0 760 390" role="img" aria-labelledby="api-d-t api-d-d">
+  <title id="api-d-t">The doors into the Hub</title>
+  <desc id="api-d-d">Four doors lead into the Hub. The client API at slash api slash jobs takes a client key. The owner routes at slash admin take a session cookie. The daemon socket at slash daemon takes a daemon credential and is dialled by the laptop. The MCP door at slash mcp takes an admin token.</desc>
+  <rect class="n raised" x="16" y="30" width="320" height="70" rx="12"/>
+  <text class="t" x="34" y="56">Client API</text>
+  <text class="s m" x="34" y="78">/api/jobs   Bearer mr_live_...</text>
+  <rect class="n raised" x="16" y="120" width="320" height="70" rx="12"/>
+  <text class="t" x="34" y="146">Owner routes</text>
+  <text class="s m" x="34" y="168">/admin/*   cookie mr_session</text>
+  <rect class="n ok" x="16" y="210" width="320" height="70" rx="12"/>
+  <text class="t" x="34" y="236">Daemon socket</text>
+  <text class="s m" x="34" y="258">/daemon   Bearer mrd_... (WebSocket)</text>
+  <rect class="n raised" x="16" y="300" width="320" height="70" rx="12"/>
+  <text class="t" x="34" y="326">MCP</text>
+  <text class="s m" x="34" y="348">/mcp   Bearer mra_...</text>
+  <rect class="n acc" x="470" y="30" width="274" height="340" rx="14"/>
+  <text class="t c" x="607" y="62">The Worker, then the Hub</text>
+  <rect class="n" x="490" y="84" width="234" height="62" rx="8"/><text class="t c" x="607" y="108">The gate</text><text class="s c" x="607" y="128">session and Origin, for /admin</text>
+  <rect class="n" x="490" y="160" width="234" height="62" rx="8"/><text class="t c" x="607" y="184">The Hub</text><text class="s c" x="607" y="204">one Durable Object, one writer</text>
+  <rect class="n" x="490" y="236" width="234" height="62" rx="8"/><text class="t c" x="607" y="260">Database and event log</text><text class="s c" x="607" y="280">SQLite inside the Hub</text>
+  <path class="e acc" d="M336 65 H470"/>
+  <path class="e" d="M336 155 H470"/>
+  <path class="e dash" d="M336 245 H470"/>
+  <path class="e" d="M336 335 H470"/>
+  <text class="s" x="350" y="231">the laptop dials in</text>
+</svg>
+<figcaption>Client, daemon and MCP calls carry their own secret and skip the cookie gate. Owner routes go through it.</figcaption>
+</figure>
+
+<h2>How to read the tables</h2>
+<p>Times are milliseconds since 1970 (<code>created_at</code>, <code>ts</code>). Ids look like <code>p_1000</code> (parcel), <code>k_1000</code> (key), <code>c_1000</code> (contract) and <code>t_1000</code> (token). Unknown routes answer 404 <code>not_found</code> and a wrong method answers 405 <code>method_not_allowed</code>. A body that is not a JSON object is 422 <code>invalid</code>.</p>
+
+<h2>Client API</h2>
+<p>Header: <code>Authorization: Bearer mr_live_...</code>. A key that is unknown, revoked or whose contract has expired gets 401 <code>bad_key</code>. Limits: body 256 KB (413 <code>too_large</code>), 60 requests a minute per key (429 <code>rate_limited</code> with <code>retry_after</code>).</p>
+<table>
+<thead><tr><th>Method</th><th>Path</th><th>What it does</th><th>Success</th><th>Errors</th></tr></thead>
+<tbody>
+<tr><td>POST</td><td><code>/api/jobs</code></td><td>Send a parcel. Body <code>{"task":"echo|read_file|write_file|claude","args":{...}}</code>. The Hub checks it against the key's contract.</td><td>202 <code>queued</code> or <code>waiting_approval</code></td><td>403 refused (the body says why), 401, 413, 422 <code>invalid</code>, 429</td></tr>
+<tr><td>GET</td><td><code>/api/jobs/:id</code></td><td>Status and result of one of this key's own parcels.</td><td>200</td><td>401, 404 <code>not_found</code> (also for another key's parcel), 429</td></tr>
+</tbody>
+</table>
+<p>The arguments each task needs: <code>echo</code> takes <code>text</code>; <code>read_file</code> takes <code>path</code>; <code>write_file</code> takes <code>path</code> and <code>content</code>; <code>claude</code> takes <code>prompt</code> and <code>cwd</code> (the folder to work in).</p>
+
+<h3>Examples</h3>
+<p>Send an echo parcel. The key here is fake.</p>
+<pre><code>curl -X POST https://&lt;your-hub&gt;/api/jobs \
+  -H "Authorization: Bearer mr_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{"task":"echo","args":{"text":"hello"}}'
+
+HTTP 202
+{"id":"p_1000","state":"queued"}</code></pre>
+<p>A write the contract says must wait for you:</p>
+<pre><code>curl -X POST https://&lt;your-hub&gt;/api/jobs \
+  -H "Authorization: Bearer mr_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{"task":"write_file","args":{"path":"~/notes/todo.md","content":"- buy stamps"}}'
+
+HTTP 202
+{"id":"p_1001","state":"waiting_approval"}</code></pre>
+<p>A path outside the contract. The parcel is recorded but never reaches the laptop:</p>
+<pre><code>curl -X POST https://&lt;your-hub&gt;/api/jobs \
+  -H "Authorization: Bearer mr_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{"task":"read_file","args":{"path":"~/secret/a.txt"}}'
+
+HTTP 403
+{"id":"p_1002","state":"refused","reason":"~/secret/a.txt is outside the contract"}</code></pre>
+<p>Ask how the first parcel went:</p>
+<pre><code>curl https://&lt;your-hub&gt;/api/jobs/p_1000 \
+  -H "Authorization: Bearer mr_live_..."
+
+HTTP 200
+{"id":"p_1000","state":"done","result":{"echo":"hello"},
+ "created_at":1767225600000,"updated_at":1767225600450}</code></pre>
+<p>A wrong key:</p>
+<pre><code>HTTP 401
+{"error":"bad_key"}</code></pre>
+<div class="tip"><p>Poll <code>GET /api/jobs/:id</code> until <code>state</code> is one of the finished states below. There is no push to clients. Every poll counts toward the 60 requests a minute per key, so poll every few seconds, not every second: a poll every second gets 429 <code>rate_limited</code> after a minute.</p></div>
+
+<h3>Parcel states</h3>
+<table>
+<thead><tr><th>State</th><th>Meaning</th><th>Finished?</th></tr></thead>
+<tbody>
+<tr><td><code>queued</code></td><td>Accepted. Waiting for the laptop (or for its turn).</td><td>no</td></tr>
+<tr><td><code>waiting_approval</code></td><td>Allowed, but waits for you to say yes.</td><td>no</td></tr>
+<tr><td><code>running</code></td><td>Sent to the laptop. If the laptop drops, it goes back to <code>queued</code>.</td><td>no</td></tr>
+<tr><td><code>done</code></td><td>The laptop finished. <code>result</code> holds the answer.</td><td>yes</td></tr>
+<tr><td><code>failed</code></td><td>The laptop tried and failed. <code>reason</code> says why.</td><td>yes</td></tr>
+<tr><td><code>refused</code></td><td>Turned away by the contract, by the laptop's own check, or declined by you.</td><td>yes</td></tr>
+<tr><td><code>cancelled</code></td><td>Its key was revoked before it finished.</td><td>yes</td></tr>
+</tbody>
+</table>
+<div class="warn"><p>A state named <code>expired</code> appears in the filter lists, but the Hub does not set it today. An expired contract shows up as 401 <code>bad_key</code> or a <code>refused</code> parcel.</p></div>
+
+<h2>Owner routes</h2>
+<p>The cookie <code>mr_session</code> comes from signing in. Without it every route here answers 401 <code>signed_out</code>. A POST, PUT or DELETE whose <code>Origin</code> header is another site is 403 <code>bad_origin</code>. Reads are not checked.</p>
+
+<h3>Sign in and state</h3>
+<table>
+<thead><tr><th>Method</th><th>Path</th><th>What it does</th><th>Success</th><th>Errors</th></tr></thead>
+<tbody>
+<tr><td>POST</td><td><code>/admin/login</code></td><td>Body <code>{"password":"..."}</code>. Sets the cookie. No cookie needed.</td><td>204</td><td>401 <code>bad_password</code> with <code>tries_left</code>; 429 <code>too_many_attempts</code> with <code>retry_after</code> (5 wrong per 15 minutes per IP)</td></tr>
+<tr><td>POST</td><td><code>/admin/logout</code></td><td>Clears the cookie.</td><td>204</td><td></td></tr>
+<tr><td>GET</td><td><code>/admin/state</code></td><td>The overview: laptop, counts, parcels that need you (each with its key's label), the latest 5 events.</td><td>200</td><td></td></tr>
+</tbody>
+</table>
+
+<h3>Keys, contracts, parcels</h3>
+<table>
+<thead><tr><th>Method</th><th>Path</th><th>What it does</th><th>Success</th><th>Errors</th></tr></thead>
+<tbody>
+<tr><td>GET</td><td><code>/admin/keys</code></td><td>All keys with their contract. Never the secret.</td><td>200</td><td></td></tr>
+<tr><td>POST</td><td><code>/admin/keys</code></td><td>Make a key. Body <code>{"label","contract_id"}</code>. The full key is in this reply only.</td><td>201</td><td>422 <code>invalid</code> (label 1 to 60 characters, unknown contract)</td></tr>
+<tr><td>GET</td><td><code>/admin/keys/:id</code></td><td>One key, its contract and its last 10 parcels.</td><td>200</td><td>404</td></tr>
+<tr><td>POST</td><td><code>/admin/keys/:id/revoke</code></td><td>Revoke. Queued, waiting and running parcels of that key are cancelled (a running one is also told to stop on the laptop).</td><td>200 with <code>cancelled</code></td><td>404</td></tr>
+<tr><td>GET</td><td><code>/admin/contracts</code></td><td>All contracts, each with <code>version</code> and <code>used_by</code>.</td><td>200</td><td></td></tr>
+<tr><td>POST</td><td><code>/admin/contracts</code></td><td>Make a contract: <code>name, folders, tasks, dailyLimit, expires, approval</code>.</td><td>201</td><td>422 <code>invalid</code> with a message per field</td></tr>
+<tr><td>GET</td><td><code>/admin/contracts/:id</code></td><td>One contract.</td><td>200</td><td>404</td></tr>
+<tr><td>PUT</td><td><code>/admin/contracts/:id</code></td><td>Replace a contract. The version goes up. It applies to the next parcel and re-checks queued ones.</td><td>200</td><td>404, 422</td></tr>
+<tr><td>GET</td><td><code>/admin/jobs</code></td><td>Parcels, newest first. <code>?state=</code> and <code>?limit=</code> (default 50, at most 500).</td><td>200</td><td></td></tr>
+<tr><td>GET</td><td><code>/admin/jobs/:id</code></td><td>One parcel with its timeline, a fresh contract check and its key.</td><td>200</td><td>404</td></tr>
+<tr><td>POST</td><td><code>/admin/jobs/:id/approve</code></td><td>Release a waiting parcel. It is checked again first; if it now breaks the contract it becomes <code>refused</code> instead.</td><td>200 (the parcel)</td><td>404, 409 <code>conflict</code> if not waiting</td></tr>
+<tr><td>POST</td><td><code>/admin/jobs/:id/decline</code></td><td>Turn a waiting parcel away (reason "declined by owner").</td><td>200 (the parcel)</td><td>404, 409 <code>conflict</code></td></tr>
+</tbody>
+</table>
+<pre><code>curl -X POST https://&lt;your-hub&gt;/admin/jobs/p_1001/approve \
+  -b "mr_session=..."
+
+HTTP 200
+{"id":"p_1001","key_id":"k_1000","contract_id":"c_1000","contract_version":1,
+ "task":"write_file","args":{"path":"~/notes/todo.md","content":"- buy stamps"},
+ "state":"queued","created_at":1767225600000,"updated_at":1767225660000}</code></pre>
+
+<h3>Tokens, events, laptop</h3>
+<table>
+<thead><tr><th>Method</th><th>Path</th><th>What it does</th><th>Success</th><th>Errors</th></tr></thead>
+<tbody>
+<tr><td>GET</td><td><code>/admin/tokens</code></td><td>Admin tokens: id, label, prefix, scopes, last used, revoked.</td><td>200</td><td></td></tr>
+<tr><td>POST</td><td><code>/admin/tokens</code></td><td>Make a token. Body <code>{"label","scopes":["read",...]}</code>. The token is in this reply only.</td><td>201</td><td>422 <code>invalid</code> (label, empty or unknown scopes)</td></tr>
+<tr><td>POST</td><td><code>/admin/tokens/:id/revoke</code></td><td>Revoke. Takes effect on the token's next request.</td><td>200</td><td>404</td></tr>
+<tr><td>GET</td><td><code>/admin/events</code></td><td><code>?after=&lt;seq&gt;&amp;limit=&amp;tail=1</code> (limit default 200, at most 1000). Returns <code>{events, last_seq}</code>, oldest first. Without <code>tail</code> you get the first <code>limit</code> events after <code>after</code>: use that for replay and catch-up. With <code>tail=1</code> you get the last <code>limit</code> events after <code>after</code>: use that for a first load.</td><td>200</td><td></td></tr>
+<tr><td>GET</td><td><code>/admin/events/stream</code></td><td>Server-Sent Events: replay after <code>?after=</code>, then live. See below.</td><td>200 stream</td><td></td></tr>
+<tr><td>GET</td><td><code>/admin/laptop</code></td><td>Connected or not, last seen, a hint of the credential (<code>mrd_...9a3f</code>), and the queue.</td><td>200</td><td></td></tr>
+<tr><td>POST</td><td><code>/admin/laptop/rotate</code></td><td>New daemon credential, shown once. The old one stops working and the live connection closes.</td><td>200 <code>{"credential"}</code></td><td></td></tr>
+</tbody>
+</table>
+
+<h3>Live event stream</h3>
+<p>The stream sends one message per event, with the event number as its <code>id</code>:</p>
+<pre><code>id: 41
+data: {"seq":41,"ts":1767225600000,"kind":"job.queued","payload":{"job_id":"p_1000","key_id":"k_1000","task":"echo"}}</code></pre>
+<p>It first replays everything after <code>after</code>, then stays open. A <code>: ping</code> comment arrives every 20 seconds to keep it alive. A client that reconnects with a <code>Last-Event-ID</code> header resumes from there. See <a href="/docs/events">Events</a>.</p>
+
+<h2>The daemon socket</h2>
+<p><code>GET /daemon</code> as a WebSocket upgrade, header <code>Authorization: Bearer mrd_...</code>. Without an upgrade request: 426 <code>upgrade_required</code> (unless it is a probe, below). A missing or wrong credential: 401 <code>bad_credential</code>. Only one laptop is connected at a time: a new valid connection replaces the old one. Each message is one JSON text frame.</p>
+<table>
+<thead><tr><th>Message</th><th>From</th><th>Fields</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>hello</code></td><td>daemon</td><td><code>version, last_seq</code></td><td>First message. The Hub marks the laptop connected.</td></tr>
+<tr><td><code>welcome</code></td><td>Hub</td><td><code>server_seq</code></td><td>Reply to hello. The Hub then sends queued parcels, one at a time.</td></tr>
+<tr><td><code>job</code></td><td>Hub</td><td><code>id, task, args, contract, contract_version</code></td><td>Do this. The parcel becomes <code>running</code>.</td></tr>
+<tr><td><code>result</code></td><td>daemon</td><td><code>id, ok, result</code> or <code>error</code></td><td>Done (<code>ok:true</code>) or failed (<code>ok:false</code>).</td></tr>
+<tr><td><code>refuse</code></td><td>daemon</td><td><code>id, reason</code></td><td>The laptop's own check said no.</td></tr>
+<tr><td><code>cancel</code></td><td>Hub</td><td><code>id</code></td><td>Stop this running parcel (its key was revoked).</td></tr>
+<tr><td><code>ping</code> / <code>pong</code></td><td>Hub / daemon</td><td>none</td><td>The Hub pings every 25 seconds. With no pong for 60 seconds, the laptop counts as disconnected.</td></tr>
+</tbody>
+</table>
+<p>The Hub closes the socket with code 4001 when you rotate the credential, and 4002 when another connection replaces it. The daemon does not retry after either. After other drops it reconnects with a growing delay, 1 second up to 30.</p>
+
+<h3>Checking the credential without connecting</h3>
+<p><code>GET /daemon?probe=1</code> with the header <code>Authorization: Bearer mrd_...</code> and no WebSocket upgrade is a plain check. With the right credential it answers 200 <code>{"ok":true,"connected":true}</code> (or <code>false</code> when no laptop is connected). With any other credential it answers 401 <code>bad_credential</code>. It never replaces the connected laptop, so it is safe to call while the daemon is working. It is what <code>mailroom status</code> uses.</p>
+
+<h2>MCP</h2>
+<p><code>POST /mcp</code> with <code>Authorization: Bearer mra_...</code>. One JSON-RPC message per request. Scopes, the 15 tools and the limits are on <a href="/docs/mcp">Claude and other apps (MCP)</a>.</p>
+
+<h2>Error codes at a glance</h2>
+<table>
+<thead><tr><th>Status</th><th>Code</th><th>When</th></tr></thead>
+<tbody>
+<tr><td>401</td><td><code>bad_key</code></td><td>Client key unknown, revoked or its contract expired.</td></tr>
+<tr><td>401</td><td><code>signed_out</code></td><td>No valid owner cookie on an <code>/admin</code> route.</td></tr>
+<tr><td>401</td><td><code>bad_password</code></td><td>Wrong password at sign-in.</td></tr>
+<tr><td>401</td><td><code>bad_credential</code></td><td>Wrong daemon credential.</td></tr>
+<tr><td>401</td><td><code>unauthorized</code></td><td>Wrong or missing admin token on <code>/mcp</code>.</td></tr>
+<tr><td>403</td><td><code>bad_origin</code></td><td>A write from another site.</td></tr>
+<tr><td>404</td><td><code>not_found</code></td><td>No such route, or not yours to see.</td></tr>
+<tr><td>409</td><td><code>conflict</code></td><td>The parcel is not waiting for approval.</td></tr>
+<tr><td>413</td><td><code>too_large</code></td><td>Body over the limit.</td></tr>
+<tr><td>422</td><td><code>invalid</code></td><td>A field is wrong. <code>errors</code> names each one.</td></tr>
+<tr><td>429</td><td><code>rate_limited</code>, <code>too_many_attempts</code></td><td>Too many requests, or too many wrong passwords.</td></tr>
+<tr><td>500</td><td><code>internal</code>, <code>misconfigured</code></td><td>A fault, or the owner password or session secret is not set.</td></tr>
+</tbody>
+</table>
+</main>
+<script type="module" src="/docs/docs.js"></script>
+</body>
+</html>

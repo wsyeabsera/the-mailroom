@@ -23,7 +23,10 @@ const killGroup = p => { try { process.kill(-p.pid, "SIGKILL"); } catch { try { 
 async function until(fn, ms = 20000) { const t = Date.now(); while (Date.now() - t < ms) { const v = await fn(); if (v) return v; await sleep(300); } return null; }
 
 // The user's shell, roughly: ~/.local/bin on PATH, HOME overridden to the throwaway one.
-const env = { PATH: `${homedir()}/.local/bin:${process.env.PATH}`, HOME, TERM: "xterm" };
+// The service test must NEVER touch the real background service (label dev.mailroom.daemon): it gets its own label.
+const SERVICE_LABEL = `dev.mailroom.daemon.e2e${process.pid}`;
+if (SERVICE_LABEL === "dev.mailroom.daemon") process.exit(2);
+const env = { PATH: `${homedir()}/.local/bin:${process.env.PATH}`, HOME, TERM: "xterm", MAILROOM_SERVICE_LABEL: SERVICE_LABEL };
 const wrapper = join(homedir(), ".local/bin/mailroom");
 const mr = (args, extra = {}) => spawnSync(existsSync(wrapper) ? wrapper : "node", existsSync(wrapper) ? args : [join(root, "daemon/cli.ts"), ...args], { env: { ...env, ...extra }, encoding: "utf8", timeout: 60000 });
 const cfgFile = join(HOME, ".mailroom/config.json");
@@ -106,6 +109,10 @@ sys.stdout.write(buf.decode("utf8", "replace")); sys.stdout.write("\\n__EXIT__%d
   procs.push(d);
   let out = ""; d.stdout.on("data", x => (out += x)); d.stderr.on("data", x => (out += x));
   ok(await until(connected, 20000), "`mailroom run` connects: the Hub shows the laptop connected");
+  r = mr(["status"]);
+  ok(r.status === 0 && /accepted \(a laptop is connected\)/.test(r.stdout), "status while it runs says accepted and that a laptop is connected");
+  await sleep(2500);
+  ok(d.exitCode === null && (await connected()), "and `status` did NOT kick the running daemon off (it is still connected)");
   let j = await job("echo", { text: "from the cli" });
   ok(j?.state === "done" && j.result?.echo === "from the cli", "an echo job runs through it");
   const cred2 = await rotate();
@@ -122,6 +129,9 @@ sys.stdout.write(buf.decode("utf8", "replace")); sys.stdout.write("\\n__EXIT__%d
   ok(await until(connected, 20000), "the launchd-run daemon is connected to the Hub");
   r = mr(["service", "status"]);
   ok(r.status === 0 && /running \(pid \d+\)/.test(r.stdout) && /hub: accepted/.test(r.stdout), "service status: running, and the Hub accepts it");
+  const svcPid = /pid (\d+)/.exec(r.stdout)?.[1];
+  await sleep(2500);
+  ok((await connected()) && /pid (\d+)/.exec(mr(["service", "status"]).stdout)?.[1] === svcPid, "service status did not restart or replace the service (same pid, still connected)");
   j = await job("echo", { text: "from the service" });
   ok(j?.state === "done" && j.result?.echo === "from the service", "an echo job runs through the background service");
   // The launchd PATH for the REAL home must find `claude` (a fake HOME here has no Claude login, so it cannot run one).

@@ -10,24 +10,21 @@ export const wsUrl = (url: string) => url.replace(/^http/, "ws").replace(/\/+$/,
 
 export type Fatal = { code: number; message: string };
 
-/** Connect once and report what the Hub said. Used by `status`. */
-export function probe(cfg: Config): Promise<string> {
-  return new Promise(resolve => {
-    const ws = new WebSocket(wsUrl(cfg.url), { headers: { Authorization: `Bearer ${cfg.credential}` }, handshakeTimeout: 8000 });
-    ws.on("open", () => {
-      ws.send(JSON.stringify({ type: "hello", version: VERSION, last_seq: loadLastSeq() }));
-      ws.on("message", () => {
-        resolve("accepted");
-        ws.close();
-      });
-    });
-    ws.on("unexpected-response", (_q, res) => {
-      resolve(res.statusCode === 401 ? "rejected (credential not accepted)" : `unexpected HTTP ${res.statusCode}`);
-      ws.terminate();
-    });
-    ws.on("close", c => resolve(c === 4001 ? "rejected (credential rotated)" : `closed (${c})`));
-    ws.on("error", e => resolve(`unreachable (${e.message})`));
-  });
+/** Ask the Hub whether it accepts this credential, without connecting as a daemon (a second daemon socket would
+ *  replace the running one). Used by `status` and `service status`. */
+export async function probe(cfg: Config): Promise<string> {
+  try {
+    const res = await fetch(`${cfg.url.replace(/\/+$/, "")}/daemon?probe=1`, { headers: { Authorization: `Bearer ${cfg.credential}` }, signal: AbortSignal.timeout(8000) });
+    if (res.status === 200) {
+      const j = (await res.json().catch(() => ({}))) as { connected?: boolean };
+      return j.connected ? "accepted (a laptop is connected)" : "accepted (no laptop connected right now)";
+    }
+    if (res.status === 401) return "rejected (credential not accepted)";
+    if (res.status === 426) return "unknown (this Hub is older than v0.3.3 and has no safe check; redeploy the Hub, or use `mailroom run`)";
+    return `unexpected HTTP ${res.status}`;
+  } catch (e) {
+    return `unreachable (${(e as Error).message})`;
+  }
 }
 
 /** Run until a fatal close (4001, 4002, bad credential). Resolves with the reason; never retries those. */

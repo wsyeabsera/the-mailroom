@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How a parcel travels · The Mailroom</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/docs/docs.css">
+<script src="/js/theme-init.js"></script>
+</head>
+<body data-slug="how-it-works">
+<main id="doc">
+<h1>How a parcel travels</h1>
+<p class="lede">Follow one parcel from the app that sends it to the laptop that does the work, including the two detours: waiting for you, and waiting for the laptop.</p>
+
+<div class="note"><p>The app drops a parcel at the Hub with its key. The Hub checks the contract and answers at once. If the contract says so, the parcel waits for you. Then the Hub hands it to the laptop, which checks again, does the work and sends the result back. The app can ask for the result at any time. If the laptop is away, the parcel simply waits its turn.</p></div>
+
+<h2>The whole journey</h2>
+<figure class="dg">
+<svg viewBox="0 0 760 540" role="img" aria-labelledby="hw-t hw-d">
+  <title id="hw-t">A parcel's journey</title>
+  <desc id="hw-d">A sequence between four lanes: your app, the Hub, you, and the laptop. One: the app sends the parcel with its key. Two: the Hub checks the contract. Three: the Hub answers queued or refused. If approval is needed, four: the Hub tells you, and five: you approve or decline. Six: the Hub sends the job to the laptop; if the laptop is away it waits. Seven: the laptop checks again and does the work. Eight: the laptop returns the result. Nine: the app asks for the state and the result.</desc>
+  <rect class="n raised" x="20" y="12" width="150" height="34" rx="8"/><text class="t c" x="95" y="34">Your app</text>
+  <rect class="n acc" x="210" y="12" width="150" height="34" rx="8"/><text class="t c" x="285" y="34">The Hub</text>
+  <rect class="n raised" x="400" y="12" width="150" height="34" rx="8"/><text class="t c" x="475" y="34">You</text>
+  <rect class="n ok" x="590" y="12" width="150" height="34" rx="8"/><text class="t c" x="665" y="34">The laptop</text>
+  <path class="life" d="M95 46 V528"/><path class="life" d="M285 46 V528"/><path class="life" d="M475 46 V528"/><path class="life" d="M665 46 V528"/>
+
+  <path class="e acc" d="M95 92 H285"/>
+  <text class="s" x="132" y="84">send parcel + key</text>
+  <rect class="n" x="205" y="112" width="160" height="28" rx="8"/><text class="s c" x="285" y="131">check the contract</text>
+  <path class="e dash" d="M285 172 H95"/>
+  <text class="s" x="132" y="164">your parcel's state</text>
+
+  <rect class="lane" x="8" y="196" width="744" height="108" rx="10"/>
+  <text class="s" x="20" y="216">only if the contract says "needs approval"</text>
+  <path class="e" d="M285 244 H475"/>
+  <text class="s" x="318" y="236">waiting_approval</text>
+  <path class="e ok" d="M475 282 H285"/>
+  <text class="s" x="318" y="274">approve or decline</text>
+
+  <path class="e" d="M285 344 H665"/>
+  <text class="s" x="318" y="336">job: state running</text>
+  <rect class="n warn" x="12" y="324" width="178" height="48" rx="8"/>
+  <text class="s c" x="101" y="344">laptop away? the parcel</text><text class="s c" x="101" y="362">stays queued and waits</text>
+  <rect class="n" x="575" y="376" width="180" height="28" rx="8"/><text class="s c" x="665" y="395">check again, do the work</text>
+  <path class="e ok" d="M665 436 H285"/>
+  <text class="s" x="318" y="428">result: done or failed</text>
+  <path class="e" d="M95 478 H285"/>
+  <text class="s" x="132" y="470">where is my parcel?</text>
+  <path class="e dash" d="M285 512 H95"/>
+  <text class="s" x="132" y="504">state and result</text>
+
+  <g class="badge"><circle cx="111" cy="80" r="10"/><text x="111" y="80">1</text></g>
+  <g class="badge"><circle cx="190" cy="126" r="10"/><text x="190" y="126">2</text></g>
+  <g class="badge"><circle cx="116" cy="160" r="10"/><text x="116" y="160">3</text></g>
+  <g class="badge"><circle cx="301" cy="232" r="10"/><text x="301" y="232">4</text></g>
+  <g class="badge"><circle cx="301" cy="270" r="10"/><text x="301" y="270">5</text></g>
+  <g class="badge"><circle cx="301" cy="332" r="10"/><text x="301" y="332">6</text></g>
+  <g class="badge"><circle cx="560" cy="390" r="10"/><text x="560" y="390">7</text></g>
+  <g class="badge"><circle cx="301" cy="424" r="10"/><text x="301" y="424">8</text></g>
+  <g class="badge"><circle cx="116" cy="466" r="10"/><text x="116" y="466">9</text></g>
+</svg>
+<figcaption>One parcel's journey. Time runs downward. The shaded band is the approval detour; the amber note is the offline queue.</figcaption>
+</figure>
+
+<h2>The steps in plain words</h2>
+<ol class="steps">
+<li><strong>The app sends the parcel.</strong> It posts to the Hub with its key in the <code>Authorization</code> header. A revoked key, or a key whose contract has expired, is turned away at the door with a 401. Nothing is recorded as a parcel.</li>
+<li><strong>The Hub checks the contract.</strong> This is check 1. It looks at the expiry, the task, the daily limit and the path. The rules are in <a href="/docs/keys-contracts">Keys and contracts</a>.</li>
+<li><strong>The Hub answers at once.</strong> Three outcomes:
+<ul>
+<li><span class="pill">queued</span> The parcel is allowed. The app gets a 202.</li>
+<li><span class="pill warn">waiting_approval</span> The parcel is allowed but needs you. The app also gets a 202.</li>
+<li><span class="pill err">refused</span> The parcel broke a rule. The app gets a 403 with the reason. The parcel is still written down, but it never reaches the laptop.</li>
+</ul></li>
+<li><strong>The Hub tells you.</strong> A waiting parcel shows under "Needs you" on the Overview page and on the Approvals page. The browser extension also shows a badge (view only: you approve in the app).</li>
+<li><strong>You decide.</strong> Approve moves it to <code>queued</code>. Decline sets it to <code>refused</code> with the reason "declined by owner". Before it moves, the Hub checks the contract once more, so an approval cannot get past a contract you have since tightened.</li>
+<li><strong>The Hub hands it to the laptop.</strong> The Hub sends one parcel at a time, oldest first, and only when the laptop is free. Just before sending it checks the contract again. The parcel becomes <span class="pill">running</span>.</li>
+<li><strong>The laptop checks again and works.</strong> This is check 2. The laptop re-checks the contract that came with the job, using real paths, its own home folder and its own clock. Then it runs the task.</li>
+<li><strong>The result comes back.</strong> <span class="pill ok">done</span> with a result, or <span class="pill err">failed</span> with an error. If the laptop's own check says no, the parcel becomes <span class="pill err">refused</span>.</li>
+<li><strong>The app asks.</strong> The app reads <code>GET /api/jobs/&lt;id&gt;</code> and sees the state and, when done, the result. It can only see its own key's parcels.</li>
+</ol>
+
+<h3>When the laptop is away</h3>
+<p>The Hub does not need the laptop to accept a parcel. Allowed parcels stay <code>queued</code>. When the laptop connects, the Hub sends them in the order they arrived. The Laptop page shows them under "In the queue". If the laptop drops while a parcel is <code>running</code>, that parcel goes back to <code>queued</code> and runs again after the laptop returns.</p>
+<div class="warn"><p>A parcel that was <code>running</code> when the laptop dropped can run a second time, because the Hub cannot know how far it got. Keep tasks safe to repeat, or watch for it.</p></div>
+
+<h2>The laptop dials out</h2>
+<figure class="dg">
+<svg viewBox="0 0 760 210" role="img" aria-labelledby="dl-t dl-d">
+  <title id="dl-t">The laptop dials out</title>
+  <desc id="dl-d">The laptop opens a WebSocket connection out to the Hub. The Hub sends jobs back down the same open connection. Nothing connects in to the laptop.</desc>
+  <rect class="n ok" x="16" y="40" width="200" height="124" rx="12"/>
+  <text class="t c" x="116" y="70">Your laptop</text>
+  <text class="s c" x="116" y="92">the daemon</text>
+  <text class="s c" x="116" y="126">no port open</text>
+  <text class="s c" x="116" y="144">to the internet</text>
+  <rect class="n acc" x="544" y="40" width="200" height="124" rx="12"/>
+  <text class="t c" x="644" y="70">The Hub</text>
+  <text class="s c" x="644" y="92">in the cloud</text>
+  <path class="e acc" d="M216 82 H544"/>
+  <text class="s c" x="380" y="72">1 the laptop opens a connection</text>
+  <path class="e ok" d="M544 126 H216"/>
+  <text class="s c" x="380" y="150">2 jobs come back on that same connection</text>
+  <text class="s c" x="380" y="192">the Hub never connects in</text>
+</svg>
+<figcaption>The laptop opens the door from the inside. Jobs, results and pings all travel on that one open connection.</figcaption>
+</figure>
+<p>Your laptop sits behind your home or office network. It cannot be reached from outside, and you do not have to change any settings. Instead the daemon opens a WebSocket (a long-lived two-way connection) to the Hub. It sends "hello" and the last event number it saw. The Hub answers "welcome" and sends any waiting jobs.</p>
+<ul>
+<li>The Hub pings every 25 seconds. If the laptop does not answer within 60 seconds, the Hub treats it as gone.</li>
+<li>If the connection drops, the daemon tries again with a growing wait, from 1 second up to 30 seconds.</li>
+<li>Only one laptop is live at a time. A new valid connection replaces the old one.</li>
+</ul>
+
+<details>
+<summary>Under the hood: one writer, and an event for everything</summary>
+<ul>
+<li><strong>One writer.</strong> The Hub is a single Durable Object (one small program with its own SQLite database, hosted by Cloudflare). Every request goes through it, one at a time, so two parcels can never corrupt each other and the daily limit is counted in one place.</li>
+<li><strong>Events.</strong> Every change appends a line to an append-only log with a rising number (<code>seq</code>): <code>job.queued</code>, <code>job.approved</code>, <code>job.running</code>, <code>job.done</code> and so on. A parcel's "Tracking" list is built from these. See <a href="/docs/events">Events</a>.</li>
+<li><strong>Live stream.</strong> The Events page listens to <code>/admin/events/stream</code>, a Server-Sent Events stream. It first replays what you missed after a given number, then sends new events as they happen, with a small ping every 20 seconds.</li>
+<li><strong>Same rule, two places.</strong> The Hub and the daemon both import <code>shared/contract.ts</code>.</li>
+</ul>
+</details>
+
+<div class="tip"><p>Open a finished parcel on the Parcels page and read "Tracking". Each line is one event from this journey. Then open the Events page and find the same lines.</p></div>
+<p>Next: <a href="/docs/keys-contracts">Keys and contracts</a>, then <a href="/docs/parcels">Parcels and approvals</a>.</p>
+</main>
+<script type="module" src="/docs/docs.js"></script>
+</body>
+</html>

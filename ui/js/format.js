@@ -22,7 +22,7 @@ export const plural = (n, one, many) => `${n} ${n === 1 ? one : many || one + "s
 export function bytes(s) { return new TextEncoder().encode(typeof s === "string" ? s : "").length; }
 export function greeting() {
   const h = new Date().getHours();
-  return `Good ${h < 12 ? "morning" : h < 18 ? "afternoon" : "evening"}, Yab.`;
+  return `Good ${h < 12 ? "morning" : h < 18 ? "afternoon" : "evening"}.`;
 }
 export function clip(s, n = 80) { s = String(s ?? ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
 
@@ -62,6 +62,9 @@ export function eventText(ev) {
     case "daemon.connected": return "Laptop connected";
     case "daemon.disconnected": return "Laptop disconnected";
     case "daemon.rotated": return "Laptop credential rotated";
+    case "token.created": return `Token “${p.label}” created`;
+    case "token.revoked": return `Token “${p.label}” revoked`;
+    case "mcp.call": return `${p.label ?? "A token"} called ${String(p.tool ?? "a tool").replace(/^mailroom_/, "")}${p.ok === false ? " (refused)" : ""}`;
     default: return ev.kind;
   }
 }

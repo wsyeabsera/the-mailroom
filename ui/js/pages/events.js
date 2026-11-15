@@ -56,7 +56,7 @@ export function render(view) {
     } catch { countMissed(); }
   }
 
-  loadInto(body, () => api("/admin/events?limit=100"), (r) => {
+  loadInto(body, () => api("/admin/events?limit=100&tail=1"), (r) => {
     body.append(h("h1", null, "Events ", status), sub, notice,
       h("div", { class: "card tblwrap" }, h("table", null, tbody), empty));
     r.events.sort((a, b) => a.seq - b.seq).forEach((e) => addRow(e));

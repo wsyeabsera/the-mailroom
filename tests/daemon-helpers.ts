@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket } from "ws";
+import http from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,6 +10,8 @@ const CLI = path.resolve(import.meta.dirname, "../daemon/cli.ts");
 
 export class FakeHub {
   wss!: WebSocketServer;
+  http!: http.Server;
+  probes = 0; // plain GET /daemon?probe=1 checks (what `mailroom status` must use)
   port = 0;
   sockets: WebSocket[] = [];
   auth: (string | undefined)[] = [];
@@ -17,17 +20,25 @@ export class FakeHub {
   onConnect: (ws: WebSocket) => void = ws => ws.send(JSON.stringify({ type: "welcome", server_seq: 7 }));
 
   async start() {
+    // Like the real Hub: GET /daemon?probe=1 checks the credential and never opens a daemon socket.
+    this.http = http.createServer((req, res) => {
+      const h = req.headers.authorization;
+      if (req.url?.startsWith("/daemon?probe=1")) {
+        this.probes++;
+        if (h === `Bearer ${CRED}`) { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: true, connected: this.sockets.length > 0 })); }
+        else { res.writeHead(401); res.end("no"); }
+      } else { res.writeHead(426); res.end(); }
+    });
     this.wss = new WebSocketServer({
-      port: 0,
-      host: "127.0.0.1",
+      server: this.http,
       verifyClient: (info, cb) => {
         const h = info.req.headers.authorization;
         this.auth.push(h);
         h === `Bearer ${CRED}` ? cb(true) : cb(false, 401, "no");
       },
     });
-    await new Promise(r => this.wss.on("listening", r));
-    this.port = (this.wss.address() as any).port;
+    await new Promise<void>(r => this.http.listen(0, "127.0.0.1", () => r()));
+    this.port = (this.http.address() as any).port;
     this.wss.on("connection", ws => {
       this.sockets.push(ws);
       ws.on("message", raw => {
@@ -52,6 +63,7 @@ export class FakeHub {
   async stop() {
     for (const c of this.wss.clients) c.terminate();
     await new Promise(r => this.wss.close(r));
+    await new Promise(r => this.http.close(r));
   }
 }
 

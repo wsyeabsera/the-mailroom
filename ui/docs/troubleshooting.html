@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Troubleshooting · The Mailroom</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/docs/docs.css">
+<script src="/js/theme-init.js"></script>
+</head>
+<body data-slug="troubleshooting">
+<main id="doc">
+<h1>Troubleshooting</h1>
+<p class="lede">The things most likely to go wrong, each with what causes it and what to do.</p>
+
+<div class="note"><p>Start with the place that tells you the most: the <strong>Laptop</strong> page for connection problems, the <strong>refused parcel's page</strong> for "why was this turned away", and the log file <code>~/Library/Logs/mailroom-daemon.log</code> for anything about the background service.</p></div>
+
+<h2>Where to look first</h2>
+<table>
+<thead><tr><th>You see</th><th>Go to</th></tr></thead>
+<tbody>
+<tr><td>"Laptop is out to lunch"</td><td><a href="#out-to-lunch">Out to lunch</a></td></tr>
+<tr><td>The laptop keeps flipping between connected and away</td><td><a href="#restarts">The daemon keeps exiting</a>, <a href="#replaced">Replaced by another daemon</a></td></tr>
+<tr><td>A parcel says refused or failed</td><td><a href="#refused">Refused</a>, <a href="#failed">Failed</a></td></tr>
+<tr><td>A client gets 401 or 429</td><td><a href="#key-stopped">A key stopped working</a></td></tr>
+<tr><td>Extension stuck on "Checking..." or showing x or ?</td><td><a href="#checking">Checking...</a></td></tr>
+<tr><td>Cannot sign in</td><td><a href="#locked">Locked out</a>, <a href="#misconfigured">Misconfigured</a></td></tr>
+</tbody>
+</table>
+
+<h2>The laptop</h2>
+
+<h3 id="out-to-lunch">The app says the laptop is "out to lunch"</h3>
+<p><strong>Cause.</strong> No daemon is connected to the Hub right now. The laptop may be asleep or offline, <code>mailroom</code> may never have been started, or its credential may no longer be accepted. Parcels are not lost: they queue and run in order when it is back.</p>
+<p><strong>Fix.</strong></p>
+<ol class="steps">
+  <li><p>On the laptop run <code>mailroom status</code>. The <code>hub:</code> line tells you what the Hub says: <code>accepted</code>, <code>rejected</code>, <code>unknown</code> (an old Hub) or <code>unreachable</code>.</p></li>
+  <li><p>Not logged in? Run <code>mailroom login</code>. Rejected? The credential was rotated or is wrong: run <code>mailroom login</code> with the current one from the Laptop page.</p></li>
+  <li><p>Start it: <code>mailroom run</code> to try it, or <code>mailroom service install</code> to keep it running (macOS).</p></li>
+  <li><p>Already installed? Run <code>mailroom service status</code>. If it says "not running", read the end of <code>~/Library/Logs/mailroom-daemon.log</code> for the reason.</p></li>
+</ol>
+<div class="warn"><p><code>mailroom status</code> and <code>mailroom service status</code> are safe: they only ask the Hub and never replace a running daemon. If the Laptop page still flips between connected and away, a second daemon may be using the same credential. See below.</p></div>
+
+<h3 id="restarts">The daemon exits again and again</h3>
+<p><strong>Cause.</strong> The background service restarts the daemon whenever it stops. If it stops right away every time, launchd waits 30 seconds between tries. The usual reasons are a credential the Hub rejects, no saved login ("Not logged in"), or another daemon that took over. A wrong Hub address does not make it exit: it keeps retrying and the log shows "reconnecting".</p>
+<p><strong>Fix.</strong> Read the last lines of <code>~/Library/Logs/mailroom-daemon.log</code>. They name the reason. Then fix it (usually <code>mailroom login</code>) and run <code>mailroom service install</code> again. That replaces the running copy at once instead of waiting for the next 30 second retry. To stop the loop while you sort it out, run <code>mailroom service uninstall</code>.</p>
+
+<h3 id="replaced">The log says "Replaced by another daemon. Exiting."</h3>
+<p><strong>Cause.</strong> Only one daemon can be connected at a time. A second connection takes over and the first one is told to leave. There is exactly one daemon credential per Hub, so anything that connects with it counts: a second <code>mailroom run</code>, or another machine using the same credential.</p>
+<p>The usual trap is running both the background service and a manual <code>mailroom run</code>. They take over from each other. The loser prints "Replaced by another daemon. Exiting." and exits with code 2. Under launchd it comes back about 30 seconds later and takes over again, so the laptop keeps flipping between connected and away.</p>
+<p><strong>Fix.</strong> Run only one daemon. Stop one of them: run <code>mailroom service uninstall</code> to remove the background service, or stop the manual <code>mailroom run</code> with <kbd>Ctrl</kbd>+<kbd>C</kbd>. The Hub has one credential, so a second machine cannot be given its own.</p>
+
+<h3 id="rotated">The credential was rotated</h3>
+<p><strong>Cause.</strong> Someone (you) pressed "Rotate credential" on the Laptop page. The old credential died at once. The daemon prints "The daemon credential was rotated. Run <code>mailroom login</code> with the new credential." and exits.</p>
+<p><strong>Fix.</strong> Copy the new credential from the Laptop page (it is shown once), then run <code>mailroom login</code> and <code>mailroom service install</code>. If you lost it, rotate again. Full steps are on <a href="/docs/laptop">The laptop and the daemon</a>.</p>
+
+<h3 id="claude-path">A <code>claude</code> task fails because <code>claude</code> is not found</h3>
+<p><strong>Cause.</strong> The background service does not get your terminal's PATH. launchd gives it a short one: Node's folder, <code>~/.local/bin</code>, <code>/opt/homebrew/bin</code>, <code>/usr/local/bin</code> and the system folders. If <code>claude</code> lives somewhere else, a terminal finds it but the service does not. The job fails with an error from the system that it could not start <code>claude</code>.</p>
+<p><strong>Fix.</strong> Make <code>claude</code> reachable from one of those folders, for example with a link in <code>~/.local/bin</code>. Then run <code>mailroom service install</code> again, because the PATH is written when you install.</p>
+
+<h2>Parcels and keys</h2>
+
+<h3 id="refused">A parcel was refused</h3>
+<p><strong>Cause.</strong> The contract said no. The most common reasons: the path is outside the allowed folders, the task is not in the contract, or the daily limit is reached. The daemon can also refuse a path that <em>looks</em> inside but really points outside (a symlink).</p>
+<p><strong>Fix.</strong> Open <strong>Parcels</strong>, click the refused parcel and read <strong>Why it was refused</strong>. It shows what was asked next to what the contract allows. If the request was fine, click <strong>Widen the contract</strong> and add the folder or task. If not, leave it refused. Nothing reached your laptop either way.</p>
+
+<h3 id="failed">A parcel says "failed"</h3>
+<p><strong>Cause.</strong> The contract allowed it, but the work went wrong on the laptop. Known reasons: a file larger than 200 KB ("file is bigger than 200 KB"), content over 200 KB, a <code>claude</code> task that ran longer than 5 minutes ("claude timed out"), or <code>claude</code> exiting with an error.</p>
+<p><strong>Fix.</strong> The parcel page shows the error text. Send a smaller file, or shorten the prompt. The timeout can be changed for a daemon you start yourself with <code>MAILROOM_CLAUDE_TIMEOUT_MS</code> (see <a href="/docs/cli">The mailroom command</a>).</p>
+
+<h3 id="key-stopped">A key stopped working</h3>
+<p><strong>Cause.</strong> There are three different reasons, and they look different to the client.</p>
+<table>
+<thead><tr><th>The client sees</th><th>Cause</th></tr></thead>
+<tbody>
+<tr><td><code>401</code> <code>bad_key</code></td><td>The key was revoked, or its contract has expired. A revoked key stops at once.</td></tr>
+<tr><td>A refused parcel, reason "daily limit of N reached"</td><td>The key has used its parcels for today. The count starts again at midnight UTC.</td></tr>
+<tr><td><code>429</code></td><td>More than 60 requests in a minute from this key. Polling a parcel counts too, so poll every few seconds, not every second.</td></tr>
+</tbody>
+</table>
+<p><strong>Fix.</strong> Open <strong>Keys</strong> and check the status. A revoked key cannot be undone: hand out a new one. For an expired contract, set a later date. For the daily limit, raise it in the contract.</p>
+
+<h2>The extension</h2>
+
+<h3 id="checking">The extension's settings are stuck on "Checking..."</h3>
+<p><strong>Cause.</strong> The extension asks the Hub for its state and waits at most 8 seconds. After that it stops waiting and tells you what it thinks went wrong, so "Checking..." should not stay. If it does, reload the extension on <code>chrome://extensions</code>.</p>
+<p>What the message means:</p>
+<table>
+<thead><tr><th>Message</th><th>Cause and fix</th></tr></thead>
+<tbody>
+<tr><td>No answer from the Hub after 8 s. Check the address and your connection.</td><td>The address is wrong, you are offline, or the Hub is down. Open the address in a normal tab.</td></tr>
+<tr><td>Cannot reach the Hub. Is the address right, and is access to it allowed for this extension?</td><td>Wrong address, or Chrome did not allow access to it. Save the address again and allow it when asked.</td></tr>
+<tr><td>Signed out. Sign in on the Hub, then reopen the popup.</td><td>Open the Hub in a normal tab and sign in. The extension uses that sign-in.</td></tr>
+<tr><td>Use the bare address, with no path.</td><td>Write <code>https://&lt;your-hub&gt;</code> and nothing after it.</td></tr>
+<tr><td>Permission to reach that address was not granted.</td><td>You declined the browser's question. Click Save and connect again and allow it.</td></tr>
+<tr><td>Hub answered 500</td><td>The Hub itself has a problem. See <a href="#misconfigured">Misconfigured</a>.</td></tr>
+</tbody>
+</table>
+<p>A grey <code>x</code> on the toolbar icon also means signed out, and a grey <code>?</code> means no answer.</p>
+
+<h2>Signing in and deploying</h2>
+
+<h3 id="locked">The sign-in page says "Door is locked"</h3>
+<p><strong>Cause.</strong> Five wrong passwords from your address within 15 minutes. While the door is locked even the right password is refused.</p>
+<p><strong>Fix.</strong> Wait. The page shows a countdown, and the 15 minutes count from the first wrong try. A correct sign-in afterwards clears the count.</p>
+
+<h3 id="misconfigured">Sign-in fails with "The door is stuck", or the Hub answers 500 "misconfigured"</h3>
+<p><strong>Cause.</strong> A new Worker has no password yet. Until the two secrets <code>OWNER_PASSWORD</code> and <code>SESSION_SECRET</code> are set, the Hub refuses every sign-in on purpose (it fails closed), and the sign-in page can only say the door is stuck.</p>
+<p><strong>Fix.</strong> The secrets can only be set after the Worker exists, so deploy once first, then set them:</p>
+<pre><code>npx wrangler secret put OWNER_PASSWORD
+npx wrangler secret put SESSION_SECRET</code></pre>
+<p>Locally, put both in <code>.dev.vars</code> and restart <code>npm run dev</code>.</p>
+
+<div class="tip"><p>Not sure which end is at fault? Open the Laptop page. "Connected" means the laptop side is fine and the problem is in a contract or a key. "Out to lunch" means start with the first question on this page.</p></div>
+
+<p>Related: <a href="/docs/security">Security model</a> and <a href="/docs/events">Events</a> (every refusal and failure is written there).</p>
+</main>
+<script type="module" src="/docs/docs.js"></script>
+</body>
+</html>

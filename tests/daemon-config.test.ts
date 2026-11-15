@@ -33,6 +33,9 @@ test("status accepts / rejects, logout deletes", async () => {
   assert.equal(await s.exited, 0);
   assert.match(s.out(), /hub: accepted/);
   assert.ok(!s.out().includes(CRED));
+  // Regression: `status` used to open a second daemon socket, which made the Hub drop the running daemon.
+  assert.equal(hub.sockets.length, 0, "status must not connect as a daemon");
+  assert.equal(hub.probes, 1);
   await cli(home, ["login", "--url", hub.url, "--credential", "mrd_" + "b".repeat(32)]).exited;
   const s2 = cli(home, ["status"]);
   assert.notEqual(await s2.exited, 0);

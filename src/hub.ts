@@ -305,7 +305,7 @@ export class Hub extends DurableObject<Env> {
       if (seg[2] === "stream" && seg.length === 3) return this.stream(req, after);
       if (seg.length === 2) {
         const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") ?? "200", 10) || 200, 1), 1000);
-        return json(this.eventList(after, limit));
+        return json(this.eventList(after, limit, url.searchParams.get("tail") === "1"));
       }
       return err(404, "not_found");
     }
@@ -332,8 +332,13 @@ export class Hub extends DurableObject<Env> {
     const rows = state ? this.sql.all<Row>("SELECT * FROM jobs WHERE state = ? ORDER BY created_at DESC, id DESC LIMIT ?", state, limit) : this.sql.all<Row>("SELECT * FROM jobs ORDER BY created_at DESC, id DESC LIMIT ?", limit);
     return rows.map(this.jobOut);
   }
-  private eventList(after: number, limit: number) {
-    return { events: this.sql.all<Row>("SELECT * FROM events WHERE seq > ? ORDER BY seq LIMIT ?", after, limit).map(this.evOut), last_seq: this.lastEventSeq() };
+  // `tail` returns the LAST `limit` events after `after` (still oldest first): what a page wants on first load. Without it
+  // you get the first `limit` events after `after`, which is what replay and catch-up want.
+  private eventList(after: number, limit: number, tail = false) {
+    const rows = tail
+      ? this.sql.all<Row>("SELECT * FROM (SELECT * FROM events WHERE seq > ? ORDER BY seq DESC LIMIT ?) ORDER BY seq", after, limit)
+      : this.sql.all<Row>("SELECT * FROM events WHERE seq > ? ORDER BY seq LIMIT ?", after, limit);
+    return { events: rows.map(this.evOut), last_seq: this.lastEventSeq() };
   }
   private keyDetail(k: Row) {
     const c = this.contractRow(k.contract_id)!;
@@ -612,12 +617,16 @@ export class Hub extends DurableObject<Env> {
 
   // ---- daemon WebSocket ----
   private async daemonUpgrade(req: Request): Promise<Response> {
-    if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") return err(426, "upgrade_required");
+    // `?probe=1` only checks the credential and reports whether a laptop is connected. It must never replace the live
+    // connection: `mailroom status` used to open a second daemon socket, which kicked the running daemon off.
+    const probe = new URL(req.url).searchParams.get("probe") === "1";
+    if (!probe && req.headers.get("Upgrade")?.toLowerCase() !== "websocket") return err(426, "upgrade_required");
     const tok = bearer(req.headers.get("Authorization"));
     const d = this.one("SELECT hash FROM daemon WHERE id = 1");
     // Always hash and compare, so a missing or wrong-kind token costs the same as a wrong one.
     const hash = await hashToken(tok ?? "");
     if (!tok || tokenKind(tok) !== "daemon" || !d || !safeEqual(d.hash, hash)) return err(401, "bad_credential");
+    if (probe) return json({ ok: true, connected: !!this.daemon?.hello });
 
     const [client, server] = Object.values(new WebSocketPair()) as [WebSocket, WebSocket];
     server.accept();

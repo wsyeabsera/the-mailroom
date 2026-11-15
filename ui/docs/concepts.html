@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The big picture · The Mailroom</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/docs/docs.css">
+<script src="/js/theme-init.js"></script>
+</head>
+<body data-slug="concepts">
+<main id="doc">
+<h1>The big picture</h1>
+<p class="lede">The Mailroom is a small office for your software: it takes requests at a front desk, checks them against rules, and hands the safe ones to your laptop.</p>
+
+<div class="note"><p>An app sends a <strong>parcel</strong> (a request) with a <strong>key</strong> (who is sending). The <strong>Hub</strong> (the front desk, in the cloud) checks it against the key's <strong>contract</strong> (what that sender may do). Safe parcels go to your <strong>laptop</strong>, risky ones wait for <strong>you</strong>, and anything outside the rules is refused. The laptop checks again before it does anything.</p></div>
+
+<h2>The mailroom idea</h2>
+<p>Think of the mail room in a company. Anyone can drop a parcel at the front desk. The clerk does not just pass it on. The clerk looks at who sent it and reads the rules for that sender. Then the clerk does one of three things.</p>
+<ul>
+<li><strong>Allow it.</strong> The parcel goes to the person who does the work.</li>
+<li><strong>Hold it.</strong> The parcel waits on a shelf until you say yes.</li>
+<li><strong>Turn it away.</strong> The clerk writes down why. Nothing is delivered.</li>
+</ul>
+<p>The Mailroom works the same way. The work is done by Claude Code and a few small tasks on one laptop: yours.</p>
+
+<h2>The cast</h2>
+<figure class="dg">
+<svg viewBox="0 0 760 392" role="img" aria-labelledby="cn-t cn-d">
+  <title id="cn-t">The cast of the Mailroom</title>
+  <desc id="cn-d">A client app sends a parcel with a key to the Hub. The Hub runs check one, the contract check, and keeps a waiting shelf and a ledger. Approved and allowed parcels go to the laptop, which dials out to the Hub and runs check two before doing the work. You approve waiting parcels from the web app.</desc>
+  <rect class="n raised" x="16" y="56" width="168" height="124" rx="12"/>
+  <text class="t c" x="100" y="82">Client app</text>
+  <text class="s c" x="100" y="102">any program of yours</text>
+  <rect class="n" x="36" y="120" width="128" height="40" rx="8"/>
+  <text class="s c" x="100" y="137">its key</text>
+  <text class="s m c" x="100" y="152">mr_live_...</text>
+  <rect class="n acc" x="274" y="16" width="232" height="260" rx="14"/>
+  <text class="t c" x="390" y="44">The Hub</text>
+  <text class="s c" x="390" y="62">the front desk, in the cloud</text>
+  <rect class="n" x="294" y="80" width="192" height="52" rx="8"/>
+  <text class="t c" x="390" y="102">Check 1: the gateway</text>
+  <text class="s c" x="390" y="120">reads the contract</text>
+  <rect class="n warn" x="294" y="146" width="192" height="52" rx="8"/>
+  <text class="t c" x="390" y="168">The waiting shelf</text>
+  <text class="s c" x="390" y="186">parcels that need you</text>
+  <rect class="n" x="294" y="212" width="192" height="52" rx="8"/>
+  <text class="t c" x="390" y="234">The ledger</text>
+  <text class="s c" x="390" y="252">every step is written down</text>
+  <rect class="n ok" x="596" y="56" width="148" height="140" rx="12"/>
+  <text class="t c" x="670" y="82">Your laptop</text>
+  <text class="s c" x="670" y="102">the daemon</text>
+  <rect class="n" x="610" y="120" width="120" height="52" rx="8"/>
+  <text class="t c" x="670" y="142">Check 2</text>
+  <text class="s c" x="670" y="160">real paths</text>
+  <rect class="n raised" x="274" y="320" width="232" height="52" rx="12"/>
+  <text class="t c" x="390" y="342">You</text>
+  <text class="s c" x="390" y="360">web app · Claude · extension (view only)</text>
+  <path class="e acc" d="M184 110 H274"/>
+  <text class="s c" x="229" y="102">parcel</text>
+  <path class="e dash" d="M596 90 H506"/>
+  <text class="s c" x="551" y="82">dials out</text>
+  <path class="e ok" d="M506 150 H596"/>
+  <text class="s c" x="551" y="142">job</text>
+  <path class="e" d="M390 320 V276"/>
+  <text class="s" x="400" y="302">approve or decline</text>
+</svg>
+<figcaption>The floor plan. The two checks are marked "Check 1" and "Check 2". The laptop opens the connection to the Hub, never the other way round.</figcaption>
+</figure>
+
+<table>
+<thead><tr><th>Who</th><th>In the mailroom</th><th>In plain words</th></tr></thead>
+<tbody>
+<tr><td><strong>Client app</strong></td><td>the sender</td><td>A program of yours that wants work done on your laptop.</td></tr>
+<tr><td><strong>Key</strong></td><td>the sender's badge</td><td>A secret that says who is sending. It looks like <code>mr_live_...</code>.</td></tr>
+<tr><td><strong>Contract</strong></td><td>the rule sheet</td><td>What that key may do: folders, tasks, a daily limit, an expiry, and which tasks need your approval.</td></tr>
+<tr><td><strong>Parcel</strong></td><td>the parcel</td><td>One request, for example "read this file". The app calls it a job.</td></tr>
+<tr><td><strong>The Hub</strong></td><td>the front desk</td><td>A Cloudflare Worker with one database. It checks, queues and records.</td></tr>
+<tr><td><strong>The laptop daemon</strong></td><td>the workbench</td><td>A small program on your Mac. It does the work, one parcel at a time.</td></tr>
+<tr><td><strong>You</strong></td><td>the owner</td><td>The only person who signs in. You make keys and contracts, and approve risky parcels.</td></tr>
+</tbody>
+</table>
+
+<h2>Two checks, and why</h2>
+<p>Every parcel is checked twice with the same rule, which lives in one file (<code>shared/contract.ts</code>).</p>
+<ol class="steps">
+<li><strong>The gateway check, in the cloud.</strong> It runs when the parcel arrives. A parcel that breaks the contract is refused here and never leaves the Hub.</li>
+<li><strong>The laptop check, on your machine.</strong> It runs again just before the work starts, using the contract that arrives with the job. It also looks at <em>real</em> paths, so a shortcut (a symlink) that points outside an allowed folder is caught. It trusts the Hub for what the contract says.</li>
+</ol>
+<p>Why twice? The cloud is someone else's computer. The laptop sees things the cloud cannot, such as where a symlink really points, and it catches Hub bugs and stale state. It does not guard against a compromised Hub, which could send a wider contract.</p>
+<div class="warn"><p>The contract limits <em>where</em> a task may work, not <em>what</em> Claude does there. A <code>claude</code> task runs <code>claude -p</code> with whatever permissions that command has on your laptop. Keep <code>claude</code> out of contracts you do not trust.</p></div>
+
+<h2>What it is not</h2>
+<ul>
+<li><strong>Not a public service.</strong> There is one owner and one laptop. There are no user accounts and no sign-up.</li>
+<li><strong>Not for other people's machines.</strong> It is built for personal use on your own computer.</li>
+<li><strong>Not a way into your laptop.</strong> Nothing from the internet connects to it. The laptop connects out (see <a href="/docs/how-it-works">How a parcel travels</a>).</li>
+<li><strong>Not a way around your approval.</strong> A task the contract marks "needs approval" does not run until you click.</li>
+</ul>
+
+<h2>Words you will see</h2>
+<table>
+<thead><tr><th>Word</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>queued</code></td><td>Allowed, and waiting for the laptop to take it.</td></tr>
+<tr><td><code>waiting_approval</code></td><td>Waiting for you. Shown as "Needs you".</td></tr>
+<tr><td><code>refused</code></td><td>Turned away, with a written reason.</td></tr>
+<tr><td>daemon credential</td><td>The laptop's own secret, <code>mrd_...</code>. It is not a client key.</td></tr>
+<tr><td>event</td><td>One line in the ledger. Every change adds one.</td></tr>
+<tr><td>task</td><td>A kind of work: <code>echo</code>, <code>read_file</code>, <code>write_file</code> or <code>claude</code>.</td></tr>
+</tbody>
+</table>
+<p>The full list is in the <a href="/docs/glossary">Glossary</a>.</p>
+
+<div class="tip"><p>Open the admin app and look at the sidebar: Overview, Parcels, Approvals, Keys, Contracts, Tokens, Laptop, Events (plus a Help link to these docs). Each is one part of this floor plan. Then go on to <a href="/docs/quickstart">Set it up in 10 minutes</a>.</p></div>
+</main>
+<script type="module" src="/docs/docs.js"></script>
+</body>
+</html>

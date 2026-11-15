@@ -36,9 +36,9 @@ Nothing is updated in place except job state and revocation; each change also ap
 2. Gateway checks the job against the contract. Outside it: job is `refused`, event recorded, nothing reaches the laptop.
 3. Allowed: job is `queued` (or `waiting_approval` if the contract says so).
 4. If the daemon is connected, the Hub pushes the job. If not, it waits; the UI shows "waiting for laptop".
-5. Daemon **re-checks the contract copy it holds** before acting, then runs and returns the result. Hub stores it; client reads it by job id.
+5. The Hub sends the job with its contract; the daemon **checks that contract again on the laptop** before acting (real paths and symlinks, `~` with the laptop's home, the laptop's clock), then runs and returns the result. Hub stores it; client reads it by job id.
 
-The daemon enforcing the contract itself means a compromised gateway cannot widen what the laptop will do.
+The second check catches Hub bugs, stale state and symlink or path tricks the gateway cannot see. It does **not** make the laptop independent of the Hub: the contract arrives in the job message, so a compromised Hub could send a wider one. A laptop-side ceiling (folders and tasks the daemon refuses to go beyond whatever the Hub says) is not built yet.
 
 ## Rules
 

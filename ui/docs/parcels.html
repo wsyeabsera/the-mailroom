@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parcels and approvals · The Mailroom</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/docs/docs.css">
+<script src="/js/theme-init.js"></script>
+</head>
+<body data-slug="parcels">
+<main id="doc">
+<h1>Parcels and approvals</h1>
+<p class="lede">A parcel is one request. This page shows every state it can be in, what moves it from one to the next, and how to approve or decline one safely.</p>
+
+<div class="note"><p>A parcel starts as <code>queued</code>, <code>waiting_approval</code> or <code>refused</code>, depending on the contract. Queued parcels go to the laptop and end as <code>done</code> or <code>failed</code>. A parcel that waits for approval is "Needs you": you read what it will do, then approve or decline. Refused and cancelled parcels are final.</p></div>
+
+<h2>The life of a parcel</h2>
+<figure class="dg">
+<svg viewBox="0 0 760 384" role="img" aria-labelledby="pc-t pc-d">
+  <title id="pc-t">The life of a parcel</title>
+  <desc id="pc-d">A parcel arrives and is queued, waiting for approval, or refused. Waiting goes to queued when you approve and to refused when you decline. Queued goes to running when sent to the laptop. Running ends as done or failed, goes back to queued if the laptop disconnects, or becomes refused if the laptop's own check says no. Revoking the key cancels any waiting, queued or running parcel.</desc>
+  <rect class="n raised" x="16" y="150" width="100" height="44" rx="10"/>
+  <text class="t c" x="66" y="169">arrives</text><text class="s c" x="66" y="185">contract check</text>
+  <rect class="n warn" x="210" y="56" width="170" height="44" rx="10"/>
+  <text class="t c" x="295" y="83">waiting_approval</text>
+  <rect class="n" x="210" y="150" width="130" height="44" rx="10"/>
+  <text class="t c" x="275" y="177">queued</text>
+  <rect class="n acc" x="420" y="150" width="120" height="44" rx="10"/>
+  <text class="t c" x="480" y="177">running</text>
+  <rect class="n err" x="460" y="56" width="130" height="44" rx="10"/>
+  <text class="t c" x="525" y="83">refused</text>
+  <rect class="n ok" x="650" y="100" width="94" height="44" rx="10"/>
+  <text class="t c" x="697" y="119">done</text><text class="s c" x="697" y="135">result ok</text>
+  <rect class="n err" x="650" y="200" width="94" height="44" rx="10"/>
+  <text class="t c" x="697" y="219">failed</text><text class="s c" x="697" y="235">error</text>
+  <rect class="n raised" x="210" y="310" width="330" height="56" rx="10"/>
+  <text class="t c" x="375" y="332">cancelled</text>
+  <text class="s c" x="375" y="350">from waiting, queued or running, when its key is revoked</text>
+
+  <path class="e err" d="M46 150 V24 H525 V56"/>
+  <text class="s" x="60" y="40">check fails</text>
+  <path class="e" d="M86 150 V78 H210"/>
+  <text class="s" x="96" y="70">needs approval</text>
+  <path class="e ok" d="M116 172 H210"/>
+  <text class="s c" x="163" y="164">allowed</text>
+  <path class="e err" d="M380 78 H460"/>
+  <text class="s c" x="420" y="70">you decline</text>
+  <path class="e ok" d="M295 100 V150"/>
+  <text class="s" x="303" y="130">you approve</text>
+  <path class="e" d="M340 172 H420"/>
+  <text class="s c" x="380" y="164">sent</text>
+  <path class="e err" d="M500 150 V100"/>
+  <text class="s" x="398" y="128">laptop says no</text>
+  <path class="e ok" d="M540 160 H600 V122 H650"/>
+  <path class="e err" d="M540 184 H600 V222 H650"/>
+  <path class="e dash" d="M460 194 V250 H295 V194"/>
+  <text class="s c" x="378" y="242">laptop disconnects</text>
+</svg>
+<figcaption>Green arrows are the happy path, red arrows end in a refusal, the dashed arrow is the laptop going away. A queued parcel can also become refused if its contract is edited before it is sent.</figcaption>
+</figure>
+
+<h2>The states in plain words</h2>
+<table>
+<thead><tr><th>State</th><th>Looks like</th><th>What it means</th><th>What moves it on</th></tr></thead>
+<tbody>
+<tr><td><code>queued</code></td><td><span class="pill">queued</span></td><td>Allowed. Waiting for the laptop to take it.</td><td>The laptop is connected and free (it takes the oldest first).</td></tr>
+<tr><td><code>waiting_approval</code></td><td><span class="pill warn">waiting approval</span></td><td>Allowed, but it needs you. Nothing has run.</td><td>You approve (back to queued) or decline (refused).</td></tr>
+<tr><td><code>running</code></td><td><span class="pill">running</span></td><td>The laptop has it and is working.</td><td>The laptop answers. If it disconnects, the parcel goes back to queued.</td></tr>
+<tr><td><code>done</code></td><td><span class="pill ok">done</span></td><td>It finished. The result is stored.</td><td>Final.</td></tr>
+<tr><td><code>failed</code></td><td><span class="pill err">failed</span></td><td>It was allowed and started, but the task hit an error (a missing file, a timeout).</td><td>Final.</td></tr>
+<tr><td><code>refused</code></td><td><span class="pill err">refused</span></td><td>Turned away, with a reason. Includes parcels you declined.</td><td>Final.</td></tr>
+<tr><td><code>cancelled</code></td><td><span class="pill">cancelled</span></td><td>Its key was revoked while it was waiting, queued or running.</td><td>Final.</td></tr>
+</tbody>
+</table>
+<p>Colours match the admin app: green for done, amber for waiting approval, red for refused and failed, grey for the rest.</p>
+<div class="warn"><p>The code lists an <code>expired</code> state in some places, but the Hub never sets it. A parcel whose contract has run out is <code>refused</code> with the reason "contract expired". Cancelled parcels have no tab on the Parcels page, but they show under "All".</p></div>
+
+<h2>"Needs you"</h2>
+<p>"Needs you" means a parcel is in <code>waiting_approval</code>: the contract allows it, but marks that task as one you must approve. It shows up in three places:</p>
+<ul>
+<li>The <strong>Needs you</strong> card on the Overview page.</li>
+<li>The <strong>Approvals</strong> page, which says "holding at the counter until you say so".</li>
+<li>The toolbar badge of the browser extension.</li>
+</ul>
+
+<h2>Approving safely</h2>
+<p>An approval is the one moment where you stand between a risky action and your files. Take ten seconds.</p>
+<ol class="steps">
+<li>Open <strong>Approvals</strong>. Each waiting parcel shows who asked (the key's label), the task, and what it wants to touch.</li>
+<li>Press <strong>Review</strong>. The page "What it will do" lists the task, the <strong>path</strong> or folder, and the effect. For <code>write_file</code> it shows the size, such as "Writes 120 bytes", and the full content. For <code>claude</code> it shows the prompt and the folder.</li>
+<li>Check three things: is this the key you expect, is the path where you expect, and is the content what you would write yourself?</li>
+<li>Press <strong>Approve</strong> to send it on, or <strong>Decline</strong> to refuse it.</li>
+</ol>
+<div class="warn"><p>Approving a <code>claude</code> task lets Claude Code act in that folder with whatever permissions <code>claude -p</code> has on your laptop. The contract limits the folder, not what Claude does inside it. Read the prompt.</p></div>
+<ul>
+<li><strong>Approve</strong> moves the parcel to <code>queued</code>. The Hub checks the contract once more first, so a parcel that no longer fits becomes <code>refused</code> instead.</li>
+<li><strong>Decline</strong> makes it <code>refused</code> with the reason "declined by owner". The app is told.</li>
+<li>If someone else (or you, in another tab) already decided, the app says "This parcel is no longer waiting". You cannot decide twice.</li>
+</ul>
+<div class="tip"><p>Make a contract with <code>write_file</code> ticked under both "Allowed tasks" and "Needs your approval". Send a <code>write_file</code> parcel with <code>curl</code>. Open Approvals, press Review, and read the bytes and content. Approve it, then open the file on your laptop.</p></div>
+
+<h2>When a parcel is refused</h2>
+<p>Open the parcel on the <strong>Parcels</strong> page. The panel <strong>Why it was refused</strong> (or "Why it was declined") shows the reason text. When the parcel has a path or a folder, it also shows two lines: what the parcel asked for, and the folders the contract allows. It does this for any refusal, not only a path one, except when the reason is exactly "declined by owner".</p>
+<ol class="steps">
+<li>Read the reason. Common ones are <code>contract expired</code>, <code>task “...” is not in the contract</code>, <code>daily limit of N reached</code>, and <code>... is outside the contract</code>.</li>
+<li>If the app was wrong, fix the app and leave the contract alone.</li>
+<li>If the contract was too tight, press <strong>Widen the contract</strong>. It opens that contract's editor. Add the folder or task and save.</li>
+<li>Have the app send the parcel again.</li>
+</ol>
+<div class="warn"><p>A refused parcel stays refused, even after you widen the contract. Nothing re-runs it. The app has to send a new parcel. Widen only as far as you mean to: a wider contract applies to every parcel from every key on it.</p></div>
+<p>The two lines and the button are not shown when the reason is exactly "declined by owner", which is what you get by pressing Decline in the admin app. A decline made through Claude or another MCP app with a note is stored as "declined by owner: &lt;note&gt;", and that one does show them and the button. A parcel refused by the laptop's check shows the laptop's reason, for example "resolves outside the contract folders".</p>
+
+<details>
+<summary>Under the hood: what each change writes</summary>
+<ul>
+<li>Every state change adds one event: <code>job.queued</code>, <code>job.waiting_approval</code>, <code>job.refused</code>, <code>job.approved</code>, <code>job.declined</code>, <code>job.running</code>, <code>job.done</code>, <code>job.failed</code>, <code>job.cancelled</code>. The "Tracking" list on a parcel is made from them.</li>
+<li>When the laptop disconnects, running parcels return to <code>queued</code> with the reason "laptop disconnected".</li>
+<li>Only one parcel runs at a time. The Hub sends the next after the previous result.</li>
+<li>The app reads its parcel with <code>GET /api/jobs/&lt;id&gt;</code>, and sees only parcels from its own key.</li>
+</ul>
+</details>
+<p>Next: <a href="/docs/laptop">The laptop and the daemon</a> and <a href="/docs/admin-ui">The admin app</a>.</p>
+</main>
+<script type="module" src="/docs/docs.js"></script>
+</body>
+</html>

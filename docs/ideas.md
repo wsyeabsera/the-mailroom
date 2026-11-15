@@ -38,7 +38,7 @@ Working reading: a contract is what a key may do.
 - expiry date
 - which risky steps need Yab's approval
 
-Revoking a key or editing a contract takes effect immediately. The daemon enforces the contract on the Mac as well, so a compromised gateway cannot widen it.
+Revoking a key or editing a contract takes effect immediately. The daemon checks the contract again on the Mac (real paths, symlinks). It does not hold its own copy, so a compromised gateway could still send a wider one; a laptop-side ceiling would close that (not built).
 
 ## Rules (decided in conversation)
 

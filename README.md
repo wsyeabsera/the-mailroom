@@ -1,10 +1,10 @@
 # The Mailroom
 
-A small, personal service that lets software in the cloud ask the Claude Code on one laptop to do work, safely. A Cloudflare Worker and one Durable Object are the gateway; a daemon on the Mac dials out to it. API keys are bound to contracts that say what each key may do, and the laptop enforces the contract again itself.
+A small, personal service that lets software in the cloud ask the Claude Code on one laptop to do work, safely. A Cloudflare Worker and one Durable Object are the gateway; a daemon on the Mac dials out to it. API keys are bound to contracts that say what each key may do, and the laptop checks each job again on its own (real paths, symlinks, its own clock). The laptop trusts the Hub for what a contract says, so a laptop-side ceiling is the next hardening step (see `docs/release-3.md`).
 
 For personal use on the owner's own machine only. It is not a service for other people.
 
-**Status: v0.3.2.** Slice 1 (auth, contracts, keys, events, daemon, admin UI) and slice 2 (approvals, running a Claude Code task) are built, tested locally, and deployed once to the owner's Cloudflare account (workers.dev).
+**Status: v0.4.0.** Slice 1 (auth, contracts, keys, events, daemon, admin UI) and slice 2 (approvals, running a Claude Code task) are built, tested locally, and deployed once to the owner's Cloudflare account (workers.dev).
 
 ## Parts
 
@@ -49,6 +49,8 @@ mailroom service install       # starts at login, restarts if it stops; log: ~/L
 mailroom service status        # installed? running? does the Hub accept the credential?
 mailroom service uninstall
 ```
+
+`mailroom status` and `mailroom service status` only ask the Hub a read-only question (they never connect as a daemon, so they cannot kick a running one off; this needs Hub v0.3.3 or newer). Set `MAILROOM_SERVICE_LABEL` to use a different launchd label than the default `dev.mailroom.daemon` (the end-to-end tests do, so they never touch your real service).
 
 `mailroom` is a one-line wrapper around `node daemon/cli.ts`; put it on your PATH (for example `~/.local/bin/mailroom`). If the credential is rotated or wrong, the daemon exits and launchd retries every 30 seconds, so run `mailroom login` again and then `mailroom service install`.
 
