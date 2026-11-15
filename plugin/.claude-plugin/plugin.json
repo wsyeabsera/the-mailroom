@@ -1,0 +1,5 @@
+{
+  "name": "the-mailroom",
+  "version": "0.3.0",
+  "description": "Administer your Mailroom from Claude Code: look at parcels, keys and contracts, and handle approvals, with safety rules built in."
+}

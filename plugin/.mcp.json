@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "mailroom": {
+      "type": "http",
+      "url": "${MAILROOM_URL}/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MAILROOM_TOKEN}"
+      }
+    }
+  }
+}
