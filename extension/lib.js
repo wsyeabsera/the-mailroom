@@ -24,14 +24,16 @@ export function computeBadge(result) {
   const s = result.state || {};
   const n = approvalCount(s);
   const connected = !!(s.daemon && s.daemon.connected);
-  if (!connected) {
-    return { text: "!", color: COLORS.amber, title: `The Mailroom: laptop is out to lunch${n ? `, ${n} waiting for you` : ""}` };
+  // The count is the actionable part (approvals work while the laptop is away), so it wins; amber says the laptop is away.
+  if (n > 0) {
+    return {
+      text: n > 99 ? "99+" : String(n),
+      color: connected ? COLORS.stamp : COLORS.amber,
+      title: `The Mailroom: ${n} waiting for your approval${connected ? "" : " (laptop is out to lunch)"}`,
+    };
   }
-  return {
-    text: n > 0 ? (n > 99 ? "99+" : String(n)) : "",
-    color: COLORS.stamp,
-    title: n > 0 ? `The Mailroom: ${n} waiting for your approval` : "The Mailroom: nothing waiting for you",
-  };
+  if (!connected) return { text: "!", color: COLORS.amber, title: "The Mailroom: laptop is out to lunch" };
+  return { text: "", color: COLORS.stamp, title: "The Mailroom: nothing waiting for you" };
 }
 
 export function approvalCount(state) {

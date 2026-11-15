@@ -23,7 +23,9 @@ test("badge computation", () => {
   assert.equal(b.text, "3"); assert.equal(b.color, "#f2703a");
   assert.equal(computeBadge(st({ approvals: 250 })).text, "99+");
   const away = computeBadge(st({ daemon: { connected: false, last_seen: null }, approvals: 2 }));
-  assert.equal(away.text, "!"); assert.match(away.title, /2 waiting/);
+  assert.equal(away.text, "2"); assert.equal(away.color, "#e0a030"); assert.match(away.title, /2 waiting.*out to lunch/);
+  const awayIdle = computeBadge(st({ daemon: { connected: false, last_seen: null }, approvals: 0 }));
+  assert.equal(awayIdle.text, "!"); assert.equal(awayIdle.color, "#e0a030");
   assert.equal(computeBadge({ kind: "signed_out" }).text, "x");
   assert.equal(computeBadge({ kind: "unconfigured" }).text, "");
   assert.equal(computeBadge(st({ approvals: undefined, needs_you: [{ id: "a" }, { id: "b" }] })).text, "2");

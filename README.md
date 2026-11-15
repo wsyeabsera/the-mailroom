@@ -4,7 +4,7 @@ A small, personal service that lets software in the cloud ask the Claude Code on
 
 For personal use on the owner's own machine only. It is not a service for other people.
 
-**Status: v0.2.0.** Slice 1 (auth, contracts, keys, events, daemon, admin UI) and slice 2 (approvals, running a Claude Code task) are built and tested locally. It is not deployed anywhere yet.
+**Status: v0.2.1.** Slice 1 (auth, contracts, keys, events, daemon, admin UI) and slice 2 (approvals, running a Claude Code task) are built and tested locally. It is not deployed anywhere yet.
 
 ## Parts
 
@@ -49,6 +49,7 @@ npm run typecheck
 node scripts/smoke.mjs    # needs `npm run dev` on 8787, or pass a URL: 59 checks against the Worker
 node scripts/e2e.mjs      # starts its own Worker and a real daemon, uses real files, cleans up after itself
 node scripts/ui-mock.mjs  # the UI against an in-memory mock on :8799, no Worker needed
+PLAYWRIGHT_CORE=/path/to/node_modules/playwright-core node scripts/extension-e2e.mjs   # the extension in a throwaway Chromium (needs a Playwright Chromium; downloads nothing)
 ```
 
 ## Deploying (not done yet)
