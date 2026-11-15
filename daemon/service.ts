@@ -46,7 +46,7 @@ ${args}
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>ThrottleInterval</key><integer>60</integer>
+  <key>ThrottleInterval</key><integer>30</integer>
   <key>ProcessType</key><string>Background</string>
   <key>StandardOutPath</key><string>${esc(log)}</string>
   <key>StandardErrorPath</key><string>${esc(log)}</string>
@@ -66,6 +66,9 @@ function launchctl(args: string[], allowFail = false): string {
   return (r.stdout ?? "") + (r.stderr ?? "");
 }
 
+const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const loaded = (o: ServiceOptions) => spawnSync("launchctl", ["print", target(o)], { stdio: "ignore" }).status === 0;
+
 export function install(o: ServiceOptions): string {
   if (process.platform !== "darwin") throw new Error("`mailroom service` supports macOS (launchd) only. Run `mailroom run` under your own supervisor instead.");
   const file = plistPath(o);
@@ -74,9 +77,14 @@ export function install(o: ServiceOptions): string {
   mkdirSync(path.dirname(log), { recursive: true });
   writeFileSync(file, buildPlist(o), { mode: 0o644 });
   chmodSync(file, 0o644);
-  launchctl(["bootout", target(o)], true); // replace a running copy
-  launchctl(["bootstrap", domain(o), file]);
-  launchctl(["kickstart", "-k", target(o)], true);
+  // Replace a running copy. bootout is asynchronous: bootstrapping while the old job is still exiting fails with
+  // "Input/output error", so wait until it is gone, and retry the bootstrap briefly if launchd is still settling.
+  launchctl(["bootout", target(o)], true);
+  for (let i = 0; i < 50 && loaded(o); i++) sleepSync(200);
+  for (let attempt = 1; ; attempt++) {
+    try { launchctl(["bootstrap", domain(o), file]); break; } catch (e) { if (attempt >= 5) throw e; sleepSync(500); }
+  }
+  // RunAtLoad starts it. No `kickstart -k`: it kills the fresh job and waits out the restart throttle.
   return file;
 }
 
