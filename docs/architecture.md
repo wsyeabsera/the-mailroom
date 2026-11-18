@@ -44,6 +44,16 @@ The second check catches Hub bugs, stale state and symlink or path tricks the ga
 
 Two lanes so a long job does not delay a quick one. `short`: `echo`, `read_file`, `write_file`, and `run` commands the laptop reported with `timeoutMs <= 60000`. `long`: `claude`, every other `run`, anything unknown. The pure rules are in `shared/lanes.ts`. The Hub (`pushNext`) keeps at most one job in flight per lane and picks the oldest queued job of each free lane, so order is strict within a lane. The daemon (`daemon/client.ts`) keeps a queue, an abort controller and progress reporting per running job and cancels by id. The Hub cannot read a laptop's registry, so the daemon reports lane hints in its hello (`lanes.commands`); an unreported command is `long`, the conservative choice. A daemon whose hello has no `lanes` field keeps the old single lane. A lost connection requeues every running job in both lanes, as before. A policy of "short" is a hint for scheduling only; it grants nothing.
 
+## Projects
+
+A project is a label that groups keys so the owner sees one app's keys, parcels, commands and events together. It grants nothing: contracts (Hub) and the laptop policy stay the only gates, and moving a key between projects changes no contract. Storage (`src/projects.ts`, pure rules in `shared/projects.ts`):
+
+- `projects(id, name, folder, notes, color, created_at, archived_at)`. Archive hides a project and stops keys joining it; it is refused (409 `has_active_keys`) while any non-revoked key is in it. "Unassigned" is not a row but the keys with `project_id` NULL, shown as a built-in project (id `unassigned`).
+- `keys.project_id` (nullable), added by a guarded `ALTER TABLE` on start; existing keys stay Unassigned. Moved with `PATCH /admin/keys/:id`.
+- `laptop_report(id=1, commands, reported_at)`: the laptop's command list from its latest hello (name, `project` tag from `commands.json`, arg specs, timeout; never script path or cwd).
+
+**Trust rule.** The report is untrusted display data, like every other thing the laptop says. The Hub sanitises it (caps, bad entries dropped, never throws) and uses it only to (1) draw the Commands tab and its mismatch badges, (2) answer `GET /api/commands` so a caller can see arg specs, and (3) pre-check `run` args so a bad call is refused early. It never widens or narrows what a contract allows, never authorises a job, and the daemon re-checks every job against `commands.json` itself. A `project` tag on the laptop decides only which project's Commands tab lists a command, never what a key may do.
+
 ## Rules
 
 - Key and credential comparison in constant time; keys never logged; shown once.

@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Projects · The Mailroom</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/docs/docs.css">
+<script src="/js/theme-init.js"></script>
+</head>
+<body data-slug="projects">
+<main id="doc">
+<h1>Projects</h1>
+<p class="lede">A project is a label that groups keys, so you can see one app's keys, parcels, commands and events in one place.</p>
+
+<div class="note"><p>A project is for looking, not for permission. It never allows, denies or limits anything. Contracts on the Hub and the policy on your laptop stay the only gates. Create a project per app, move that app's keys into it, and the Projects page shows what each app is doing right now.</p></div>
+
+<h2>What a project is, and is not</h2>
+<table>
+<thead><tr><th>A project is</th><th>A project is not</th></tr></thead>
+<tbody>
+<tr><td>A name, an optional folder, notes and a colour</td><td>A permission. Putting a key in a project changes no contract.</td></tr>
+<tr><td>A group of keys (a key is in one project, or in none)</td><td>A folder rule. The folder you type is informational; the contract's folders decide what a key may touch.</td></tr>
+<tr><td>A view of those keys' parcels, plus the commands tagged to it</td><td>A way to run something. A tag on a command lists it; it does not allow it.</td></tr>
+</tbody>
+</table>
+<p>Keys with no project sit under <strong>Unassigned</strong>, a built-in entry that always exists. It is not a real project: you cannot edit, rename or archive it. A new key lands there unless you pick a project, and existing keys stay there until you move them.</p>
+
+<figure class="dg">
+<svg viewBox="0 0 760 250" role="img" aria-labelledby="pj-t pj-d">
+  <title id="pj-t">Projects group keys; contracts still decide</title>
+  <desc id="pj-d">Two projects and Unassigned each hold keys. Every key points to a contract, and the contract alone decides what a parcel may do. The project has no arrow to the contract, because it grants nothing.</desc>
+  <rect class="n acc" x="16" y="16" width="200" height="50" rx="10"/><text class="t c" x="116" y="46">Project: notes-bot</text>
+  <rect class="n acc" x="16" y="96" width="200" height="50" rx="10"/><text class="t c" x="116" y="126">Project: reports</text>
+  <rect class="n" x="16" y="176" width="200" height="50" rx="10"/><text class="t c" x="116" y="206">Unassigned</text>
+  <rect class="n raised" x="290" y="16" width="150" height="50" rx="10"/><text class="t c" x="365" y="46">key notes-1</text>
+  <rect class="n raised" x="290" y="96" width="150" height="50" rx="10"/><text class="t c" x="365" y="126">key reports-1</text>
+  <rect class="n raised" x="290" y="176" width="150" height="50" rx="10"/><text class="t c" x="365" y="206">key old-1</text>
+  <rect class="n ok" x="540" y="66" width="200" height="90" rx="12"/><text class="t c" x="640" y="104">Contract</text><text class="s c" x="640" y="124">decides what is allowed</text>
+  <path class="e dash" d="M216 41 H290"/><text class="s c" x="253" y="33">groups</text>
+  <path class="e dash" d="M216 121 H290"/>
+  <path class="e dash" d="M216 201 H290"/>
+  <path class="e ok" d="M440 41 L540 90"/>
+  <path class="e ok" d="M440 121 H540"/>
+  <path class="e ok" d="M440 201 L540 140"/>
+</svg>
+<figcaption>Dashed lines group, solid lines grant. Only the contract is a gate.</figcaption>
+</figure>
+
+<h2>The Projects page</h2>
+<p>Open <strong>Projects</strong> in the admin app. Each project is a card showing the laptop's state, what is running now (with a progress bar when the job reports a percentage), how many parcels are queued, the last run, today's done, failed and refused counts (since 00:00 UTC), and the number of active keys. Unassigned is always the last card. Archived projects are tucked under a fold at the bottom.</p>
+<p>Press <strong>New project</strong> and give it a name (1 to 60 characters, unique among live projects). Folder (<code>~/...</code> or <code>/...</code>), notes (up to 2000 characters) and a colour are optional.</p>
+<p>A project opens in six tabs:</p>
+<table>
+<thead><tr><th>Tab</th><th>Shows</th></tr></thead>
+<tbody>
+<tr><td>Overview</td><td>Right now, notes, and its keys at a glance.</td></tr>
+<tr><td>Parcels</td><td>The 20 latest parcels of the project's keys.</td></tr>
+<tr><td>Keys</td><td>Its keys (revoked ones too), a <strong>Move</strong> button on each live key, and <strong>New key in this project</strong>.</td></tr>
+<tr><td>Commands</td><td>Commands tagged to the project or allowed by its keys' contracts, with a check column. See below.</td></tr>
+<tr><td>Events</td><td>Events about the project, its keys and its parcels, from the latest 500.</td></tr>
+<tr><td>Settings</td><td>Edit name, folder, notes and colour; archive or unarchive.</td></tr>
+</tbody>
+</table>
+
+<h2>The <code>project</code> tag in commands.json</h2>
+<p>A command in <code>~/.mailroom/commands.json</code> on the laptop can carry <code>"project": "pr_1000"</code>, the id of a project (shown in its address and in the API). The tag does one thing: it makes the command appear in that project's Commands tab. Nothing else changes. A job still needs a contract that names the command and a laptop policy that allows it. See <a href="/docs/cli">The mailroom command</a> for the file.</p>
+
+<h2>The Commands tab and its badges</h2>
+<p>The tab lists every command that is tagged to the project, plus every command named by the contract of one of the project's live keys. For each one it shows whether the laptop has it, which project it is tagged to, which keys allow it, and a check. The check is <span class="pill ok">ok</span> or one of three badges:</p>
+<table>
+<thead><tr><th>Badge</th><th>Means</th><th>Usual fix</th></tr></thead>
+<tbody>
+<tr><td><span class="pill err">Tagged to another project on the laptop</span></td><td>A key here allows the command, but <code>commands.json</code> tags it to a different live project.</td><td>Change the tag, or move the key.</td></tr>
+<tr><td><span class="pill err">Tagged to a project that is missing or archived</span></td><td>The tag names a project that does not exist or is archived (a typo, or the project was archived).</td><td>Fix the tag or unarchive the project.</td></tr>
+<tr><td><span class="pill warn">Allowed by a key's contract, but not on the laptop</span></td><td>A contract names the command, but the laptop's last report does not list it, so a parcel for it will fail on the laptop.</td><td>Add it to <code>commands.json</code> (the daemon sends the new list when it next connects).</td></tr>
+</tbody>
+</table>
+<p>If the laptop has never reported (a daemon that has not connected since projects arrived), the tab says so, shows "unknown" in the laptop column and cannot raise the third badge. Restart the daemon and it sends its list. A badge is advice. Nothing is blocked because of one.</p>
+
+<h2>What the laptop reports, and never reports</h2>
+<p>When the daemon connects it sends one report with every command in <code>commands.json</code>:</p>
+<ul>
+<li><strong>Reported:</strong> the command's name, its <code>project</code> tag, its arg specs (name, type, required, max length, allowed values) and its timeout.</li>
+<li><strong>Never reported:</strong> the script path, the working folder, any file content, environment, or secrets. A missing, unreadable or not-<code>0600</code> file reports nothing.</li>
+</ul>
+<p>The Hub stores the latest report only, keeps at most 200 commands with 20 args each, and silently drops anything malformed. It treats the report as untrusted display data. The Hub uses it for three things: the Commands tab, <code>GET /api/commands</code> (so an app can see a command's arg specs before it sends), and an early check of a <code>run</code> parcel's args, refused with the same message the laptop would give. It never grants a job. The laptop checks every job against its own file again.</p>
+
+<h2>Archive rules</h2>
+<ul>
+<li>You can archive a project only when it has <strong>no active keys</strong>. Otherwise the Hub answers 409 <code>has_active_keys</code> with the count, and nothing changes. Move the keys or revoke them first.</li>
+<li>An archived project is hidden from the home page (it sits under the fold), cannot receive keys (moving or creating a key into it is refused), and keeps all its history. A laptop tag pointing at it shows the "missing or archived" badge.</li>
+<li><strong>Unarchive</strong> brings it back. If a live project took its name meanwhile, you get 409 <code>name_taken</code>: rename one first.</li>
+</ul>
+
+<h2>How to move a key</h2>
+<ol class="steps">
+<li>Open the key's current project (or <strong>Unassigned</strong>) and its <strong>Keys</strong> tab.</li>
+<li>Press <strong>Move...</strong> on the key and choose a live project, or Unassigned.</li>
+<li>Press <strong>Move key</strong>. The key's secret, contract and history do not change; the next parcel simply counts under the new project. The Hub records a <code>key.moved</code> event.</li>
+</ol>
+<p>When you hand out a new key you can pick its project in the same form. Over the API it is <code>PATCH /admin/keys/:id</code> with <code>{"project_id": "pr_1000"}</code> (or <code>null</code>). Claude can set a project only when it creates a key; moving an existing key and archiving are yours to do.</p>
+<div class="tip"><p>Make a project, move one key into it, and send an <code>echo</code> parcel with that key. The project's card shows it under Today, and its Events tab shows <code>key.moved</code> and the parcel.</p></div>
+
+<details>
+<summary>Under the hood</summary>
+<ul>
+<li>Tables: <code>projects</code>, a nullable <code>keys.project_id</code>, and <code>laptop_report</code> (one row, the latest hello). Routes are on <a href="/docs/api">HTTP API</a>.</li>
+<li>Events: <code>project.created</code>, <code>project.updated</code> (also for an unarchive), <code>project.archived</code> and <code>key.moved</code>. See <a href="/docs/events">Events</a>.</li>
+<li><code>GET /admin/laptop</code> now also returns <code>commands</code> (name, tag, timeout) and <code>commands_reported_at</code>.</li>
+</ul>
+</details>
+<p>Next: <a href="/docs/parcels">Parcels and approvals</a>. For the gates themselves see <a href="/docs/keys-contracts">Keys and contracts</a>.</p>
+</main>
+<script type="module" src="/docs/docs.js"></script>
+</body>
+</html>

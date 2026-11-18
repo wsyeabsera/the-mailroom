@@ -55,6 +55,7 @@
 <thead><tr><th>Method</th><th>Path</th><th>What it does</th><th>Success</th><th>Errors</th></tr></thead>
 <tbody>
 <tr><td>POST</td><td><code>/api/jobs</code></td><td>Send a parcel. Body <code>{"task":"echo|read_file|write_file|claude|run","args":{...},"label":"test"}</code> (<code>label</code> optional, 1 to 60 characters). The Hub checks it against the key's contract. Header <code>Idempotency-Key</code> (optional): a repeat within 24 hours returns the original parcel with 200.</td><td>202 <code>queued</code> or <code>waiting_approval</code>; 200 for an idempotent repeat</td><td>403 refused (the body says why), 401, 409 <code>idempotency_conflict</code>, 413, 422 <code>invalid</code>, 429</td></tr>
+<tr><td>GET</td><td><code>/api/commands</code></td><td>The commands this key's contract names, each with <code>on_laptop</code>, the arg specs and the timeout the laptop reported (null if not reported). Help only: it grants nothing.</td><td>200</td><td>401</td></tr>
 <tr><td>GET</td><td><code>/api/jobs/:id</code></td><td>Status, label and result of one of this key's own parcels. A result over 200 KB (up to 2 MB) is returned in full; the Hub keeps it 7 days, then it reads as <code>{"expired":true}</code>.</td><td>200</td><td>401, 404 <code>not_found</code> (also for another key's parcel), 429</td></tr>
 </tbody>
 </table>
@@ -141,9 +142,16 @@ HTTP 200
 <thead><tr><th>Method</th><th>Path</th><th>What it does</th><th>Success</th><th>Errors</th></tr></thead>
 <tbody>
 <tr><td>GET</td><td><code>/admin/keys</code></td><td>All keys with their contract. Never the secret.</td><td>200</td><td></td></tr>
-<tr><td>POST</td><td><code>/admin/keys</code></td><td>Make a key. Body <code>{"label","contract_id"}</code>. The full key is in this reply only.</td><td>201</td><td>422 <code>invalid</code> (label 1 to 60 characters, unknown contract)</td></tr>
+<tr><td>POST</td><td><code>/admin/keys</code></td><td>Make a key. Body <code>{"label","contract_id","project_id"?}</code>. The full key is in this reply only.</td><td>201</td><td>422 <code>invalid</code> (label 1 to 60 characters, unknown contract)</td></tr>
 <tr><td>GET</td><td><code>/admin/keys/:id</code></td><td>One key, its contract and its last 10 parcels.</td><td>200</td><td>404</td></tr>
 <tr><td>POST</td><td><code>/admin/keys/:id/revoke</code></td><td>Revoke. Queued, waiting and running parcels of that key are cancelled (a running one is also told to stop on the laptop).</td><td>200 with <code>cancelled</code></td><td>404</td></tr>
+<tr><td>PATCH</td><td><code>/admin/keys/:id</code></td><td>Move a key. Body <code>{"project_id": "pr_1000"}</code>, or <code>null</code> for Unassigned.</td><td>200 with the key</td><td>404, 422 <code>invalid</code> (missing, unknown or archived project)</td></tr>
+<tr><td>GET</td><td><code>/admin/projects</code></td><td>Every project with its card numbers (active keys, running, queued, last run, today), plus the built-in <code>unassigned</code> last.</td><td>200</td><td></td></tr>
+<tr><td>POST</td><td><code>/admin/projects</code></td><td>Make a project: <code>name</code> (1 to 60, unique), <code>folder?</code>, <code>notes?</code>, <code>color?</code> (<code>#rrggbb</code>).</td><td>201</td><td>422 <code>invalid</code> with a message per field</td></tr>
+<tr><td>GET</td><td><code>/admin/projects/:id</code></td><td>One project (or <code>unassigned</code>) with its keys, 20 recent parcels and the Commands view with mismatch badges.</td><td>200</td><td>404</td></tr>
+<tr><td>PATCH</td><td><code>/admin/projects/:id</code></td><td>Change <code>name, folder, notes, color</code>; only what you send changes.</td><td>200</td><td>404, 422</td></tr>
+<tr><td>POST</td><td><code>/admin/projects/:id/archive</code></td><td>Archive. Refused while the project has active keys.</td><td>200</td><td>404, 409 <code>has_active_keys</code> (with <code>count</code>)</td></tr>
+<tr><td>POST</td><td><code>/admin/projects/:id/unarchive</code></td><td>Bring it back.</td><td>200</td><td>404, 409 <code>name_taken</code></td></tr>
 <tr><td>GET</td><td><code>/admin/contracts</code></td><td>All contracts, each with <code>version</code> and <code>used_by</code>.</td><td>200</td><td></td></tr>
 <tr><td>POST</td><td><code>/admin/contracts</code></td><td>Make a contract: <code>name, folders, tasks, dailyLimit, expires, approval</code>.</td><td>201</td><td>422 <code>invalid</code> with a message per field</td></tr>
 <tr><td>GET</td><td><code>/admin/contracts/:id</code></td><td>One contract.</td><td>200</td><td>404</td></tr>
@@ -171,7 +179,7 @@ HTTP 200
 <tr><td>POST</td><td><code>/admin/tokens/:id/revoke</code></td><td>Revoke. Takes effect on the token's next request.</td><td>200</td><td>404</td></tr>
 <tr><td>GET</td><td><code>/admin/events</code></td><td><code>?after=&lt;seq&gt;&amp;limit=&amp;tail=1</code> (limit default 200, at most 1000). Returns <code>{events, last_seq}</code>, oldest first. Without <code>tail</code> you get the first <code>limit</code> events after <code>after</code>: use that for replay and catch-up. With <code>tail=1</code> you get the last <code>limit</code> events after <code>after</code>: use that for a first load.</td><td>200</td><td></td></tr>
 <tr><td>GET</td><td><code>/admin/events/stream</code></td><td>Server-Sent Events: replay after <code>?after=</code>, then live. See below.</td><td>200 stream</td><td></td></tr>
-<tr><td>GET</td><td><code>/admin/laptop</code></td><td>Connected or not, last seen, a hint of the credential (<code>mrd_...9a3f</code>), and the queue.</td><td>200</td><td></td></tr>
+<tr><td>GET</td><td><code>/admin/laptop</code></td><td>Connected or not, last seen, a hint of the credential (<code>mrd_...9a3f</code>), the queue, and <code>commands</code> (name, project tag, timeout) with <code>commands_reported_at</code>: what the laptop last reported, or null.</td><td>200</td><td></td></tr>
 <tr><td>POST</td><td><code>/admin/laptop/rotate</code></td><td>New daemon credential, shown once. The old one stops working and the live connection closes.</td><td>200 <code>{"credential"}</code></td><td></td></tr>
 </tbody>
 </table>
@@ -187,7 +195,7 @@ data: {"seq":41,"ts":1767225600000,"kind":"job.queued","payload":{"job_id":"p_10
 <table>
 <thead><tr><th>Message</th><th>From</th><th>Fields</th><th>Meaning</th></tr></thead>
 <tbody>
-<tr><td><code>hello</code></td><td>daemon</td><td><code>version, last_seq</code></td><td>First message. The Hub marks the laptop connected.</td></tr>
+<tr><td><code>hello</code></td><td>daemon</td><td><code>version, last_seq, commands?, rerunSafe?, lanes?</code></td><td>First message. <code>commands</code> is the laptop's command report (name, project tag, arg specs, timeout; display data only). The Hub marks the laptop connected.</td></tr>
 <tr><td><code>welcome</code></td><td>Hub</td><td><code>server_seq</code></td><td>Reply to hello. The Hub then sends queued parcels, one at a time.</td></tr>
 <tr><td><code>job</code></td><td>Hub</td><td><code>id, task, args, contract, contract_version</code></td><td>Do this. The parcel becomes <code>running</code>.</td></tr>
 <tr><td><code>result</code></td><td>daemon</td><td><code>id, ok, result</code> or <code>error</code></td><td>Done (<code>ok:true</code>) or failed (<code>ok:false</code>).</td></tr>

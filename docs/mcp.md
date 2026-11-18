@@ -40,7 +40,7 @@ All names start with `mailroom_`. `id`s are the Hub's ids (`k_1000`, `c_1000`, `
 | `mailroom_list_projects` | read | none | projects plus a synthetic `unassigned`, each with key_count, running parcel, queued, last run, today's counts |
 | `mailroom_get_project` | read | `project` (id or `unassigned`) | the project with its keys, recent parcels and the Commands view (`commands.reported` is false until the laptop reports) |
 | `mailroom_events` | read | `after?` (seq), `limit?` (1-500) | `{events, last_seq}` |
-| `mailroom_laptop` | read | none | `GET /admin/laptop` object (connected, last_seen, queue) |
+| `mailroom_laptop` | read | none | `GET /admin/laptop` object (connected, last_seen, queue, and the laptop's command report with `commands_reported_at`) |
 | `mailroom_create_contract` | write | `name, folders[], tasks[], dailyLimit, expires?, approval[]` | the saved contract, or the validation errors |
 | `mailroom_update_contract` | write | `id` + the same fields | the saved contract (version bumped; queued parcels are checked again just before they are sent) |
 | `mailroom_create_project` | write | `name, folder?, notes?, color?` | the saved project, or the field errors (a project grants nothing) |
@@ -49,6 +49,8 @@ All names start with `mailroom_`. `id`s are the Hub's ids (`k_1000`, `c_1000`, `
 | `mailroom_revoke_key` | write | `id` | `{id, revoked_at, cancelled}` |
 | `mailroom_approve_parcel` | approve | `id` | `{id, state}` (must be `waiting_approval`) |
 | `mailroom_decline_parcel` | approve | `id`, `reason?` | `{id, state:"refused"}` |
+
+Projects have no tool for archiving or unarchiving, or for moving an existing key to another project: those are owner-session only (the admin app, `POST /admin/projects/:id/archive`, `PATCH /admin/keys/:id`). A tool can only put a key in a project when it creates the key.
 
 Not exposed on purpose: rotate the daemon credential, anything about admin tokens, owner login, submitting jobs.
 

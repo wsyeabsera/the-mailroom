@@ -9,6 +9,7 @@ export const NAV = [
   { group: "How it works", pages: [
     { slug: "how-it-works", title: "How a parcel travels", summary: "The parts, and one parcel's journey end to end." },
     { slug: "keys-contracts", title: "Keys and contracts", summary: "Who may send what, and how a parcel is checked." },
+    { slug: "projects", title: "Projects", summary: "Group keys by app, see commands, and what a project never does." },
     { slug: "parcels", title: "Parcels and approvals", summary: "The life of a parcel, and when it waits for you." },
     { slug: "laptop", title: "The laptop and the daemon", summary: "How your Mac does the work, and stays safe." },
   ] },
