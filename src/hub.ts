@@ -11,9 +11,10 @@ import { fingerprint, idempotencyFresh, parseIdempotencyKey } from "./idempotenc
 import { isRerunSafe, NOT_RERUN_SAFE_REASON, parseLabel, parseRerunSafe, REQUEUE_REASON, UNCOUNTED_SQL } from "./job-rules.ts";
 import { markerBytes, planResult, resultCutoff, resultExpired } from "./results.ts";
 import { MAX_RESULT_BYTES } from "../shared/limits.ts";
+import { Notifier, type NotifyEnv } from "./notify.ts";
 import { SESSION_SECONDS, sessionCookie, signSession } from "./session.ts";
 
-export interface Env {
+export interface Env extends NotifyEnv {
   HUB: DurableObjectNamespace;
   ASSETS: Fetcher;
   OWNER_PASSWORD?: string;
@@ -43,6 +44,7 @@ const utcMidnight = (now: number) => now - (now % 86_400_000);
 
 export class Hub extends DurableObject<Env> {
   private sql: Sql;
+  private notify: Notifier;
   private daemon: Daemon | null = null;
   private inflight = new Map<string, string>(); // lane key -> running job id (see shared/lanes.ts)
   private laneMode: { hints: LaneHints } | null = null; // null = old daemon: one lane
@@ -82,6 +84,7 @@ export class Hub extends DurableObject<Env> {
     });
     try { this.sql.run("ALTER TABLE jobs ADD COLUMN label TEXT"); } catch { /* already there */ }
     this.sweepResults();
+    this.notify = new Notifier(this.sql, this.env, (k, p) => this.event(k, p), (p) => this.ctx.waitUntil(p)); // callbacks + phone push (src/notify.ts)
     // A fresh instance has no socket: nothing can still be running.
     this.sql.run("UPDATE daemon SET connected = 0");
     for (const j of this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'running'")) this.requeueOrFail(j);
@@ -159,6 +162,7 @@ export class Hub extends DurableObject<Env> {
     const p: Record<string, unknown> = { job_id: job.id, key_id: job.key_id, task: job.task };
     if (reason) p.reason = reason;
     this.event(kind ?? `job.${state}`, p);
+    this.notify.jobEnded(job, state); // job-done callback, if the job asked for one
   }
 
   private contractRow(id: string): Row | undefined { return this.one("SELECT * FROM contracts WHERE id = ?", id); }
@@ -284,9 +288,11 @@ export class Hub extends DurableObject<Env> {
       if ((task === "read_file" || task === "write_file") && args.path !== undefined && typeof args.path !== "string") errors.args = `${task} needs a path string.`;
       if (task === "claude" && args.cwd !== undefined && typeof args.cwd !== "string") errors.args = "claude needs a cwd string.";
     }
+    const c = this.contractRow(k.contract_id)!;
+    const cb = this.notify.check(r.body.callback_url, parse(c.body));
+    if ("error" in cb) errors.callback_url = cb.error;
     if (Object.keys(errors).length) return invalid(errors);
 
-    const c = this.contractRow(k.contract_id)!;
     const now = Date.now();
     // A repeat of the same Idempotency-Key within 24 h returns the original job instead of making a second one.
     const fp = fingerprint(task, args);
@@ -308,6 +314,8 @@ export class Hub extends DurableObject<Env> {
     const job = this.one("SELECT * FROM jobs WHERE id = ?", id)!;
     this.event(`job.${state}`, { job_id: id, key_id: k.id, task, ...(verdict.verdict === "refuse" ? { reason: verdict.reason } : {}) });
     if (verdict.verdict === "refuse") return json({ id, state, reason: verdict.reason }, 403);
+    this.notify.attach(id, "url" in cb ? cb.url : null,new URL(req.url).origin);
+    if (state === "waiting_approval") this.notify.needsApproval(job, k.label ?? null, new URL(req.url).origin); // phone push
     if (state === "queued") this.pushNext();
     return json({ id, state }, 202);
   }
@@ -515,7 +523,7 @@ export class Hub extends DurableObject<Env> {
   }
 
   private saveContractCore(body: unknown, existing: Row | null): { errors: Record<string, string> } | { out: ReturnType<Hub["contractOut"]> } {
-    const v = validateContract(body);
+    const v = validateContract(body, { allowLocal: this.env.MAILROOM_ALLOW_LOCAL_URLS === "1" });
     if (!v.ok) return { errors: v.errors };
     const now = Date.now();
     const id = existing?.id ?? makeId("c_", this.next("contract"));

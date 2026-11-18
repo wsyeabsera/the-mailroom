@@ -3,6 +3,8 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, symlinkSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:http";
+import { createHmac } from "node:crypto";
 import { createClient } from "../client/mailroom-client.mjs";
 
 const PORT = Number(process.env.E2E_PORT) || 8801; // E2E_PORT lets two runs coexist
@@ -43,8 +45,28 @@ const client = async (key, method, path, body) => {
 async function until(fn, ms = 15000) { const t = Date.now(); while (Date.now() - t < ms) { const v = await fn(); if (v) return v; await sleep(200); } return null; }
 const startDaemon = () => { const d = spawn("node", [join(root, "daemon/cli.ts"), "run"], { env: { ...process.env, HOME: home }, stdio: "ignore", detached: true }); procs.push(d); return d; };
 
+// A local listener plays the callback receiver and the push service. Nothing here ever leaves this machine.
+// The Hub's SSRF guard refuses http and 127.0.0.1 unless MAILROOM_ALLOW_LOCAL_URLS=1; this e2e sets that (and the two secrets) as
+// wrangler dev --var flags, so no file is touched and production (which never sets it) keeps the guard.
+const HOOK_PORT = PORT + 1;
+const HOOK = `http://127.0.0.1:${HOOK_PORT}`;
+const CALLBACK_SECRET = "e2e-callback-secret";
+const hooks = [];
+const hookServer = createServer((req, res) => {
+  let b = "";
+  req.on("data", d => (b += d));
+  req.on("end", () => {
+    hooks.push({ url: req.url, headers: req.headers, body: b });
+    res.statusCode = req.url.startsWith("/hook/fail") ? 500 : 200;
+    res.end("ok");
+  });
+});
+await new Promise(res => hookServer.listen(HOOK_PORT, "127.0.0.1", res));
+process.on("exit", () => hookServer.close());
+
 console.log("starting wrangler dev ...");
-const w = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--inspector-port", String(PORT + 550), "--persist-to", join(tmp, "state")], { cwd: root, stdio: "ignore", detached: true });
+const w = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--inspector-port", String(PORT + 550), "--persist-to", join(tmp, "state"),
+  "--var", "MAILROOM_ALLOW_LOCAL_URLS:1", `CALLBACK_SECRET:${CALLBACK_SECRET}`, `PUSH_URL:${HOOK}/push/topic`], { cwd: root, stdio: "ignore", detached: true });
 procs.push(w);
 if (!(await until(async () => { try { return (await fetch(BASE + "/admin/state")).status === 401; } catch { return false; } }, 60000))) { console.log("FAIL wrangler did not start"); process.exit(1); }
 
@@ -464,6 +486,56 @@ ok(!!(await untilRunning(safe.id)), "and it runs again when the laptop returns")
 await mrr.cancel(safe.id);
 ok(await until(async () => (await mrr.get(safe.id)).state === "cancelled"), "cancelled to clean up");
 reap();
+console.log("callbacks and phone push");
+{
+  const pushes = () => hooks.filter(h => h.url.startsWith("/push/"));
+  ok(pushes().some(p => /write_file needs approval/.test(p.headers.title || "")), "earlier write_file approval pushed a notification to PUSH_URL");
+  ok(pushes().every(p => !/approved text|note\.md/.test(p.body + JSON.stringify(p.headers))), "no push contains args or file content");
+  const before = pushes().length;
+  r = await owner("POST", "/admin/contracts", { name: "Callbacks", folders: [allowed], tasks: ["echo", "write_file"], dailyLimit: 50, expires: null, approval: ["write_file"], callbackUrls: [`${HOOK}/hook/`] });
+  ok(r.status === 201 && r.json.callbackUrls?.[0] === `${HOOK}/hook/`, "contract with callbackUrls saved");
+  r = await owner("POST", "/admin/contracts", { name: "Bad prefix", folders: [allowed], tasks: ["echo"], dailyLimit: 5, expires: null, approval: [], callbackUrls: ["http-nope"] });
+  ok(r.status === 422 && r.json.errors?.callbackUrls, "a bad callbackUrls entry is a 422 on that field");
+  const cbContract = (await owner("GET", "/admin/contracts")).json.find(c => c.name === "Callbacks").id;
+  r = await owner("POST", "/admin/keys", { label: "callback client", contract_id: cbContract });
+  const cbKey = r.json.key;
+  // a key whose contract lists no callback URLs cannot use one
+  r = await client(key, "POST", "/api/jobs", { task: "echo", args: { text: "x" }, callback_url: `${HOOK}/hook/a` });
+  ok(r.status === 422 && r.json.errors?.callback_url, "callback_url on a contract without callbackUrls is 422");
+  r = await client(cbKey, "POST", "/api/jobs", { task: "echo", args: { text: "x" }, callback_url: `${HOOK}/elsewhere/a` });
+  ok(r.status === 422 && r.json.errors?.callback_url, "callback_url outside the allowed prefix is 422");
+  r = await client(cbKey, "POST", "/api/jobs", { task: "echo", args: { text: "x" }, callback_url: "https://127.0.0.1/hook/" });
+  ok(r.status === 422, "callback_url not under the prefix (and https) is 422");
+
+  r = await client(cbKey, "POST", "/api/jobs", { task: "echo", args: { text: "called back" }, callback_url: `${HOOK}/hook/ok` });
+  ok(r.status === 202, "echo with callback_url accepted");
+  const doneId = r.json.id;
+  const got = await until(async () => hooks.find(h => h.url === "/hook/ok"));
+  ok(!!got, "the finished job reached the callback URL");
+  if (got) {
+    const sig = "sha256=" + createHmac("sha256", CALLBACK_SECRET).update(got.body).digest("hex");
+    ok(got.headers["x-mailroom-signature"] === sig, "X-Mailroom-Signature is the HMAC of the body");
+    const b = JSON.parse(got.body);
+    ok(b.id === doneId && b.state === "done" && b.result?.echo === "called back", "callback body is {id, state, result}");
+  }
+
+  r = await client(cbKey, "POST", "/api/jobs", { task: "echo", args: { text: "will fail" }, callback_url: `${HOOK}/hook/fail` });
+  const failId = r.json.id;
+  const evs = await until(async () => { const e = (await owner("GET", "/admin/events?after=0&limit=1000&tail=1")).json.events; return e.find(x => x.kind === "callback.failed" && x.payload.job_id === failId) ? e : null; }, 20000);
+  const ev = evs?.find(x => x.kind === "callback.failed" && x.payload.job_id === failId);
+  ok(!!ev && ev.payload.attempts === 3, "a failing receiver gets 3 attempts, then a callback.failed event");
+  ok(hooks.filter(h => h.url === "/hook/fail").length === 3, "the receiver saw exactly 3 posts");
+  ok((await client(cbKey, "GET", `/api/jobs/${failId}`)).json.state === "done", "a failed callback never changes the job state");
+
+  r = await client(cbKey, "POST", "/api/jobs", { task: "write_file", args: { path: join(allowed, "secretfile.md"), content: "TOPSECRET-CONTENT" } });
+  ok(r.status === 202 && r.json.state === "waiting_approval", "write_file waits for approval");
+  const pushed = await until(async () => pushes().length > before ? pushes().at(-1) : null);
+  ok(!!pushed && pushed.headers.title === "Mailroom: write_file needs approval", "one push per waiting parcel");
+  ok(pushes().length === before + 1, "exactly one push for that parcel");
+  ok(pushed && pushed.body.includes("callback client") && pushed.body.includes(`${BASE}/#/approvals`), "the push names the key and links to Approvals");
+  ok(pushed && !/TOPSECRET|secretfile/.test(pushed.body + JSON.stringify(pushed.headers)), "the push never carries args or file content");
+  await owner("POST", `/admin/jobs/${r.json.id}/decline`);
+}
 
 console.log(failed ? `\nE2E FAILED (${failed})` : "\nE2E PASSED");
 process.exit(failed ? 1 : 0);

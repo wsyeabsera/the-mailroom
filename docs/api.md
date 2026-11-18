@@ -22,13 +22,13 @@ A client key is never a daemon credential or a session, and the reverse. Owner r
 - `daemon_rerun(name PK)`: the commands the laptop flagged re-run-safe in its last hello.
 - `events(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts, kind, payload JSON)`: append-only. Every state change appends one.
 - `daemon(id INTEGER PK CHECK(id=1), hash, rotated_at, last_seen, connected)`: at most one row.
-- Event kinds: `key.created`, `key.revoked`, `contract.saved`, `job.queued`, `job.waiting_approval`, `job.refused`, `job.approved`, `job.declined`, `job.running`, `job.done`, `job.failed`, `job.cancelled`, `daemon.connected`, `daemon.disconnected`, `daemon.rotated`, `token.created`, `token.revoked`, `mcp.call`.
+- Event kinds: `key.created`, `key.revoked`, `contract.saved`, `job.queued`, `job.waiting_approval`, `job.refused`, `job.approved`, `job.declined`, `job.running`, `job.done`, `job.failed`, `job.cancelled`, `daemon.connected`, `daemon.disconnected`, `daemon.rotated`, `token.created`, `token.revoked`, `mcp.call`, `callback.failed`, `push.failed`.
 
 Nothing is updated in place except job state, key revocation and `daemon`; each such change also appends an event. The Hub is the only writer.
 
 ## Client routes (Bearer client key)
 
-`POST /api/jobs` body `{ "task": "echo|read_file|write_file|claude|run", "args": {...}, "label": "test" }` (`label` is optional, see Labels)
+`POST /api/jobs` body `{ "task": "echo|read_file|write_file|claude|run", "args": {...}, "label"?: "test", "callback_url"?: "https://..." }` (`callback_url` rules: see "Callbacks and phone push")
 - 401 `{error:"bad_key"}` if the key is unknown, revoked, or its contract is expired.
 - Body over 256 KB: 413. More than 60 requests a minute per key: 429.
 - Runs `check()` with `usedToday` = this key's jobs created since 00:00 UTC that are not refused or cancelled (a cancelled parcel gives its place back).
@@ -41,6 +41,18 @@ Nothing is updated in place except job state, key revocation and `daemon`; each 
 `POST /api/jobs/:id/cancel` (same Bearer key, no body) cancels one of that key's own jobs; another key's job is 404. A `queued` or `waiting_approval` job is dropped; a `running` job is cancelled and the Hub sends `{type:"cancel", id}` to the daemon, which kills the whole child process tree. Either way the job ends as `cancelled` with reason `cancelled by client`, the event `job.cancelled` is appended, and the response is `{id, state:"cancelled"}`. A job already `done`, `failed`, `refused`, `expired` or `cancelled` -> 409 `{error:"not_cancellable", state}`. A result the daemon sends after the cancel is ignored. Cancelled jobs do not count toward the daily limit.
 
 Timeouts: a job that outruns its time limit ends `failed` with reason `timed out after Ns` (distinct from `cancelled`). `claude` has a 5 minute limit (the daemon's `MAILROOM_CLAUDE_TIMEOUT_MS` overrides it). Revoking a key also cancels its running jobs (see below).
+
+## Callbacks and phone push (#2775, #2779)
+
+Decisions made on the owner's behalf; change them if you disagree.
+
+**Callback.** `POST /api/jobs` may include `callback_url`. The contract carries `callbackUrls: string[]` (https prefixes ending in `/`, validated in `shared/contract.ts` via `shared/callback.ts`; missing = none; the contract editor has a field for it, and so does the MCP contract schema). A `callback_url` is accepted only if all of this holds, else 422 `{error:"invalid", errors:{callback_url}}` and no job is created: the Hub has the Worker secret `CALLBACK_SECRET` (unset = every `callback_url` is refused with a message saying so, so nothing is silently dropped); the URL is https, has no user name or password, and its host is not an IP literal (IPv4 or IPv6, so no private or link-local ranges), `localhost`, a `.local`/`.internal`/`.lan`-style name or a name without a dot; the normalised URL starts with one of the contract's prefixes (so `https://good.com.evil.net/` and `../` do not match `https://good.com/`). DNS is not resolved, so a public name that points at a private address is not caught here (Workers cannot reach private networks anyway). Redirects are never followed.
+
+When the job reaches `done`, `failed`, `refused` or `cancelled` (not a refusal at submit, whose 403 already tells the client), the Hub POSTs JSON `{id, state, result}` (done) or `{id, state, reason}` (others) with `X-Mailroom-Signature: sha256=<hex HMAC-SHA256 of the exact body bytes, key CALLBACK_SECRET>`. A result over 8 KB is not sent: the body is `{id, state:"done", result_truncated:true, link:"<hub>/api/jobs/<id>"}` and the client fetches it with its key. Success is any 2xx. Otherwise 3 attempts in all (waits 1 s then 4 s, 5 s timeout each), then an event `callback.failed {job_id, attempts, error}` (the error never contains the URL or the secret). A failed callback never changes the job. Retries live in the Durable Object's memory, so a Hub restart mid-retry drops the rest (the client can still poll `GET /api/jobs/:id`).
+
+Test-only: setting `MAILROOM_ALLOW_LOCAL_URLS=1` lets callback and push URLs be http and local. `scripts/e2e.mjs` sets it with `wrangler dev --var MAILROOM_ALLOW_LOCAL_URLS:1 CALLBACK_SECRET:... PUSH_URL:...` and starts its own local listener; never set it in production.
+
+**Phone push.** When a job enters `waiting_approval` (at submit), if the Worker secret `PUSH_URL` is set (a ntfy-compatible https topic URL, set with `wrangler secret put PUSH_URL`; the topic is the secret), the Hub POSTs plain text to it once per job with headers `Title: Mailroom: <task> needs approval`, `Click: <hub>/#/approvals`, `Tags: inbox_tray` and a body `<task> from <key label>. Open <hub>/#/approvals`. Never args or file content. Unset = nothing. A failure is an event `push.failed {job_id, error}` and never blocks the job. No push service account is created or contacted by the code; the owner picks the service. The Laptop page explains how to set `PUSH_URL`.
 
 ## Owner routes (cookie session; 401 `{error:"signed_out"}` without one)
 

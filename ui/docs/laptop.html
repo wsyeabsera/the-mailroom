@@ -158,6 +158,7 @@
 </details>
 
 <h2>If the credential is rotated</h2>
+<p><strong>Phone alerts.</strong> The Laptop page also tells you how to get a push on your phone when a parcel needs approval: set the Worker secret <code>PUSH_URL</code> to a ntfy-compatible topic address with <code>npx wrangler secret put PUSH_URL</code>. The push holds only the task, the key's name and a link to Approvals. See <a href="/docs/api#callbacks">the API page</a>.</p>
 <p>Rotating the credential (Laptop page, "Rotate credential") kills the old one at once. This is the move to make if you think the credential leaked. The Hub closes the daemon's connection. The daemon prints "The daemon credential was rotated. Run <code>mailroom login</code> with the new credential." and exits. It does not retry, because retrying cannot work.</p>
 <ol class="steps">
   <li><p>In the app, open <strong>Laptop</strong> and rotate. Copy the new credential. It is shown once.</p></li>

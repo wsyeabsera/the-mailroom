@@ -33,9 +33,9 @@ export function createClient({ url, key, fetch: f = globalThis.fetch } = {}) {
   };
   const fail = ({ res, data }) => new MailroomError(data?.reason || data?.message || data?.error || `HTTP ${res.status}`, { status: res.status, code: data?.error, body: data });
 
-  // Send a parcel. `label` (1-60 chars, optional) tags it, e.g. "test". `idempotency` makes a repeat within 24 h return the same parcel. A refused parcel (403) resolves with state "refused" and a reason rather than throwing.
-  async function submit(task, args = {}, { idempotency, label } = {}) {
-    const r = await call("POST", "/api/jobs", { task, args, ...(label !== undefined ? { label } : {}) }, idempotency ? { "idempotency-key": idempotency } : {});
+  // Send a parcel. `label` (1-60 chars, optional) tags it, e.g. "test". `idempotency` makes a repeat within 24 h return the same parcel. `callbackUrl` asks the Hub to POST the result there when the job ends (it must match the contract's callbackUrls). A refused parcel (403) resolves with state "refused" and a reason rather than throwing.
+  async function submit(task, args = {}, { idempotency, label, callbackUrl } = {}) {
+    const r = await call("POST", "/api/jobs", { task, args, ...(label !== undefined ? { label } : {}), ...(callbackUrl ? { callback_url: callbackUrl } : {}) }, idempotency ? { "idempotency-key": idempotency } : {});
     if (r.res.ok || (r.res.status === 403 && r.data?.state === "refused")) return r.data;
     throw fail(r);
   }

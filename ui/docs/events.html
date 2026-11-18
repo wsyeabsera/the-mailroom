@@ -60,6 +60,8 @@
 <tr><td><code>job.done</code></td><td>The laptop finished it.</td><td></td></tr>
 <tr><td><code>job.failed</code></td><td>The laptop tried and it failed.</td><td><code>reason</code></td></tr>
 <tr><td><code>job.cancelled</code></td><td>The parcel's key was revoked, so it was stopped.</td><td><code>reason</code></td></tr>
+<tr><td><code>callback.failed</code></td><td>The job-done callback did not get a 2xx after its tries. The parcel is unchanged.</td><td><code>job_id, attempts, error</code></td></tr>
+<tr><td><code>push.failed</code></td><td>The phone push for a parcel waiting for approval could not be sent.</td><td><code>job_id, error</code></td></tr>
 </tbody>
 </table>
 <h3>Keys, contracts, the laptop and tokens</h3>
