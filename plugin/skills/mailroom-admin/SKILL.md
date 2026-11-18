@@ -12,7 +12,7 @@ You reach it through the `mailroom` MCP server (tools named `mailroom_*`), using
 
 - Overview: `mailroom_status` (counts, what waits for the owner, latest events), `mailroom_laptop` (connected or away, queue), `mailroom_events`.
 - Parcels: `mailroom_list_parcels`, `mailroom_get_parcel` (timeline, contract check, key).
-- Projects (named groups of keys with a folder and notes; they grant nothing, contracts still decide): `mailroom_list_projects`, `mailroom_get_project`, `mailroom_create_project`, `mailroom_update_project`.
+- Projects (named groups of keys with a folder and notes; they grant nothing, contracts still decide): `mailroom_list_projects`, `mailroom_get_project`, `mailroom_create_project`, `mailroom_update_project`. There is no tool to archive a project or to move an existing key; tell the owner to do that in the admin app (Projects, then Keys or Settings). A project with active keys cannot be archived.
 - Keys: `mailroom_list_keys`, `mailroom_get_key`, `mailroom_create_key` (optional `project_id`), `mailroom_revoke_key`.
 - Contracts: `mailroom_list_contracts`, `mailroom_get_contract`, `mailroom_create_contract`, `mailroom_update_contract`.
 - Approvals: `mailroom_approve_parcel`, `mailroom_decline_parcel`.

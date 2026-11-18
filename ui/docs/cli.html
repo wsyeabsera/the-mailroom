@@ -82,6 +82,19 @@
 </table>
 <p>When the daemon refuses a job because of the policy, the reason names the exact folder, task, command or tool and the line to run, for example <code>contract commands deploy-notes are not allowed by the laptop policy. To allow: mailroom policy allow-command deploy-notes</code>.</p>
 
+<h2>commands.json and the project tag</h2>
+<p>The <code>run</code> task starts commands you list in <code>~/.mailroom/commands.json</code> (mode <code>0600</code>, read fresh for every job). Each entry has an absolute <code>script</code>, a <code>cwd</code>, typed <code>args</code>, an optional <code>timeoutMs</code> and <code>rerunSafe</code>, and an optional <code>project</code>.</p>
+<pre><code>{
+  "deploy-notes": {
+    "script": "/Users/you/bin/deploy-notes.sh",
+    "cwd": "/Users/you/notes",
+    "args": { "env": { "type": "enum", "values": ["staging", "prod"], "required": true } },
+    "timeoutMs": 120000,
+    "project": "pr_1000"
+  }
+}</code></pre>
+<p><code>project</code> is the id of a Hub project (<code>pr_1000</code>, shown on the Projects page and in <code>GET /admin/projects</code>). It is only a tag: it decides which project's Commands tab lists the command and nothing else. It does not allow, deny or limit anything, and a wrong or missing tag never stops a job. When the daemon connects it reports each command's name, tag, arg specs and timeout to the Hub (never the script path or folder). See <a href="/docs/projects">Projects</a>.</p>
+
 <h2>service install, uninstall, status</h2>
 <p>macOS only. They manage a launchd user agent (the system's own way to keep a program running) that starts <code>mailroom run</code> at login and restarts it if it stops.</p>
 <ul>
