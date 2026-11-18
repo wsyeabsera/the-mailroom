@@ -9,6 +9,7 @@ import { throttle } from "./progress.ts";
 import { rerunSafeCommands } from "./commands.ts";
 import { MAX_RESULT_BYTES } from "../shared/limits.ts";
 import type { JobMsg } from "./tasks.ts";
+import type { Usage } from "../shared/claude-budget.ts";
 
 export const VERSION = "0.2.0";
 
@@ -66,18 +67,20 @@ export function run(cfg: Config, log: (s: string) => void = console.log): Promis
           const abort = new AbortController();
           running.set(job.id, abort);
           const progress = throttle<{ text: string; pct?: number }>(p => send({ type: "progress", id: job.id, ...p }), 500);
+          let usage: Usage | undefined; // claude jobs: turns and wall time, for the Hub's daily budget
           try {
-            const result = await runTask(job, verdict.resolved, abort.signal, (text, pct) => progress.push(pct === undefined ? { text } : { text, pct }));
+            const result = await runTask(job, verdict.resolved, abort.signal, (text, pct) => progress.push(pct === undefined ? { text } : { text, pct }), u => { usage = u; });
             progress.stop();
             if (!abort.signal.aborted) {
               // The Hub refuses a result over the cap; say so here, in words, instead of sending megabytes it will drop.
-              if (Buffer.byteLength(JSON.stringify(result) ?? "null") > MAX_RESULT_BYTES) send({ type: "result", id: job.id, ok: false, error: `result is bigger than ${MAX_RESULT_BYTES / 1024 / 1024} MB` });
-              else send({ type: "result", id: job.id, ok: true, result });
+              if (Buffer.byteLength(JSON.stringify(result) ?? "null") > MAX_RESULT_BYTES) send({ type: "result", id: job.id, ok: false, error: `result is bigger than ${MAX_RESULT_BYTES / 1024 / 1024} MB`, usage });
+              else send({ type: "result", id: job.id, ok: true, result, usage });
             }
           } catch (e) {
             progress.stop();
-            if (!abort.signal.aborted) send({ type: "result", id: job.id, ok: false, error: (e as Error).message });
+            if (!abort.signal.aborted) send({ type: "result", id: job.id, ok: false, error: (e as Error).message, usage });
           }
+          if (abort.signal.aborted && usage) send({ type: "usage", id: job.id, usage }); // cancelled: no result, but what it used still counts
           running.delete(job.id);
         }
         working[lane] = false;

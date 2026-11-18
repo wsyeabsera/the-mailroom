@@ -7,10 +7,11 @@ import { READ_ONLY_TOOLS, StreamReader, makeScratch, removeScratch } from "./cla
 import { check, normalizePath, claudeCeiling } from "../shared/contract.ts";
 import type { Contract } from "../shared/contract.ts";
 import { buildArgv, loadCommand } from "./commands.ts";
+import { clipTimeoutMs, type Usage } from "../shared/claude-budget.ts";
 import { loadPolicy, exceeds } from "./policy.ts";
 import { MAX_RESULT_BYTES, MAX_WRITE_BYTES } from "../shared/limits.ts";
 
-export type JobMsg = { id: string; task: string; args: Record<string, unknown>; contract: Contract };
+export type JobMsg = { id: string; task: string; args: Record<string, unknown>; contract: Contract; budget?: { turns: number; ms: number } /* what is left of the key's claude day; from the Hub */ };
 
 export { MAX_RESULT_BYTES, MAX_WRITE_BYTES };
 const claudeTimeout = () => Number(process.env.MAILROOM_CLAUDE_TIMEOUT_MS) || 5 * 60 * 1000;
@@ -63,7 +64,7 @@ export function recheck(job: JobMsg, now = Date.now(), home = os.homedir()): { r
   return { resolved: real };
 }
 
-export async function runTask(job: JobMsg, resolved: string | null, signal: AbortSignal, report: (text: string, pct?: number) => void = () => {}): Promise<unknown> {
+export async function runTask(job: JobMsg, resolved: string | null, signal: AbortSignal, report: (text: string, pct?: number) => void = () => {}, onUsage: (u: Usage) => void = () => {}): Promise<unknown> {
   const a = job.args;
   switch (job.task) {
     case "echo":
@@ -89,7 +90,7 @@ export async function runTask(job: JobMsg, resolved: string | null, signal: Abor
       return { bytes };
     }
     case "claude":
-      return { output: await runClaude(String(a.prompt ?? ""), resolved!, signal, a, claudeCeiling(job.contract), report, job.id) };
+      return { output: await runClaude(String(a.prompt ?? ""), resolved!, signal, a, claudeCeiling(job.contract), report, job.id, onUsage, job.budget?.ms) };
     case "run":
       return runCommand(a, resolved!, signal, report);
     default:
@@ -130,7 +131,7 @@ function claudeOptions(a: Record<string, unknown>, ceil: { tools: string[]; maxT
   return { argv, json: a.json === true, scratch: a.scratch === true };
 }
 
-function runClaude(prompt: string, cwd: string, signal: AbortSignal, args: Record<string, unknown> = {}, ceil = claudeCeiling({}), report: (text: string) => void = () => {}, jobId = "job"): Promise<unknown> {
+function runClaude(prompt: string, cwd: string, signal: AbortSignal, args: Record<string, unknown> = {}, ceil = claudeCeiling({}), report: (text: string) => void = () => {}, jobId = "job", onUsage: (u: Usage) => void = () => {}, msLeft?: number): Promise<unknown> {
   return new Promise((resolve, reject) => {
     if (!prompt) return reject(new Error("claude needs a prompt"));
     let opts: ReturnType<typeof claudeOptions>;
@@ -161,6 +162,8 @@ function runClaude(prompt: string, cwd: string, signal: AbortSignal, args: Recor
       if (scratchDir) removeScratch(scratchDir);
       return reject(e);
     }
+    const startedAt = Date.now();
+    const limitMs = clipTimeoutMs(claudeTimeout(), msLeft); // the usual timeout, or what is left of the key's daily minutes
     const unhook = killTreeOnAbort(child, signal);
     const release = keepAwake(child);
     let last = "";
@@ -171,7 +174,7 @@ function runClaude(prompt: string, cwd: string, signal: AbortSignal, args: Recor
     const timer = setTimeout(() => {
       timedOut = true;
       killTree(child);
-    }, claudeTimeout());
+    }, limitMs);
     const cleanup = () => {
       clearTimeout(timer);
       unhook();
@@ -192,7 +195,10 @@ function runClaude(prompt: string, cwd: string, signal: AbortSignal, args: Recor
     child.on("close", code => {
       cleanup();
       stream.end();
-      if (timedOut) return reject(new Error(timeoutMessage(claudeTimeout())));
+      // Usage for the Hub's daily budget: turns from the result event (else the assistant turns seen), and wall time. Reported on every outcome.
+      const nt = stream.result?.num_turns;
+      onUsage({ turns: typeof nt === "number" && Number.isFinite(nt) ? nt : stream.turn, ms: Date.now() - startedAt });
+      if (timedOut) return reject(new Error(timeoutMessage(limitMs)));
       if (code !== 0) return reject(new Error(`claude exited with ${code}: ${err.trim()}`));
       const r = stream.result;
       if (opts.json) {
