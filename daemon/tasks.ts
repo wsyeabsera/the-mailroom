@@ -12,6 +12,7 @@ import { findResume, recordSession, scratchRoot, type SessionEntry } from "./ses
 import { parseAnswer } from "../shared/json-schema.ts";
 import { fillTemplate, loadPrompt, type Prompt } from "./prompts.ts";
 import { loadPolicy, exceeds } from "./policy.ts";
+import { writeLog } from "./logs.ts";
 import { MAX_RESULT_BYTES, MAX_WRITE_BYTES } from "../shared/limits.ts";
 
 export type JobMsg = { id: string; task: string; args: Record<string, unknown>; contract: Contract; budget?: { turns: number; ms: number } /* what is left of the key's claude day; from the Hub */ };
@@ -256,7 +257,8 @@ function execClaude(prompt: string, cwd: string, signal: AbortSignal, opts: { ar
     const unhook = killTreeOnAbort(child, signal);
     const release = keepAwake(child);
     let last = "";
-    const stream = new StreamReader(text => { if (text !== last) { last = text; report(text); } });
+    const turnLog: string[] = []; // for the owner-only debug log (daemon/logs.ts)
+    const stream = new StreamReader(text => { turnLog.push(text); if (text !== last) { last = text; report(text); } });
     let err = "";
     let raw = Buffer.alloc(0); // non-stream fallback (a claude that ignored stream-json)
     let timedOut = false;
@@ -287,6 +289,9 @@ function execClaude(prompt: string, cwd: string, signal: AbortSignal, opts: { ar
       // Usage for the Hub's daily budget: turns from the result event (else the assistant turns seen), and wall time. Reported on every outcome.
       const nt = stream.result?.num_turns;
       onUsage({ turns: typeof nt === "number" && Number.isFinite(nt) ? nt : stream.turn, ms: Date.now() - startedAt });
+      const lp = loadPolicy();
+      if (!("error" in lp) && lp.policy?.logs !== false)
+        writeLog(who.id, { label: `${who.task}${who.prompt ? ` ${who.prompt}` : ""}${who.resume !== undefined ? " (resumed)" : ""}`, turns: turnLog, reply: typeof stream.result?.result === "string" ? stream.result.result : raw.toString("utf8"), ...(timedOut ? { error: timeoutMessage(limitMs) } : code !== 0 ? { error: `exited with ${code}: ${err.trim()}` } : {}) });
       if (timedOut) return reject(new Error(timeoutMessage(limitMs)));
       if (code !== 0) return reject(new Error(`claude exited with ${code}: ${err.trim()}`));
       const sid = stream.result?.session_id;
