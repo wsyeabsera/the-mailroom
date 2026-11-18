@@ -26,7 +26,7 @@ const STATES = ["queued", "waiting_approval", "running", "done", "refused", "fai
 
 type Row = Record<string, any>;
 type Ev = { seq: number; ts: number; kind: string; payload: any };
-type Daemon = { ws: WebSocket; hello: boolean; lastPong: number; timer: ReturnType<typeof setInterval> | null };
+type Daemon = { ws: WebSocket; hello: boolean; lastPong: number; timer: ReturnType<typeof setInterval> | null; pings: Map<string, () => void> };
 
 const json = (body: unknown, status = 200, headers?: Record<string, string>) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store", ...headers } });
@@ -336,6 +336,7 @@ export class Hub extends DurableObject<Env> {
 
     if (route === "laptop") {
       if (seg.length === 2 && m === "GET") return json(this.laptop());
+      if (seg.length === 3 && seg[2] === "test") return m === "POST" ? json(await this.testLaptop()) : err(405, "method_not_allowed");
       if (seg.length === 3 && seg[2] === "rotate") return m === "POST" ? this.rotate() : err(405, "method_not_allowed");
       return err(404, "not_found");
     }
@@ -625,6 +626,22 @@ export class Hub extends DurableObject<Env> {
   }
 
   // ---- laptop ----
+  /** A live round trip: the Hub sends a tagged ping and the laptop must echo the tag. Tells "connected" from "looks connected". */
+  private async testLaptop(): Promise<{ ok: boolean; ms?: number; reason?: string }> {
+    const dm = this.daemon;
+    if (!dm?.hello) return { ok: false, reason: "No laptop is connected to the Hub right now." };
+    const id = crypto.randomUUID();
+    const t0 = Date.now();
+    const answered = new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), 5000);
+      dm.pings.set(id, () => { clearTimeout(timer); resolve(true); });
+    });
+    try { dm.ws.send(JSON.stringify({ type: "ping", id })); } catch { dm.pings.delete(id); return { ok: false, reason: "The connection is broken." }; }
+    const ok = await answered;
+    dm.pings.delete(id);
+    return ok ? { ok: true, ms: Date.now() - t0 } : { ok: false, reason: "The laptop is connected but did not answer within 5 seconds. It may be asleep, or running an older daemon (restart it)." };
+  }
+
   private laptop() {
     const d = this.daemonInfo();
     return { connected: d.connected, last_seen: d.last_seen, last_seq: d.last_seq, rotated_at: d.rotated_at, credential_hint: d.hint, queue: this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at, id").map(this.jobOut) };
@@ -655,7 +672,7 @@ export class Hub extends DurableObject<Env> {
     const [client, server] = Object.values(new WebSocketPair()) as [WebSocket, WebSocket];
     server.accept();
     this.dropDaemon(this.daemon, 4002); // a new valid connection replaces the old one
-    const dm: Daemon = { ws: server, hello: false, lastPong: Date.now(), timer: null };
+    const dm: Daemon = { ws: server, hello: false, lastPong: Date.now(), timer: null, pings: new Map() };
     this.daemon = dm;
     dm.timer = setInterval(() => {
       if (Date.now() - dm.lastPong > DEAD_MS) return this.dropDaemon(dm, 1011);
@@ -683,7 +700,10 @@ export class Hub extends DurableObject<Env> {
     try { m = JSON.parse(data); } catch { return; }
     if (!m || typeof m.type !== "string") return;
     this.touchDaemon(dm);
-    if (m.type === "pong") return;
+    if (m.type === "pong") {
+      if (typeof m.id === "string") dm.pings.get(m.id)?.(); // an answer to a test ping
+      return;
+    }
     if (m.type === "hello") {
       if (dm.hello) return;
       dm.hello = true;

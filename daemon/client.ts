@@ -81,7 +81,7 @@ export function run(cfg: Config, log: (s: string) => void = console.log): Promis
         } catch {
           return;
         }
-        if (m.type === "ping") send({ type: "pong" });
+        if (m.type === "ping") send({ type: "pong", id: m.id });
         else if (m.type === "welcome") {
           delay = 1000;
           if (Number.isInteger(m.server_seq)) saveLastSeq(m.server_seq);

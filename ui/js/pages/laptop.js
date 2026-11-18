@@ -12,8 +12,19 @@ export function render(view, _p, ctx) {
     const hint = l.credential_hint ? "mrd_•••••••••" + l.credential_hint.slice(-4) : "none yet";
     body.append(pageHead("Laptop", "The daemon that does the actual work."));
     if (!l.connected) body.append(banner("warn", h("span", null, h("b", null, "Laptop is out to lunch."), ` Last seen ${hhmm(l.last_seen)}${l.last_seen ? ", " + ago(l.last_seen) : ""}. Parcels wait their turn and run in order when it is back.`)));
+    const result = h("p", { class: "m", style: "margin:12px 0 0", role: "status" });
+    const testBtn = h("button", { class: "btn", type: "button", onclick: async () => {
+      testBtn.disabled = true;
+      result.textContent = "Asking the laptop…";
+      try {
+        const r = await api("/admin/laptop/test", { method: "POST" });
+        result.textContent = r.ok ? `The laptop answered in ${r.ms} ms. It really is connected.` : r.reason;
+      } catch (e) { result.textContent = e.message; }
+      testBtn.disabled = false;
+      ctx.refresh();
+    } }, "Test connection");
     const status = h("div", { class: "card f1" }, h("div", { class: "ch" }, h("h2", null, "Status"), tag(l.connected ? "connected" : "away", l.connected ? "ok" : "wa")),
-      h("div", { class: "cb" }, kv("Last seen", l.connected ? "just now" : l.last_seen ? ago(l.last_seen) : "never"), kv("Last event seen", h("span", { class: "mono" }, l.last_seq != null ? "#" + l.last_seq : "none"))));
+      h("div", { class: "cb" }, kv("Last heard from", l.last_seen ? ago(l.last_seen) : "never"), kv("Last event seen", h("span", { class: "mono" }, l.last_seq != null ? "#" + l.last_seq : "none")), h("div", { style: "margin-top:14px" }, testBtn), result));
     const cred = h("div", { class: "card f1" }, h("div", { class: "ch" }, h("h2", null, "Daemon credential")),
       h("div", { class: "cb" }, h("p", { class: "m", style: "margin:0 0 14px" }, "The laptop proves itself with this, separate from any client key. Rotating it disconnects the laptop until the new one is pasted in."),
         h("div", { class: "kv", style: "margin-bottom:16px" }, h("span", { class: "mono" }, hint), h("span", { class: "f" }, l.rotated_at ? `rotated ${dayMonth(l.rotated_at)}` : "never rotated")),
