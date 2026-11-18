@@ -2,7 +2,9 @@
 // A contract says what a key may do. The gateway checks it, and the daemon runs the same check again on the contract the Hub
 // sends with each job (with real paths and the laptop's home and clock). The laptop ceiling (daemon/policy.ts) is applied by the daemon on top.
 
-export const TASKS = ["echo", "read_file", "write_file", "claude", "run"] as const;
+import { validateCallbackPrefixes, type UrlOpts } from "./callback.ts";
+
+export const TASKS =["echo", "read_file", "write_file", "claude", "run"] as const;
 export type TaskName = (typeof TASKS)[number];
 
 export type Contract = {
@@ -13,6 +15,7 @@ export type Contract = {
   expires: string | null; // ISO date or datetime; null = never
   approval: string[]; // tasks that wait for the owner before they run
   commands?: string[]; // names the "run" task may use (registered on the laptop); missing in older contracts = none
+  callbackUrls?: string[]; // https prefixes (ending in /) a job's callback_url must start with; missing = none (shared/callback.ts)
 };
 
 export type Job = { task: string; args: Record<string, unknown> };
@@ -65,7 +68,7 @@ export function inside(path: string, folder: string): boolean {
 }
 
 /** Validates an editor or API payload. The messages are the copy the contract editor shows. */
-export function validateContract(raw: unknown): ValidationResult {
+export function validateContract(raw: unknown, urlOpts: UrlOpts = {}): ValidationResult {
   const errors: Record<string, string> = {};
   const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
 
@@ -130,8 +133,11 @@ export function validateContract(raw: unknown): ValidationResult {
     }
   if (!errors.commands && tasks.includes("run") && commands.length === 0) errors.commands = "Name at least one command for the run task.";
 
+  const cb = validateCallbackPrefixes(o.callbackUrls, urlOpts);
+  if (!cb.ok) errors.callbackUrls = cb.error;
+
   if (Object.keys(errors).length) return { ok: false, errors };
-  return { ok: true, contract: { name, folders, tasks, dailyLimit: dl as number, expires, approval, commands } };
+  return { ok: true, contract: { name, folders, tasks, dailyLimit: dl as number, expires, approval, commands, ...(cb.ok && cb.prefixes.length ? { callbackUrls: cb.prefixes } : {}) } };
 }
 
 /** The paths a job touches. echo touches none. */

@@ -30,6 +30,10 @@ export function render(view, _p, ctx) {
         h("div", { class: "kv", style: "margin-bottom:16px" }, h("span", { class: "mono" }, hint), h("span", { class: "f" }, l.rotated_at ? `rotated ${dayMonth(l.rotated_at)}` : "never rotated")),
         h("button", { class: "btn", type: "button", onclick: () => confirmRotate() }, "Rotate credential…")));
     body.append(h("div", { class: "row" }, status, cred));
+    body.append(h("div", { class: "card", style: "max-width:640px" }, h("div", { class: "ch" }, h("h2", null, "Phone alerts")),
+      h("div", { class: "cb" }, h("p", { class: "m", style: "margin:0 0 10px" }, "To get a push on your phone when a parcel needs your approval, give the Hub a ntfy-compatible topic address. Set it as a Worker secret (it is never shown here):"),
+        h("pre", { class: "mono", style: "margin:0 0 10px;overflow:auto" }, "npx wrangler secret put PUSH_URL"),
+        h("p", { class: "f", style: "margin:0" }, "Use an https address such as https://ntfy.sh/your-long-random-topic. The push has only the task, the key name and a link to Approvals, never arguments or file content. Without it, nothing is sent."))));
     if (l.queue.length || !l.connected) {
       body.append(h("div", { class: "card", style: "max-width:640px" }, h("div", { class: "ch" }, h("h2", null, "In the queue"), tag(plural(l.queue.length, "parcel"))),
         l.queue.length ? h("table", null, l.queue.map((j) => h("tr", null, h("td", null, h("a", { class: "mono", href: "#/parcels/" + enc(j.id) }, j.id)), h("td", null, j.task), h("td", { class: "f" }, labels.get(j.key_id) || j.key_id))))

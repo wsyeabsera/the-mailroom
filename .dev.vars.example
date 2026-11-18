@@ -1,3 +1,7 @@
 # Copy to .dev.vars (gitignored) for `wrangler dev`. In production: `wrangler secret put OWNER_PASSWORD` and `SESSION_SECRET`.
 OWNER_PASSWORD=change-me
 SESSION_SECRET=change-me-to-a-long-random-string
+# Optional. In production use `wrangler secret put`.
+# CALLBACK_SECRET=a-long-random-string        # signs job-done callbacks; without it a job with callback_url is refused
+# PUSH_URL=https://ntfy.sh/a-long-random-topic # phone push when a job needs approval; without it nothing is sent
+# MAILROOM_ALLOW_LOCAL_URLS=1                 # TEST ONLY: allow http and local callback/push URLs

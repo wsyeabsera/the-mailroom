@@ -60,6 +60,17 @@
 </table>
 <p>The arguments each task needs: <code>echo</code> takes <code>text</code>; <code>read_file</code> takes <code>path</code>; <code>write_file</code> takes <code>path</code> and <code>content</code>; <code>claude</code> takes <code>prompt</code> and <code>cwd</code> (the folder to work in); <code>run</code> takes <code>command</code> (a name the contract lists) and <code>args</code> (an object the laptop checks against its own schema).</p>
 
+<h3 id="callbacks">Callbacks and phone push</h3>
+<p>Instead of polling, a parcel can ask to be told when it ends. Add <code>"callback_url":"https://..."</code> to the body. These are conservative choices made for you:</p>
+<ul>
+<li>The key's contract must list <code>callbackUrls</code>: https prefixes ending in <code>/</code>. The URL must start with one. Otherwise the answer is 422 and no parcel is made.</li>
+<li>The URL must be https, with no user name or password, and its host must not be an IP address, <code>localhost</code> or a local name. Redirects are not followed.</li>
+<li>The owner must set the Worker secret <code>CALLBACK_SECRET</code>. Without it a <code>callback_url</code> is refused with a clear 422, so nothing is dropped silently.</li>
+<li>When the parcel is done, failed, refused or cancelled, the Hub POSTs <code>{"id","state","result"}</code> (or <code>reason</code>) with <code>X-Mailroom-Signature: sha256=&lt;hex HMAC-SHA256 of the body&gt;</code>. A result over 8 KB is replaced by <code>result_truncated</code> and a <code>link</code> to fetch it.</li>
+<li>Up to 3 tries, 1 s then 4 s apart. If all fail, a <code>callback.failed</code> event is logged. The parcel itself is never changed.</li>
+</ul>
+<p>When a parcel starts waiting for approval, and the owner set the Worker secret <code>PUSH_URL</code> (a ntfy-compatible topic address), the Hub sends one push with only the task name, the key's label and a link to Approvals. Never arguments or file content. A failure logs <code>push.failed</code>. Set it with <code>npx wrangler secret put PUSH_URL</code>.</p>
+
 <h3>Examples</h3>
 <p>Send an echo parcel. The key here is fake.</p>
 <pre><code>curl -X POST https://&lt;your-hub&gt;/api/jobs \

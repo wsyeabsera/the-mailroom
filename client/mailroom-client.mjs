@@ -34,8 +34,8 @@ export function createClient({ url, key, fetch: f = globalThis.fetch } = {}) {
   const fail = ({ res, data }) => new MailroomError(data?.reason || data?.message || data?.error || `HTTP ${res.status}`, { status: res.status, code: data?.error, body: data });
 
   // Send a parcel. A refused parcel (403) resolves with state "refused" and a reason rather than throwing.
-  async function submit(task, args = {}, { idempotency } = {}) {
-    const r = await call("POST", "/api/jobs", { task, args }, idempotency ? { "idempotency-key": idempotency } : {});
+  async function submit(task, args = {}, { idempotency, callbackUrl } = {}) {
+    const r = await call("POST", "/api/jobs", { task, args, ...(callbackUrl ? { callback_url: callbackUrl } : {}) }, idempotency ? { "idempotency-key": idempotency } : {});
     if (r.res.ok || (r.res.status === 403 && r.data?.state === "refused")) return r.data;
     throw fail(r);
   }
