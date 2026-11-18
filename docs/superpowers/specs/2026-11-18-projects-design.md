@@ -45,7 +45,7 @@ The Mailroom is a flat list: keys, contracts, parcels, a laptop. The owner uses 
 
 **Data.** `projects(id 'pr_1000..', name, folder, notes, color, created_at, archived_at)`. `keys.project_id` nullable; null means Unassigned. The reported-commands snapshot is one row in a new table `laptop_report(id=1, commands TEXT json, reported_at)`, replaced wholesale on every hello, so the Commands tab works while the laptop is away, labelled "last reported". (The existing `meta` table holds integers only.) The Hub treats the report as untrusted: at most 200 commands, names `/^[\w.-]{1,60}$/`, at most 20 arg names of 60 chars each, anything else dropped.
 
-**Daemon.** `hello` gains `commands: [{name, project?, argNames, timeoutMs}]` read from `commands.json` (never the script path or cwd). It re-sends when connecting. Policy values are not reported.
+**Daemon.** `hello` gains `commands: [{name, project?, args (full per-arg specs: type, required, maxLength, enum values), timeoutMs}]` read from `commands.json` (never the script path or cwd); full specs so the Hub can refuse bad `run` arguments at submit (task #2793). It re-sends when connecting. Policy values are not reported.
 
 **Admin API (owner session or `mra_` token with scope).**
 `GET /admin/projects`, `POST /admin/projects`, `GET /admin/projects/:id` (details: keys, counts, running job with progress, last run, commands), `PATCH /admin/projects/:id`, `POST /admin/projects/:id/archive`. Keys: `POST /admin/keys` accepts `project_id`; `PATCH /admin/keys/:id {project_id}` moves a key. Events: `project.created`, `project.updated`, `project.archived`, `key.moved`.
@@ -69,7 +69,7 @@ The Mailroom is a flat list: keys, contracts, parcels, a laptop. The owner uses 
 
 ## What is left to the builder
 
-Visual style (colour, type, spacing) is a separate step, part 2; build part 1 on the current tokens. Exact card contents, tab internals, copy, the shape of the `argNames` summary, and test layout.
+Visual style (colour, type, spacing) is a separate step, part 2; build part 1 on the current tokens. Exact card contents, tab internals, copy, and test layout.
 
 ## Order of work
 
