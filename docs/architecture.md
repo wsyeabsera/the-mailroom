@@ -38,7 +38,7 @@ Nothing is updated in place except job state and revocation; each change also ap
 4. If the daemon is connected, the Hub pushes the job. If not, it waits; the UI shows "waiting for laptop".
 5. The Hub sends the job with its contract; the daemon **checks that contract again on the laptop** before acting (real paths and symlinks, `~` with the laptop's home, the laptop's clock), then runs and returns the result. Hub stores it; client reads it by job id.
 
-The second check catches Hub bugs, stale state and symlink or path tricks the gateway cannot see. It does **not** make the laptop independent of the Hub: the contract arrives in the job message, so a compromised Hub could send a wider one. A laptop-side ceiling (folders and tasks the daemon refuses to go beyond whatever the Hub says) is not built yet.
+The second check catches Hub bugs, stale state and symlink or path tricks the gateway cannot see. The contract arrives in the job message, so on its own it does not make the laptop independent of the Hub. The laptop policy (`~/.mailroom/policy.json`, `{folders, tasks, commands?}`, mode 0600, managed by `mailroom policy`) is that ceiling: `recheck` loads it fresh per job and refuses any job whose contract folders (symlink-safe) or tasks exceed it, or whose commands exceed it when the contract has them. With no policy file the daemon keeps the old behaviour and warns once; a malformed file refuses every job.
 
 ## Rules
 

@@ -74,7 +74,7 @@
 <p>A <strong>contract</strong> says what one key may do: which folders, which tasks, how many parcels a day, when it expires, and which tasks wait for you. The rule that applies it lives in one shared file. Both sides run it.</p>
 <ol class="steps">
 <li><p><strong>The Hub checks first.</strong> A parcel that breaks the contract is refused, recorded, and never sent to the laptop. The Hub checks again just before it hands a queued parcel over.</p></li>
-<li><p><strong>The laptop checks again</strong> before it does anything. The Hub sends the contract inside every job, and the laptop checks that contract again. This catches real-path tricks only the laptop can see, and Hub bugs or stale state. It does not protect against a compromised Hub, which could simply send a wider contract.</p></li>
+<li><p><strong>The laptop checks again</strong> before it does anything. The Hub sends the contract inside every job, and the laptop checks that contract again. This catches real-path tricks only the laptop can see, and Hub bugs or stale state. If you set a laptop policy (<code>~/.mailroom/policy.json</code>, managed with <code>mailroom policy</code>), the daemon also refuses any contract wider than it, so a compromised Hub cannot widen what the laptop does. With no policy file the daemon trusts the contract the Hub sends and logs a warning once.</p></li>
 </ol>
 <p>The second check also catches tricks that text alone hides. The laptop expands <code>~</code> with its own home folder and checks expiry and the task list with its own clock. Say a contract allows <code>~/projects</code>.</p>
 <ul>
@@ -113,7 +113,7 @@
 <li><strong>One owner only.</strong> There are no users, roles or separate logins.</li>
 <li><strong>No third-party audit.</strong> The code has its own tests, but nobody outside has reviewed it.</li>
 <li><strong>The interface was tested with simulated users only.</strong> They were small Claude models, two runs per task. Treat that as a signal, not proof.</li>
-<li><strong>The laptop trusts the Hub for what a contract says.</strong> The laptop's check cannot stop a compromised Hub, because the Hub sends the contract. A laptop-side ceiling (folders and tasks set on the laptop that the daemon will never go beyond) is the planned next hardening step. It is not built yet.</li>
+<li><strong>Without a laptop policy, the laptop trusts the Hub for what a contract says.</strong> The Hub sends the contract, so a compromised Hub could send a wider one. Set a ceiling with <code>mailroom policy allow-folder</code> and <code>allow-task</code>; the daemon then refuses anything beyond it. The policy does not yet cap file size or <code>claude</code> turns.</li>
 <li><strong>Your laptop is in the loop.</strong> The second check does not protect you from someone who already controls the laptop itself.</li>
 </ul>
 <p>To report or fix a problem, start with <a href="/docs/troubleshooting">Troubleshooting</a>. For the exact routes and error codes, see the <a href="/docs/api">HTTP API</a>.</p>

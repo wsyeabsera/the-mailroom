@@ -2,6 +2,7 @@
 import readline from "node:readline";
 import { deleteConfig, configPath, loadConfig, saveConfig } from "./config.ts";
 import { probe, run } from "./client.ts";
+import { loadPolicy, savePolicy, policyPath } from "./policy.ts";
 import * as service from "./service.ts";
 import { fileURLToPath } from "node:url";
 
@@ -9,7 +10,8 @@ const HELP = `mailroom <command>
   login [--url URL] [--credential mrd_...]   save the Hub URL and daemon credential (or env MAILROOM_URL / MAILROOM_CREDENTIAL)
   run                                        connect to the Hub and do its jobs
   status                                     show the config and whether the Hub accepts the credential
-  logout                                     delete the saved config
+  policy show|allow-folder <path>|allow-task <task>   the laptop ceiling the daemon never goes beyond (~/.mailroom/policy.json)
+  logout                                   delete the saved config
   service install|uninstall|status           keep the daemon running in the background (macOS launchd, starts at login)`;
 
 function flag(args: string[], name: string): string | undefined {
@@ -80,6 +82,25 @@ async function main() {
         return st.running ? 0 : 1;
       }
       return fail("Usage: mailroom service install|uninstall|status");
+    }
+    case "policy": {
+      const sub = args[0];
+      const cur = loadPolicy();
+      if ("error" in cur) return fail(cur.error);
+      const p = cur.policy ?? { folders: [], tasks: [] };
+      if (sub === "show") {
+        console.log(`${policyPath()}: ${cur.policy ? "set" : "not set (the daemon trusts the Hub's contract)"}`);
+        console.log(JSON.stringify(p, null, 2));
+        return 0;
+      }
+      if ((sub === "allow-folder" || sub === "allow-task") && args[1]) {
+        const list = sub === "allow-folder" ? p.folders : p.tasks;
+        if (!list.includes(args[1])) list.push(args[1]);
+        savePolicy(p);
+        console.log(`Saved ${policyPath()}`);
+        return 0;
+      }
+      return fail("Usage: mailroom policy show|allow-folder <path>|allow-task <task>");
     }
     case "logout":
       console.log(deleteConfig() ? "Logged out." : "Nothing to delete.");

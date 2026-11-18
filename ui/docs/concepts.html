@@ -88,7 +88,7 @@
 <li><strong>The gateway check, in the cloud.</strong> It runs when the parcel arrives. A parcel that breaks the contract is refused here and never leaves the Hub.</li>
 <li><strong>The laptop check, on your machine.</strong> It runs again just before the work starts, using the contract that arrives with the job. It also looks at <em>real</em> paths, so a shortcut (a symlink) that points outside an allowed folder is caught. It trusts the Hub for what the contract says.</li>
 </ol>
-<p>Why twice? The cloud is someone else's computer. The laptop sees things the cloud cannot, such as where a symlink really points, and it catches Hub bugs and stale state. It does not guard against a compromised Hub, which could send a wider contract.</p>
+<p>Why twice? The cloud is someone else's computer. The laptop sees things the cloud cannot, such as where a symlink really points, and it catches Hub bugs and stale state. With a laptop policy file (<code>mailroom policy</code>) it also guards against a compromised Hub that sends a wider contract; without one it does not.</p>
 <div class="warn"><p>The contract limits <em>where</em> a task may work, not <em>what</em> Claude does there. A <code>claude</code> task runs <code>claude -p</code> with whatever permissions that command has on your laptop. Keep <code>claude</code> out of contracts you do not trust.</p></div>
 
 <h2>What it is not</h2>

@@ -132,7 +132,7 @@
 <ul>
 <li>Saving a contract adds a <code>contract.saved</code> event and raises its version number. Each parcel remembers the version it was last checked against.</li>
 <li>The gateway turns away a key whose contract has expired with a 401 before the check, so the "contract expired" reason appears only for parcels already in the system when the expiry passes.</li>
-<li>The daemon calls the same <code>check()</code> function on the contract the Hub sent with the job, using its own clock, then resolves real paths. Its home folder replaces <code>~</code>, which the Hub never expands. This is a second look at the same contract, so it does not protect you against a compromised Hub. A ceiling kept on the laptop itself is planned, not built.</li>
+<li>The daemon calls the same <code>check()</code> function on the contract the Hub sent with the job, using its own clock, then resolves real paths. Its home folder replaces <code>~</code>, which the Hub never expands. This is a second look at the same contract. What protects you against a compromised Hub is the laptop policy file <code>~/.mailroom/policy.json</code>: the daemon refuses any contract whose folders, tasks or commands go beyond it. Without that file, the daemon trusts the contract the Hub sends.</li>
 </ul>
 </details>
 <p>Next: <a href="/docs/parcels">Parcels and approvals</a>. For the full threat story see <a href="/docs/security">Security model</a>.</p>

@@ -97,7 +97,7 @@
 </ul>
 
 <h2>The daemon checks again</h2>
-<p>The Hub checks every parcel against its contract before sending it. The daemon checks again. It runs <strong>the same contract check itself</strong>. The laptop keeps no copy of the contract: the Hub sends the contract inside every job, and the daemon checks that one. This catches Hub bugs and stale state. It is not a defence against a compromised Hub, which could send a wider contract; a laptop-side ceiling is a planned hardening step, not built yet.</p>
+<p>The Hub checks every parcel against its contract before sending it. The daemon checks again. It runs <strong>the same contract check itself</strong>. The Hub sends the contract inside every job, and the daemon checks that one. On top of that, the laptop can keep its own ceiling in <code>~/.mailroom/policy.json</code> (folders, tasks and optional command names, file mode 0600). The daemon reads it fresh for every job and refuses any job whose contract goes beyond it, so a compromised Hub cannot widen what the laptop will do. Set it with <code>mailroom policy show</code>, <code>mailroom policy allow-folder &lt;path&gt;</code> and <code>mailroom policy allow-task &lt;task&gt;</code>. If the file does not exist, the daemon has no ceiling, trusts the Hub's contract and logs a warning once. An unreadable or malformed policy file refuses every job.</p>
 <p>The daemon also does one thing the Hub cannot: it asks the real disk where a path ends up. It expands <code>~</code> with the laptop's own home folder, cleans up <code>..</code>, then follows every symlink on the way (a symlink is a file that points somewhere else). If the real location is outside the contract's folders, the job is refused and nothing is read or written.</p>
 
 <figure class="dg">
