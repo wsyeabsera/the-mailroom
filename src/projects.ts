@@ -1,6 +1,7 @@
 // Projects in the Hub: storage, admin routes, the laptop's command report. Kept out of hub.ts so that file only wires it in.
 // A project grants nothing: contracts (Hub) and the laptop policy stay the only gates. The laptop report is untrusted display data.
 import type { Contract } from "../shared/contract.ts";
+import { buildArgv } from "../shared/args.ts";
 import { commandsView, sanitizeReport, validateProject, type ReportedCommand } from "../shared/projects.ts";
 import { makeId } from "./keys.ts";
 import type { Sql } from "./login-limit.ts";
@@ -59,7 +60,10 @@ export type ProjectsCtx = {
 };
 
 export class Projects {
-  constructor(private c: ProjectsCtx) {}
+  private c: ProjectsCtx;
+  constructor(c: ProjectsCtx) {
+    this.c = c;
+  }
 
   private row(id: string): Row | undefined {
     return this.c.sql.all<Row>("SELECT * FROM projects WHERE id = ?", id)[0];
@@ -225,6 +229,15 @@ export class Projects {
       this.c.event("key.moved", { key_id: k.id, label: k.label, from: k.project_id ?? null, to: t.id });
     }
     return json(this.c.keyOut(this.c.sql.all<Row>("SELECT * FROM keys WHERE id = ?", k.id)[0]));
+  }
+
+  /** The reason a `run` job's args fail the specs the laptop reported for that command, or null (also null when nothing was reported). */
+  argError(command: unknown, given: unknown): string | null {
+    if (typeof command !== "string") return null;
+    const rep = loadReport(this.c.sql)?.commands.find((c) => c.name === command);
+    if (!rep) return null;
+    const r = buildArgv(rep.args, given);
+    return "error" in r ? r.error : null;
   }
 
   /** GET /api/commands: the calling key's contract commands joined with what the laptop reported. Display help only. */

@@ -19,6 +19,10 @@ function fake() {
     laptop: rec("laptop"),
     createContract: rec("createContract", { id: "c_1000" }),
     updateContract: rec("updateContract", { id: "c_1000" }),
+    listProjects: rec("listProjects", []),
+    getProject: rec("getProject"),
+    createProject: rec("createProject", { id: "pr_1000" }),
+    updateProject: rec("updateProject", { id: "pr_1000" }),
     createKey: rec("createKey", { id: "k_1000", label: "x", key: "mr_live_TESTSECRET" }),
     revokeKey: rec("revokeKey", { id: "k_1000", revoked_at: 1, cancelled: 0 }),
     approveParcel: rec("approveParcel", { id: "p_1001", state: "queued" }),
@@ -34,6 +38,7 @@ const GOOD: Record<string, Record<string, unknown>> = {
   mailroom_list_contracts: {}, mailroom_get_contract: { id: "c_1000" }, mailroom_events: {}, mailroom_laptop: {},
   mailroom_create_contract: { name: "N", folders: ["~/a"], tasks: ["echo"], dailyLimit: 5, approval: [] },
   mailroom_update_contract: { id: "c_1000", name: "N", folders: ["~/a"], tasks: ["echo"], dailyLimit: 5, approval: [] },
+  mailroom_list_projects: {}, mailroom_get_project: { project: "pr_1000" }, mailroom_create_project: { name: "P" }, mailroom_update_project: { project: "pr_1000", notes: "n" },
   mailroom_create_key: { label: "L", contract_id: "c_1000" }, mailroom_revoke_key: { id: "k_1000" },
   mailroom_approve_parcel: { id: "p_1001" }, mailroom_decline_parcel: { id: "p_1001" },
 };
@@ -180,4 +185,34 @@ test("an audit callback that throws does not change the result", async () => {
   const f = fake();
   const r: any = await handleMcp({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "mailroom_revoke_key", arguments: { id: "k_1000" } } }, { scopes: ["write"], api: f.api, audit: () => { throw new Error("x"); } });
   assert.equal(r.result.isError, false);
+});
+
+test("project tools: read scope lists and gets, only write creates and updates", async () => {
+  const f = fake();
+  assert.equal((await call(f, ["read"], "mailroom_list_projects")).result.isError, false);
+  assert.equal((await call(f, ["read"], "mailroom_get_project", { project: "pr_1000" })).result.isError, false);
+  for (const [n, a] of [["mailroom_create_project", { name: "P" }], ["mailroom_update_project", { project: "pr_1000", name: "Q" }]] as const) {
+    const r = await call(f, ["read"], n, a);
+    assert.equal(r.result.isError, true);
+    assert.match(r.result.content[0].text, /needs the write scope/);
+  }
+  assert.deepEqual(f.calls.map((c) => c[0]), ["listProjects", "getProject"]);
+  assert.equal((await call(f, ["read", "write"], "mailroom_create_project", { name: "P", folder: "~/x" })).result.isError, false);
+  await call(f, ["read", "write"], "mailroom_update_project", { project: "pr_1000", color: "#aabbcc" });
+  assert.deepEqual(f.calls[2], ["createProject", { name: "P", folder: "~/x" }]);
+  assert.deepEqual(f.calls[3], ["updateProject", "pr_1000", { color: "#aabbcc" }]);
+  assert.deepEqual(f.audits.slice(2), [{ tool: "mailroom_create_project", ok: true, target: "pr_1000" }, { tool: "mailroom_update_project", ok: true, target: "pr_1000" }]);
+});
+
+test("project tool arguments are validated; create_key passes project_id through", async () => {
+  const f = fake();
+  const w = ["read", "write"];
+  assert.match((await call(f, w, "mailroom_create_project", {})).result.content[0].text, /"name" is required/);
+  assert.match((await call(f, w, "mailroom_update_project", { name: "x" })).result.content[0].text, /"project" is required/);
+  assert.match((await call(f, ["read"], "mailroom_get_project", {})).result.content[0].text, /"project" is required/);
+  assert.equal(f.calls.length, 0);
+  await call(f, w, "mailroom_create_key", { label: "L", contract_id: "c_1", project_id: "pr_1000" });
+  await call(f, w, "mailroom_create_key", { label: "L", contract_id: "c_1" });
+  assert.deepEqual(f.calls[0], ["createKey", { label: "L", contract_id: "c_1", project_id: "pr_1000" }]);
+  assert.deepEqual(f.calls[1], ["createKey", { label: "L", contract_id: "c_1" }]);
 });

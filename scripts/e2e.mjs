@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, symlinkSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import WebSocket from "ws";
 import { createClient } from "../client/mailroom-client.mjs";
 
 const PORT = Number(process.env.E2E_PORT ?? 8801);
@@ -80,6 +81,32 @@ ok(!JSON.stringify(r.json).includes(key), "the full key is not listed again");
 r = await owner("POST", "/admin/laptop/rotate");
 const cred = r.json.credential;
 ok(cred?.startsWith("mrd_"), "daemon credential issued");
+
+console.log("old daemon (hello without commands or lanes)");
+{ // A daemon from before projects and lanes: its hello has neither field. The real Hub must accept it, run jobs one at a time, and say commands were never reported.
+  const old = new WebSocket(BASE.replace(/^http/, "ws") + "/daemon", { headers: { authorization: `Bearer ${cred}` } });
+  await new Promise((res, rej) => { old.on("open", res); old.on("error", rej); });
+  const seen = [];
+  old.on("message", raw => {
+    const m = JSON.parse(String(raw));
+    seen.push(m);
+    if (m.type === "ping") old.send(JSON.stringify({ type: "pong" }));
+    if (m.type === "job") old.send(JSON.stringify({ type: "result", id: m.id, ok: true, result: { echo: m.args.text } }));
+  });
+  old.send(JSON.stringify({ type: "hello", last_seq: 0 }));
+  ok(await until(async () => seen.some(m => m.type === "welcome")), "the Hub welcomes a hello with no commands and no lanes");
+  ok((await owner("GET", "/admin/laptop")).json.connected, "the old daemon counts as connected");
+  const oj = await client(key, "POST", "/api/jobs", { task: "echo", args: { text: "old" } });
+  ok(oj.status === 202, "a job is accepted for the old daemon");
+  const done = await until(async () => { const x = (await client(key, "GET", `/api/jobs/${oj.json.id}`)).json; return x.state === "done" ? x : null; });
+  ok(done?.result?.echo === "old", "the job runs through the old daemon");
+  r = await owner("GET", "/admin/projects/unassigned");
+  ok(r.status === 200 && r.json.commands.reported === false && r.json.laptop_reported_at === null, "the project page reports commands as not reported");
+  r = await client(key, "POST", "/api/jobs", { task: "run", args: { command: "greet", args: { who: 5 } } });
+  ok(r.status === 202, "with no report the Hub does not judge run args (the laptop decides)");
+  old.close();
+  await until(async () => !(await owner("GET", "/admin/laptop")).json.connected);
+}
 
 console.log("daemon login");
 const login = spawn("node", [join(root, "daemon/cli.ts"), "login", "--url", BASE, "--credential", cred], { env: { ...process.env, HOME: home }, stdio: "pipe" });
@@ -252,7 +279,7 @@ ok(r.status === 401, "a revoked key stops at once");
 
 console.log("overview counts");
 r = await owner("GET", "/admin/state");
-ok(r.json.counts.done === 11 && r.json.counts.refused === 5 && r.json.counts.queued === 0, `today's counts are true (done ${r.json.counts.done}, refused ${r.json.counts.refused}, queued ${r.json.counts.queued})`);
+ok(r.json.counts.done === 13 && r.json.counts.refused === 5 && r.json.counts.queued === 0, `today's counts are true (done ${r.json.counts.done}, refused ${r.json.counts.refused}, queued ${r.json.counts.queued})`);
 ok(r.json.daemon.connected === true, "overview says the laptop is connected");
 
 console.log("projects");
@@ -301,6 +328,19 @@ ok(r && r.json.find(c => c.name === "greet").args.who?.type === "string" && r.js
 const gr = await client(ghostKey, "GET", "/api/commands");
 ok(gr.json.find(c => c.name === "ghost").on_laptop === false && gr.json.find(c => c.name === "ghost").args === null && gr.json.find(c => c.name === "ghost").timeoutMs === null, "a contract command the laptop did not report is on_laptop false, args null");
 ok(r && !JSON.stringify(r.json).includes("greet.sh") && !JSON.stringify(r.json).includes(allowed), "no script path or cwd is reported");
+{ // #2793: the Hub refuses bad run args at submit, from the specs the laptop reported
+  const run = (a) => client(key, "POST", "/api/jobs", { task: "run", args: { command: "greet", args: a } });
+  r = await run({ who: 5 });
+  ok(r.status === 403 && r.json.state === "refused" && r.json.reason === "arg “who” must be a string", `wrong type is refused at submit: ${r.json.reason}`);
+  r = await run({ who: "a", extra: 1 });
+  ok(r.status === 403 && r.json.reason === "unknown arg “extra”", `unknown arg is refused at submit: ${r.json.reason}`);
+  r = await run({});
+  ok(r.status === 403 && r.json.reason === "arg “who” is required", `missing required arg is refused at submit: ${r.json.reason}`);
+  r = await run({ who: "x".repeat(41) });
+  ok(r.status === 403 && r.json.reason === "arg “who” is too long", "an over-long string is refused at submit");
+  r = await run({ who: "fine" });
+  ok(r.status === 202, "valid args are still queued");
+}
 ok((await client("mr_live_" + "x".repeat(32), "GET", "/api/commands")).status === 401, "/api/commands needs a client key");
 r = await owner("GET", `/admin/projects/${projId}`);
 ok(r.json.laptop_reported_at > 0 && r.json.commands.reported === true && r.json.commands.rows.find(c => c.name === "ghost")?.mismatch === "not-on-laptop", "the project page shows a mismatch for a command the laptop lacks");

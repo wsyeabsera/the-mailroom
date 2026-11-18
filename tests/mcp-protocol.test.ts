@@ -42,7 +42,7 @@ test("tools/list shows only what the scopes allow", async () => {
   assert.ok(!read.includes("mailroom_create_key") && !read.includes("mailroom_approve_parcel"));
   assert.ok(write.includes("mailroom_create_key") && write.includes("mailroom_revoke_key") && !write.includes("mailroom_approve_parcel"));
   assert.ok(approve.includes("mailroom_approve_parcel") && approve.includes("mailroom_decline_parcel") && !approve.includes("mailroom_create_key"));
-  assert.equal(all.length, 15);
+  assert.equal(all.length, TOOLS.length);
   // write alone still implies read
   assert.ok((await names(["write"])).includes("mailroom_status"));
 });

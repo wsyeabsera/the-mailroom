@@ -244,7 +244,12 @@ export class Hub extends DurableObject<Env> {
 
     const c = this.contractRow(k.contract_id)!;
     const now = Date.now();
-    const verdict = check(parse(c.body), { task, args }, { now, usedToday: this.usedToday(k.id, now) });
+    let verdict = check(parse(c.body), { task, args }, { now, usedToday: this.usedToday(k.id, now) });
+    // A command the laptop reported with its arg specs is checked here too (same rules as the daemon); unreported = the laptop decides.
+    if (verdict.verdict !== "refuse" && task === "run") {
+      const bad = this.projects.argError(args.command, args.args);
+      if (bad) verdict = { verdict: "refuse", reason: bad };
+    }
     const id = makeId("p_", this.next("job"));
     const state = verdict.verdict === "refuse" ? "refused" : verdict.verdict === "approve" ? "waiting_approval" : "queued";
     this.sql.run("INSERT INTO jobs (id, key_id, contract_id, contract_version, task, args, state, reason, result, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
@@ -593,6 +598,19 @@ export class Hub extends DurableObject<Env> {
       },
       updateContract: async (id, body) => {
         const o = this.saveContractCore(body, need(this.contractRow(id), `Contract ${id}`));
+        if ("errors" in o) throw fields(o.errors);
+        return o.out;
+      },
+      listProjects: async () => this.projects.list(),
+      getProject: async (id) => need(this.projects.detail(id), `Project ${id}`),
+      createProject: async (body) => {
+        const o = this.projects.create(body);
+        if ("errors" in o) throw fields(o.errors);
+        return o.out;
+      },
+      updateProject: async (id, body) => {
+        if (id === "unassigned" || !this.projects.detail(id)) throw new ToolError(`Project ${id} not found.`);
+        const o = this.projects.update(id, body);
         if ("errors" in o) throw fields(o.errors);
         return o.out;
       },

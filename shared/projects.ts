@@ -2,7 +2,8 @@
 // and the Commands tab view. No I/O, no clock, no globals.
 import { normalizePath } from "./contract.ts";
 
-export type ArgSpec = { type: "string" | "number" | "boolean" | "enum"; required?: boolean; maxLength?: number; values?: string[] };
+import type { ArgSpec } from "./args.ts";
+export type { ArgSpec };
 export type ReportedCommand = { name: string; project: string | null; args: Record<string, ArgSpec>; timeoutMs: number | null };
 export type ProjectInput = { name: string; folder: string | null; notes: string; color: string | null };
 
