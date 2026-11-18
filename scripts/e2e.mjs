@@ -97,6 +97,10 @@ ok(await until(async () => (await owner("GET", "/admin/laptop")).json.connected)
   ok(bad.status === 401, "a wrong credential on the probe is 401");
   await sleep(1500);
   ok((await owner("GET", "/admin/laptop")).json.connected, "the running daemon is still connected after the probe");
+{
+  const t = await owner("POST", "/admin/laptop/test");
+  ok(t.status === 200 && t.json.ok === true && typeof t.json.ms === "number", "Test connection: the laptop answers a live ping");
+}
 }
 
 console.log("jobs");
