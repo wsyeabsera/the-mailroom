@@ -64,7 +64,7 @@ Hub -> Daemon:
 
 On close the Hub appends `daemon.disconnected`; `running` jobs of that daemon go back to `queued`. The daemon reconnects with backoff 1s -> 30s and runs jobs in order.
 
-The daemon must re-run `check()` (with `home` set and paths `realpath`-resolved) before acting and refuse if it fails. Slice 1 tasks: `echo {text}` -> `{echo:text}`; `read_file {path}` -> `{content}` (max 200 KB); `write_file {path, content}` -> `{bytes}`. Slice 2: `claude {prompt, cwd}` -> `{output}` via `claude -p` in `cwd` with a 5 minute timeout.
+The daemon must re-run `check()` (with `home` set and paths `realpath`-resolved) before acting and refuse if it fails. Slice 1 tasks: `echo {text}` -> `{echo:text}`; `read_file {path}` -> `{content}` (max 200 KB); `write_file {path, content}` -> `{bytes}`. Slice 2: `claude {prompt, cwd}` -> `{output}` via `claude -p` in `cwd` with a 5 minute timeout. Optional args: `allowedTools` (array of 1-20 strings matching `^[\w:*() .\-]{1,100}$`, passed as `--allowedTools`), `maxTurns` (integer 1-50, `--max-turns`), `model` (string matching `^[\w.\-\[\]]{1,60}$`, `--model`), `json` (boolean; runs `--output-format json` and returns the parsed JSON as `output`). Invalid values fail the job. No shell is involved; all are argv entries.
 
 ## Event shape
 

@@ -68,16 +68,44 @@ export async function runTask(job: JobMsg, resolved: string | null, signal: Abor
       return { bytes };
     }
     case "claude":
-      return { output: await runClaude(String(a.prompt ?? ""), resolved!, signal) };
+      return { output: await runClaude(String(a.prompt ?? ""), resolved!, signal, a) };
     default:
       throw new Error(`unknown task ${job.task}`);
   }
 }
 
-function runClaude(prompt: string, cwd: string, signal: AbortSignal): Promise<string> {
+function claudeOptions(a: Record<string, unknown>): { argv: string[]; json: boolean } {
+  const argv: string[] = [];
+  if (a.allowedTools !== undefined) {
+    const t = a.allowedTools;
+    if (!Array.isArray(t) || t.length < 1 || t.length > 20) throw new Error("allowedTools must be an array of 1 to 20 strings");
+    for (const x of t) if (typeof x !== "string" || !/^[\w:*() .\-]{1,100}$/.test(x)) throw new Error(`allowedTools has an invalid entry: ${JSON.stringify(x)}`);
+    argv.push("--allowedTools", ...(t as string[]));
+  }
+  if (a.maxTurns !== undefined) {
+    if (typeof a.maxTurns !== "number" || !Number.isInteger(a.maxTurns) || a.maxTurns < 1 || a.maxTurns > 50) throw new Error("maxTurns must be an integer from 1 to 50");
+    argv.push("--max-turns", String(a.maxTurns));
+  }
+  if (a.model !== undefined) {
+    if (typeof a.model !== "string" || !/^[\w.\-\[\]]{1,60}$/.test(a.model)) throw new Error("model has invalid characters or length");
+    argv.push("--model", a.model);
+  }
+  if (a.json !== undefined && typeof a.json !== "boolean") throw new Error("json must be true or false");
+  if (a.json) argv.push("--output-format", "json");
+  return { argv, json: a.json === true };
+}
+
+function runClaude(prompt: string, cwd: string, signal: AbortSignal, args: Record<string, unknown> = {}): Promise<unknown> {
   return new Promise((resolve, reject) => {
     if (!prompt) return reject(new Error("claude needs a prompt"));
-    const child = spawn("claude", ["-p", prompt], { cwd, stdio: ["ignore", "pipe", "pipe"], signal });
+    let opts: { argv: string[]; json: boolean };
+    try {
+      opts = claudeOptions(args);
+    } catch (e) {
+      return reject(e);
+    }
+    // options go before the prompt; "--" is not used because --allowedTools is variadic
+    const child = spawn("claude", [...opts.argv, "-p", prompt], { cwd, stdio: ["ignore", "pipe", "pipe"], signal });
     let out = Buffer.alloc(0);
     let err = "";
     let timedOut = false;
@@ -99,7 +127,13 @@ function runClaude(prompt: string, cwd: string, signal: AbortSignal): Promise<st
       clearTimeout(timer);
       if (timedOut) reject(new Error("claude timed out"));
       else if (code !== 0) reject(new Error(`claude exited with ${code}: ${err.trim()}`));
-      else resolve(out.toString("utf8"));
+      else if (opts.json) {
+        try {
+          resolve(JSON.parse(out.toString("utf8")));
+        } catch {
+          reject(new Error("claude did not return valid JSON (output may be truncated)"));
+        }
+      } else resolve(out.toString("utf8"));
     });
   });
 }
