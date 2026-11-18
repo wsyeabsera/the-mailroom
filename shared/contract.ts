@@ -2,7 +2,7 @@
 // A contract says what a key may do. The gateway checks it, and the daemon runs the same check again on the contract the Hub
 // sends with each job (with real paths and the laptop's home and clock). The daemon keeps no copy of its own.
 
-export const TASKS = ["echo", "read_file", "write_file", "claude"] as const;
+export const TASKS = ["echo", "read_file", "write_file", "claude", "run"] as const;
 export type TaskName = (typeof TASKS)[number];
 
 export type Contract = {
@@ -12,6 +12,7 @@ export type Contract = {
   dailyLimit: number; // whole parcels per UTC day, 1..100000
   expires: string | null; // ISO date or datetime; null = never
   approval: string[]; // tasks that wait for the owner before they run
+  commands?: string[]; // names the "run" task may use (registered on the laptop); missing in older contracts = none
 };
 
 export type Job = { task: string; args: Record<string, unknown> };
@@ -30,6 +31,7 @@ export type CheckContext = {
 export type ValidationResult = { ok: true; contract: Contract } | { ok: false; errors: Record<string, string> };
 
 const NAME_RE = /^[\w .()-]{1,60}$/;
+export const COMMAND_RE = /^[\w.-]{1,60}$/;
 
 /** "~/a/../b" -> "~/b", "/a//b/" -> "/a/b". Returns null for a relative path or one that climbs out of its root. */
 export function normalizePath(p: string, home?: string): string | null {
@@ -115,14 +117,27 @@ export function validateContract(raw: unknown): ValidationResult {
     if (!approval.includes(a)) approval.push(a);
   }
 
+  const cmdIn = Array.isArray(o.commands) ? o.commands : o.commands === undefined || o.commands === null ? [] : null;
+  const commands: string[] = [];
+  if (cmdIn === null) errors.commands = "Commands must be a list of names.";
+  else
+    for (const c of cmdIn) {
+      if (typeof c !== "string" || !COMMAND_RE.test(c.trim())) {
+        errors.commands = `“${String(c)}” is not a command name (letters, numbers, dots, dashes, up to 60).`;
+        break;
+      }
+      if (!commands.includes(c.trim())) commands.push(c.trim());
+    }
+  if (!errors.commands && tasks.includes("run") && commands.length === 0) errors.commands = "Name at least one command for the run task.";
+
   if (Object.keys(errors).length) return { ok: false, errors };
-  return { ok: true, contract: { name, folders, tasks, dailyLimit: dl as number, expires, approval } };
+  return { ok: true, contract: { name, folders, tasks, dailyLimit: dl as number, expires, approval, commands } };
 }
 
 /** The paths a job touches. echo touches none. */
 export function jobPaths(job: Job): string[] | { error: string } {
   const a = job.args ?? {};
-  if (job.task === "echo") return [];
+  if (job.task === "echo" || job.task === "run") return []; // run: the daemon checks the registered cwd itself
   const key = job.task === "claude" ? "cwd" : "path";
   const v = a[key];
   if (typeof v !== "string") return { error: `${job.task} needs a ${key}` };
@@ -134,6 +149,11 @@ export function check(contract: Contract, job: Job, ctx: CheckContext): Verdict 
   if (contract.expires && ctx.now >= Date.parse(contract.expires)) return { verdict: "refuse", reason: "contract expired" };
   if (typeof job?.task !== "string" || !contract.tasks.includes(job.task)) return { verdict: "refuse", reason: `task “${String(job?.task)}” is not in the contract` };
   if (ctx.usedToday >= contract.dailyLimit) return { verdict: "refuse", reason: `daily limit of ${contract.dailyLimit} reached` };
+
+  if (job.task === "run") {
+    const cmd = job.args?.command;
+    if (typeof cmd !== "string" || !(contract.commands ?? []).includes(cmd)) return { verdict: "refuse", reason: `command “${String(cmd)}” is not in the contract` };
+  }
 
   const paths = jobPaths(job);
   if (!Array.isArray(paths)) return { verdict: "refuse", reason: paths.error };

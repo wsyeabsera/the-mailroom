@@ -3,7 +3,7 @@ import { api } from "../api.js";
 import { banner, pageHead, loadInto, tag, emptyState } from "../components.js";
 import { plural, joinWords, TASK_WORDS, expiryText } from "../format.js";
 
-const ALL_TASKS = ["echo", "read_file", "write_file", "claude"];
+const ALL_TASKS = ["echo", "read_file", "write_file", "claude", "run"];
 
 export function render(view, params, ctx) {
   const body = h("div");
@@ -47,13 +47,14 @@ function plainWords(c) {
 
 function editor(body, id, ctx) {
   const isNew = id === "new";
-  loadInto(body, async () => isNew ? { name: "", folders: [], tasks: ["echo"], dailyLimit: 50, expires: null, approval: [], used_by: 0 } : api("/admin/contracts/" + enc(id)), (c) => {
-    const f = { name: c.name, folders: (c.folders || []).join("\n"), tasks: new Set(c.tasks), limit: String(c.dailyLimit), expires: c.expires ? (c.expires.endsWith("T00:00:00.000Z") ? c.expires.slice(0, 10) : c.expires) : "", approval: new Set(c.approval) };
+  loadInto(body, async () => isNew ? { name: "", folders: [], tasks: ["echo"], dailyLimit: 50, expires: null, approval: [], commands: [], used_by: 0 } : api("/admin/contracts/" + enc(id)), (c) => {
+    const f = { name: c.name, folders: (c.folders || []).join("\n"), tasks: new Set(c.tasks), limit: String(c.dailyLimit), expires: c.expires ? (c.expires.endsWith("T00:00:00.000Z") ? c.expires.slice(0, 10) : c.expires) : "", approval: new Set(c.approval), commands: (c.commands || []).join("\n") };
     const errBox = h("div");
     const errs = {};
     const field = (key, node) => { const e = h("div", { class: "et", id: "e-" + key, hidden: true }); errs[key] = { e, node }; return [node, e]; };
     const name = h("input", { class: "fld", id: "f-name", value: f.name, maxlength: "60", oninput: () => { f.name = name.value; } });
     const folders = h("textarea", { class: "fld", id: "f-folders", rows: "3", placeholder: "~/Hobby/notes", oninput: () => { f.folders = folders.value; sync(); } }); folders.value = f.folders;
+    const commands = h("textarea", { class: "fld", id: "f-commands", rows: "2", placeholder: "deploy-notes", oninput: () => { f.commands = commands.value; } }); commands.value = f.commands;
     const limit = h("input", { class: "fld", id: "f-dailyLimit", value: f.limit, inputmode: "numeric", oninput: () => { f.limit = limit.value; sync(); } });
     const expires = h("input", { class: "fld", id: "f-expires", value: f.expires, placeholder: "Never (or 2026-12-31)", oninput: () => { f.expires = expires.value; sync(); } });
     const chips = (set, source, key) => h("div", { id: "f-" + key, role: "group" }, source().map((t) => {
@@ -78,7 +79,7 @@ function editor(body, id, ctx) {
     const form = h("form", { class: "card f13", novalidate: true, onsubmit: async (ev) => {
       ev.preventDefault();
       const raw = f.limit.trim();
-      const payload = { name: f.name, folders: f.folders.split("\n").map((s) => s.trim()).filter(Boolean), tasks: ALL_TASKS.filter((t) => f.tasks.has(t)), dailyLimit: /^\d+$/.test(raw) ? Number(raw) : raw, expires: f.expires.trim() || null, approval: ALL_TASKS.filter((t) => f.approval.has(t)) };
+      const payload = { name: f.name, folders: f.folders.split("\n").map((s) => s.trim()).filter(Boolean), tasks: ALL_TASKS.filter((t) => f.tasks.has(t)), dailyLimit: /^\d+$/.test(raw) ? Number(raw) : raw, expires: f.expires.trim() || null, approval: ALL_TASKS.filter((t) => f.approval.has(t)), commands: f.commands.split("\n").map((s) => s.trim()).filter(Boolean) };
       save.disabled = true;
       try {
         const saved = isNew ? await api("/admin/contracts", { method: "POST", body: payload }) : await api("/admin/contracts/" + enc(id), { method: "PUT", body: payload });
@@ -95,6 +96,7 @@ function editor(body, id, ctx) {
         h("label", { for: "f-folders" }, "Allowed folders (one per line)"), field("folders", folders),
         h("div", { class: "lbl" }, "Allowed tasks"), tasksBox, ...field("tasks", h("span")),
         h("div", { class: "row" }, h("div", { class: "f1" }, h("label", { for: "f-dailyLimit" }, "Daily limit (parcels)"), field("dailyLimit", limit)), h("div", { class: "f1" }, h("label", { for: "f-expires" }, "Expires"), field("expires", expires))),
+        h("label", { for: "f-commands" }, "Allowed commands for the run task (one name per line; the laptop's commands.json decides what each does)"), field("commands", commands),
         h("div", { class: "lbl" }, "Needs your approval"), apprBox, ...field("approval", h("span")),
         h("div", { class: "btns" }, save, h("a", { class: "btn", href: "#/contracts" }, "Cancel"))));
     drawChips(); sync();

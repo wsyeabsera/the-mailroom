@@ -195,6 +195,8 @@ export class Hub extends DurableObject<Env> {
       if (task === "echo" && typeof args.text !== "string") errors.args = "echo needs a text string.";
       if (task === "write_file" && typeof args.content !== "string") errors.args = "write_file needs a content string.";
       if (task === "claude" && typeof args.prompt !== "string") errors.args = "claude needs a prompt string.";
+      if (task === "run" && typeof args.command !== "string") errors.args = "run needs a command name string.";
+      if (task === "run" && args.args !== undefined && (args.args === null || typeof args.args !== "object" || Array.isArray(args.args))) errors.args = "run args must be an object.";
       if ((task === "read_file" || task === "write_file") && args.path !== undefined && typeof args.path !== "string") errors.args = `${task} needs a path string.`;
       if (task === "claude" && args.cwd !== undefined && typeof args.cwd !== "string") errors.args = "claude needs a cwd string.";
     }

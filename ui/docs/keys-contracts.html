@@ -39,11 +39,12 @@
 <tr><td>Tasks</td><td>What the key may ask for. At least one of the four below.</td></tr>
 <tr><td>Daily limit</td><td>A whole number from 1 to 100000: how many parcels per day (UTC) this key may send.</td></tr>
 <tr><td>Expires</td><td>A date such as <code>2026-12-31</code>, or empty for never. A date means the <em>start</em> of that day in UTC: with <code>2026-12-31</code> the contract stops working at 00:00 UTC on the 31st, not at the end of it.</td></tr>
+<tr><td>Commands</td><td>Names the <code>run</code> task may start. Required (at least one) when <code>run</code> is allowed. The laptop decides what each name does.</td></tr>
 <tr><td>Needs approval</td><td>Tasks that wait for you before they run. Only tasks the contract allows can be listed.</td></tr>
 </tbody>
 </table>
 
-<h3>The four tasks</h3>
+<h3>The five tasks</h3>
 <table>
 <thead><tr><th>Task</th><th>What it does</th><th>Path it needs</th></tr></thead>
 <tbody>
@@ -51,6 +52,7 @@
 <tr><td><code>read_file</code></td><td>Reads one file (up to 200 KB).</td><td><code>path</code></td></tr>
 <tr><td><code>write_file</code></td><td>Writes one file (up to 200 KB). Creates folders inside the allowed folder if needed.</td><td><code>path</code></td></tr>
 <tr><td><code>claude</code></td><td>Runs <code>claude -p</code> with your prompt in a folder. Times out after 5 minutes.</td><td><code>cwd</code> (the folder to work in)</td></tr>
+<tr><td><code>run</code></td><td>Starts a named command you registered in <code>~/.mailroom/commands.json</code> on the laptop (a script, typed arguments, a timeout and a folder). No shell: arguments are passed as plain values. The folder must be inside the contract's folders.</td><td>none (the laptop's registry sets the folder)</td></tr>
 </tbody>
 </table>
 <div class="warn"><p>The "daily limit" counts every parcel the key sent since 00:00 UTC except refused ones. Cancelled parcels still count. The laptop does not count it again, so the limit is enforced only by the Hub.</p></div>

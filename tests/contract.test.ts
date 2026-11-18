@@ -61,3 +61,21 @@ test("validateContract returns the editor's messages", () => {
   if (good.ok) assert.deepEqual(good.contract.folders, ["~/scratch"]);
   assert.equal(validateContract({ name: "x", folders: ["/"], tasks: ["echo"], dailyLimit: 1 }).ok, false); // never the whole disk
 });
+
+test("run: commands are validated, required with run, and the job must name one the contract lists", () => {
+  const base = { name: "R", folders: ["~/x"], tasks: ["run"], dailyLimit: 5, expires: null, approval: [] };
+  const bad = validateContract({ ...base });
+  assert.ok(!bad.ok && bad.errors.commands);
+  const bad2 = validateContract({ ...base, commands: ["a b"] });
+  assert.ok(!bad2.ok && bad2.errors.commands);
+  const good = validateContract({ ...base, commands: ["deploy-notes", "x.y"] });
+  assert.ok(good.ok);
+  const c = (good as { ok: true; contract: Contract }).contract;
+  assert.deepEqual(check(c, { task: "run", args: { command: "x.y", args: {} } }, ctx), { verdict: "allow" });
+  assert.equal(check(c, { task: "run", args: { command: "other" } }, ctx).verdict, "refuse");
+  assert.equal(check(c, { task: "run", args: {} }, ctx).verdict, "refuse");
+  const old = { ...c } as Contract;
+  delete old.commands; // a contract stored before commands existed
+  assert.equal(check(old, { task: "run", args: { command: "x.y" } }, ctx).verdict, "refuse");
+  assert.ok(validateContract({ ...base, tasks: ["echo"] }).ok);
+});
