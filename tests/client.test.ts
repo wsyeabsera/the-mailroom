@@ -22,6 +22,14 @@ test("submit posts task and args with the bearer key and idempotency header", as
   assert.deepEqual(calls[0].body, { task: "echo", args: { text: "hi" } });
 });
 
+test("submit sends an optional label in the body, and leaves it out otherwise", async () => {
+  const { mr, calls } = fake(() => [202, { id: "p_1", state: "queued" }]);
+  await mr.submit("echo", { text: "hi" }, { label: "test" });
+  assert.deepEqual(calls[0].body, { task: "echo", args: { text: "hi" }, label: "test" });
+  await mr.submit("echo", { text: "hi" });
+  assert.equal("label" in calls[1].body, false);
+});
+
 test("a refused parcel resolves as refused; other errors throw MailroomError", async () => {
   let r = fake(() => [403, { id: "p_2", state: "refused", reason: "no" }]);
   assert.equal((await r.mr.submit("x")).state, "refused");

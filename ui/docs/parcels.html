@@ -71,11 +71,12 @@
 <tr><td><code>done</code></td><td><span class="pill ok">done</span></td><td>It finished. The result is stored.</td><td>Final.</td></tr>
 <tr><td><code>failed</code></td><td><span class="pill err">failed</span></td><td>It was allowed and started, but the task hit an error (a missing file, a timeout).</td><td>Final.</td></tr>
 <tr><td><code>refused</code></td><td><span class="pill err">refused</span></td><td>Turned away, with a reason. Includes parcels you declined.</td><td>Final.</td></tr>
-<tr><td><code>cancelled</code></td><td><span class="pill">cancelled</span></td><td>Its key was revoked while it was waiting, queued or running.</td><td>Final.</td></tr>
+<tr><td><code>cancelled</code></td><td><span class="pill">cancelled</span></td><td>Its key was revoked, or the client cancelled it, while it was waiting, queued or running. It does not count toward the daily limit.</td><td>Final.</td></tr>
 </tbody>
 </table>
 <p>Colours match the admin app: green for done, amber for waiting approval, red for refused and failed, grey for the rest.</p>
 <div class="warn"><p>The code lists an <code>expired</code> state in some places, but the Hub never sets it. A parcel whose contract has run out is <code>refused</code> with the reason "contract expired". Cancelled parcels have no tab on the Parcels page, but they show under "All".</p></div>
+<div class="note"><p>A client may label a parcel (for example <code>test</code>). The label shows as a small tag next to the task, so test runs are easy to tell from real work.</p></div>
 
 <h2>"Needs you"</h2>
 <p>"Needs you" means a parcel is in <code>waiting_approval</code>: the contract allows it, but marks that task as one you must approve. It shows up in three places:</p>

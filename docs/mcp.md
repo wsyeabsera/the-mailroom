@@ -31,7 +31,7 @@ All names start with `mailroom_`. `id`s are the Hub's ids (`k_1000`, `c_1000`, `
 | Tool | Scope | Arguments | Returns |
 |---|---|---|---|
 | `mailroom_status` | read | none | the `GET /admin/state` object (daemon, counts, needs_you, latest_events, approvals) |
-| `mailroom_list_parcels` | read | `state?`, `limit?` (1-200, default 50) | array of parcels, newest first |
+| `mailroom_list_parcels` | read | `state?`, `label?` (exact), `limit?` (1-200, default 50) | array of parcels, newest first |
 | `mailroom_get_parcel` | read | `id` | parcel + `timeline` + `contract_check` + `key` |
 | `mailroom_list_keys` | read | none | keys with their contract (never the secret) |
 | `mailroom_get_key` | read | `id` | key + `contract` + `recent_jobs` |

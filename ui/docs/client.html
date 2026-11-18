@@ -27,7 +27,7 @@
 <table>
 <thead><tr><th>Call</th><th>What it does</th></tr></thead>
 <tbody>
-<tr><td><code>submit(task, args, {idempotency?})</code></td><td>Sends a parcel. Returns <code>{id, state}</code>. A refused parcel comes back with <code>state:"refused"</code> and a <code>reason</code>; other errors throw a <code>MailroomError</code> with <code>status</code> and <code>code</code>.</td></tr>
+<tr><td><code>submit(task, args, {idempotency?, label?})</code></td><td>Sends a parcel. Returns <code>{id, state}</code>. <code>idempotency</code> is sent as the <code>Idempotency-Key</code> header: a repeat within 24 hours returns the same parcel (a different task or args under the same key is a 409 <code>idempotency_conflict</code>). <code>label</code> (1 to 60 characters, optional) tags the parcel, for example <code>"test"</code>; it shows on the Parcels page. A refused parcel comes back with <code>state:"refused"</code> and a <code>reason</code>; other errors throw a <code>MailroomError</code> with <code>status</code> and <code>code</code>.</td></tr>
 <tr><td><code>get(jobId)</code></td><td>Reads the status: <code>state</code>, <code>result</code>, <code>reason</code>, and <code>progress: {text, pct?}</code> while it runs.</td></tr>
 <tr><td><code>wait(jobId, {onProgress, intervalMs, timeoutMs})</code></td><td>Polls until the parcel finishes (default every 1 s, up to 5 minutes). <code>onProgress</code> is called each time the progress changes. On timeout it throws but the parcel keeps going.</td></tr>
 <tr><td><code>cancel(jobId)</code></td><td><code>POST /api/jobs/:id/cancel</code>. Stops a queued or running parcel.</td></tr>

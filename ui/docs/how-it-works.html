@@ -85,7 +85,7 @@
 
 <h3>When the laptop is away</h3>
 <p>The Hub does not need the laptop to accept a parcel. Allowed parcels stay <code>queued</code>. When the laptop connects, the Hub sends them in the order they arrived. The Laptop page shows them under "In the queue". If the laptop drops while a parcel is <code>running</code>, that parcel goes back to <code>queued</code> and runs again after the laptop returns.</p>
-<div class="warn"><p>A parcel that was <code>running</code> when the laptop dropped can run a second time, because the Hub cannot know how far it got. Keep tasks safe to repeat, or watch for it.</p></div>
+<div class="warn"><p>If the laptop drops while a parcel is <code>running</code>, the Hub cannot know how far it got. It puts the parcel back in the queue only when running it twice is harmless: <code>echo</code>, <code>read_file</code>, and a <code>run</code> command you flagged <code>"rerunSafe": true</code> in <code>commands.json</code>. Anything else (<code>write_file</code>, <code>claude</code>, other commands) ends <code>failed</code> with "laptop dropped mid-run; not re-run-safe" and is not run again. Clients can also send an <code>Idempotency-Key</code> so a retried submit does not make a second parcel.</p></div>
 
 <h2>The laptop dials out</h2>
 <figure class="dg">

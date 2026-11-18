@@ -20,7 +20,7 @@ before(async () => {
   fs.writeFileSync(script, `#!/bin/sh\nfor a in "$@"; do echo "ARG:$a"; done\necho "CWD:$(pwd -P)"\n[ "$2" = "fail" ] && { echo boom >&2; exit 3; }\nexit 0\n`, { mode: 0o755 });
   fs.mkdirSync(path.join(home, ".mailroom"), { recursive: true });
   const spec = (cwd: string) => ({ script, cwd, timeoutMs: 5000, args: { msg: { type: "string", required: true, maxLength: 50 }, n: { type: "number" }, mode: { type: "enum", values: ["a", "b"] }, loud: { type: "boolean" } } });
-  fs.writeFileSync(path.join(home, ".mailroom/commands.json"), JSON.stringify({ show: { ...spec("~/allowed"), project: "pr_1000" }, escape: spec("~/allowed/link") }), { mode: 0o600 });
+  fs.writeFileSync(path.join(home, ".mailroom/commands.json"), JSON.stringify({ show: { ...spec("~/allowed"), project: "pr_1000", rerunSafe: true }, escape: spec("~/allowed/link") }), { mode: 0o600 });
   await cli(home, ["login", "--url", hub.url, "--credential", CRED]).exited;
   d = cli(home, ["run"]);
   await hub.waitFor(m => m.type === "hello");
@@ -36,6 +36,11 @@ async function run(id: string, args: Record<string, unknown>, c: unknown = C()) 
   hub.push(job(id, "run", args, c));
   return hub.waitFor(isResult(id));
 }
+
+test("hello lists the re-run-safe commands in a separate rerunSafe field (default is not safe)", () => {
+  const h = hub.messages.find(m => m.type === "hello");
+  assert.deepEqual(h.rerunSafe, ["show"]);
+});
 
 test("run: output and exitCode, args as separate argv entries", async () => {
   const m = await run("r1", { command: "show", args: { msg: "hi there", n: 2, mode: "a", loud: true } });

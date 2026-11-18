@@ -144,9 +144,9 @@
 <thead><tr><th>Task</th><th>What it does</th><th>Limits</th></tr></thead>
 <tbody>
 <tr><td><code>echo</code></td><td>Sends your text straight back. Use it to test the whole route.</td><td>None.</td></tr>
-<tr><td><code>read_file</code></td><td>Reads one file and returns its text.</td><td>The path must be a file inside a contract folder. Larger than 200 KB: the job fails with "file is bigger than 200 KB".</td></tr>
+<tr><td><code>read_file</code></td><td>Reads one file and returns its text.</td><td>The path must be a file inside a contract folder. Larger than 2 MB: the job fails with "file is bigger than 2 MB". A result over 200 KB is kept by the Hub for 7 days.</td></tr>
 <tr><td><code>write_file</code></td><td>Writes the given text to a file. It makes missing folders inside the allowed folder. It writes to a temporary file first, then renames it into place.</td><td>Content over 200 KB fails. You choose per contract which tasks wait for your approval.</td></tr>
-<tr><td><code>claude</code></td><td>Runs <code>claude -p "&lt;prompt&gt;"</code> in a folder (<code>cwd</code>) the contract allows and returns what it prints.</td><td>5 minute timeout, then it is stopped and the job fails with "claude timed out". Only the first 200 KB of output is kept. Needs <code>claude</code> on the daemon's PATH.</td></tr>
+<tr><td><code>claude</code></td><td>Runs <code>claude -p "&lt;prompt&gt;"</code> in a folder (<code>cwd</code>) the contract allows and returns what it prints.</td><td>5 minute timeout, then it is stopped and the job fails with "claude timed out". Only the first 2 MB of output is kept. Needs <code>claude</code> on the daemon's PATH.</td></tr>
 </tbody>
 </table>
 

@@ -7,7 +7,7 @@ import { COMMAND_RE } from "../shared/contract.ts";
 import { sanitizeReport, type ArgSpec, type ReportedCommand } from "../shared/projects.ts";
 
 export type { ArgSpec, ReportedCommand };
-export type Command = { script: string; args: Record<string, ArgSpec>; timeoutMs: number; cwd: string; project?: string };
+export type Command = { script: string; args: Record<string, ArgSpec>; timeoutMs: number; cwd: string; rerunSafe: boolean; project?: string };
 
 export const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const STRING_MAX = 1000;
@@ -35,7 +35,7 @@ export function loadCommand(name: unknown, home = os.homedir()): { command: Comm
     args[k] = { type: s.type, required: s.required === true, maxLength: typeof s.maxLength === "number" ? s.maxLength : undefined, values: s.values };
   }
   const timeoutMs = typeof c.timeoutMs === "number" && c.timeoutMs > 0 ? c.timeoutMs : DEFAULT_TIMEOUT_MS;
-  return { command: { script: c.script, args, timeoutMs, cwd: c.cwd, ...(typeof c.project === "string" ? { project: c.project } : {}) } };
+  return { command: { script: c.script, args, timeoutMs, cwd: c.cwd, rerunSafe: c.rerunSafe === true, ...(typeof c.project === "string" ? { project: c.project } : {}) } };
 }
 
 /** What the daemon tells the Hub on hello: name, project tag, arg specs and timeout for every registered command.
@@ -96,4 +96,15 @@ export function buildArgv(cmd: Command, given: unknown): { argv: string[] } | { 
     }
   }
   return { argv };
+}
+
+/** Names of the registered commands flagged `rerunSafe: true`. Sent to the Hub in the hello, read when the daemon connects. */
+export function rerunSafeCommands(home = os.homedir()): string[] {
+  let names: string[];
+  try {
+    names = Object.keys(JSON.parse(fs.readFileSync(path.join(home, ".mailroom", "commands.json"), "utf8")));
+  } catch {
+    return [];
+  }
+  return names.filter(n => { const c = loadCommand(n, home); return "command" in c && c.command.rerunSafe; });
 }

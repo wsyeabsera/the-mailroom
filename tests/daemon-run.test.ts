@@ -75,9 +75,13 @@ test("size limits", async () => {
   const big = "x".repeat(200 * 1024 + 1);
   assert.equal((await run("p_4", "write_file", { path: "~/allowed/big.txt", content: big })).ok, false);
   fs.writeFileSync(path.join(allowed, "big.txt"), big);
-  const r = await run("p_5", "read_file", { path: "~/allowed/big.txt" });
+  const ok = await run("p_5", "read_file", { path: "~/allowed/big.txt" }); // reads go up to 2 MB now
+  assert.equal(ok.ok, true);
+  assert.equal(ok.result.content.length, big.length);
+  fs.writeFileSync(path.join(allowed, "huge.txt"), "x".repeat(2 * 1024 * 1024 + 1));
+  const r = await run("p_5b", "read_file", { path: "~/allowed/huge.txt" });
   assert.equal(r.ok, false);
-  assert.match(r.error, /bigger/);
+  assert.match(r.error, /bigger than 2 MB/);
 });
 
 test("refuses outside path, .. escape and symlink escape", async () => {
