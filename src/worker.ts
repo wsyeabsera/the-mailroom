@@ -24,7 +24,7 @@ export default {
     };
 
     // Handled before the owner gate: they carry their own credentials.
-    if (path === "/daemon" || path === "/mcp" || path === "/api/jobs" || path === "/api/commands" || path.startsWith("/api/jobs/")) return forward();
+    if (path === "/daemon" || path === "/mcp" || path === "/api/jobs" || path === "/api/commands" || path === "/api/prompts" || path === "/api/workflows" || path.startsWith("/api/jobs/")) return forward();
     if (path.startsWith("/api/")) return json({ error: "not_found" }, 404);
 
     const unsafe = request.method !== "GET" && request.method !== "HEAD";

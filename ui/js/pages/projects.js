@@ -229,6 +229,7 @@ function detail(body, id, tab, ctx) {
     "unknown-project": "Tagged to a project that is missing or archived",
     "not-on-laptop": "Allowed by a key's contract, but not on the laptop",
   };
+  const estimateText = (e) => (e ? [e.minutes !== undefined ? `about ${e.minutes} min` : null, e.claudeTurns !== undefined ? `${e.claudeTurns} Claude turns` : null].filter(Boolean).join(", ") : "none declared");
   function commands(el, d) {
     const c = d.commands;
     if (!c.reported) el.append(banner("warn", h("span", null, h("b", null, "The laptop has not reported commands."), " Start the daemon (or restart it) and it sends its command list. Until then nothing can be checked against it.")));
@@ -236,12 +237,13 @@ function detail(body, id, tab, ctx) {
     const pn = names();
     const labels = keyLabelMap(d);
     el.append(h("div", { class: "card tblwrap" }, h("table", null,
-      h("thead", null, h("tr", null, ["Command", "On the laptop", "Tagged to", "Allowed via", "Check"].map((t) => h("th", null, t)))),
+      h("thead", null, h("tr", null, ["Command", "On the laptop", "Tagged to", "Allowed via", "Estimate", "Check"].map((t) => h("th", null, t)))),
       h("tbody", null, c.rows.map((r) => h("tr", null,
         h("td", null, h("span", { class: "mono" }, r.name)),
         h("td", null, c.reported ? (r.onLaptop ? tag("yes", "ok") : tag("no", "wa")) : h("span", { class: "f" }, "unknown")),
         h("td", { class: "m" }, r.taggedTo ? pn.get(r.taggedTo) || r.taggedTo : "no project"),
         h("td", { class: "m" }, r.viaKeys.length ? r.viaKeys.map((id) => labels.get(id) || id).join(", ") : "no key"),
+        h("td", { class: "m" }, estimateText(r.estimate), r.warning ? h("div", null, tag(r.warning, "wa")) : null),
         h("td", null, r.mismatch ? tag(MISMATCH[r.mismatch], r.mismatch === "not-on-laptop" ? "wa" : "er") : tag("ok", "ok"))))))));
   }
 

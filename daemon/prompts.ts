@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CLAUDE_TOOL_RE, DEFAULT_CLAUDE_MAX_TURNS, MAX_CLAUDE_TURNS, PROMPT_RE } from "../shared/contract.ts";
+import { parseEstimate, type Estimate } from "../shared/estimate.ts";
 import { sanitizePromptReport, type ReportedPrompt } from "../shared/projects.ts";
 import type { ArgSpec } from "./commands.ts";
 
@@ -18,6 +19,7 @@ export type Prompt = {
   cwd: string;
   scratch: boolean;
   schema?: Record<string, unknown>;
+  estimate?: Estimate;
 };
 
 export const DEFAULT_PROMPT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -72,6 +74,7 @@ export function loadPrompt(name: unknown, home = os.homedir()): { prompt: Prompt
       template: c.template, vars, tools, maxTurns, ...(c.model !== undefined ? { model: c.model } : {}),
       timeoutMs: c.timeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS, cwd: c.cwd, scratch: c.scratch === true,
       ...(c.schema !== undefined ? { schema: c.schema } : {}),
+      ...(parseEstimate(c.estimate) ? { estimate: parseEstimate(c.estimate) } : {}),
     },
   };
 }
@@ -136,7 +139,7 @@ export function listPromptReport(home = os.homedir()): ReportedPrompt[] {
   for (const name of Object.keys(reg)) {
     const r = loadPrompt(name, home);
     if ("error" in r) continue;
-    out.push({ name, vars: r.prompt.vars, timeoutMs: r.prompt.timeoutMs, schema: !!r.prompt.schema });
+    out.push({ name, vars: r.prompt.vars, timeoutMs: r.prompt.timeoutMs, schema: !!r.prompt.schema, ...(r.prompt.estimate ? { estimate: r.prompt.estimate } : {}) });
   }
   return sanitizePromptReport(out);
 }

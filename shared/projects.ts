@@ -1,10 +1,11 @@
 // Pure project rules, shared by the Hub and tests: validating a project, sanitising the laptop's (untrusted) command report,
 // and the Commands tab view. No I/O, no clock, no globals.
 import { normalizePath } from "./contract.ts";
+import { parseEstimate, type Estimate } from "./estimate.ts";
 
 import type { ArgSpec } from "./args.ts";
 export type { ArgSpec };
-export type ReportedCommand = { name: string; project: string | null; args: Record<string, ArgSpec>; timeoutMs: number | null };
+export type ReportedCommand = { name: string; project: string | null; args: Record<string, ArgSpec>; timeoutMs: number | null; estimate?: Estimate };
 export type ProjectInput = { name: string; folder: string | null; notes: string; color: string | null };
 
 const NAME_RE = /^[\w.-]{1,60}$/;
@@ -83,7 +84,8 @@ export function sanitizeReport(raw: unknown): ReportedCommand[] {
     }
     const project = typeof o.project === "string" && o.project.length > 0 && o.project.length <= 60 ? o.project : null;
     const timeoutMs = typeof o.timeoutMs === "number" && Number.isFinite(o.timeoutMs) && o.timeoutMs > 0 ? Math.floor(o.timeoutMs) : null;
-    out.push({ name: o.name, project, args, timeoutMs });
+    const estimate = parseEstimate(o.estimate);
+    out.push({ name: o.name, project, args, timeoutMs, ...(estimate ? { estimate } : {}) });
   }
   return out;
 }
@@ -94,6 +96,8 @@ export type CommandRow = {
   taggedTo: string | null;
   viaKeys: string[];
   mismatch: "other-project" | "unknown-project" | "not-on-laptop" | null;
+  estimate?: Estimate; // what the laptop declared the command costs (display help only)
+  warning?: string; // the estimate is more than what is left of every allowing key's Claude budget today
 };
 
 /** The Commands tab: commands tagged to this project plus commands its keys' contracts allow, each with a mismatch badge if the pieces disagree. */
@@ -125,12 +129,13 @@ export function commandsView(args: {
     if (taggedTo !== null && !live.has(taggedTo)) mismatch = "unknown-project";
     else if (taggedTo !== null && taggedTo !== projectId) mismatch = "other-project";
     else if (reported && viaKeys.length > 0 && !rep) mismatch = "not-on-laptop";
-    return { name, onLaptop: !!rep, taggedTo, viaKeys, mismatch };
+    return { name, onLaptop: !!rep, taggedTo, viaKeys, mismatch, ...(rep?.estimate ? { estimate: rep.estimate } : {}) };
   });
   return { rows, reported: reported !== null };
 }
 
-export type ReportedPrompt = { name: string; vars: Record<string, ArgSpec>; timeoutMs: number | null; schema: boolean };
+export type ReportedPrompt = { name: string; vars: Record<string, ArgSpec>; timeoutMs: number | null; schema: boolean; estimate?: Estimate };
+export type ReportedWorkflow = { name: string; inputs: Record<string, ArgSpec>; steps: number; timeoutMs: number | null; estimate?: Estimate };
 
 /** The laptop's prompt report (names and variable specs, never template text) is untrusted display data, sanitised like the command report. */
 export function sanitizePromptReport(raw: unknown): ReportedPrompt[] {
@@ -156,7 +161,39 @@ export function sanitizePromptReport(raw: unknown): ReportedPrompt[] {
       }
     }
     const timeoutMs = typeof o.timeoutMs === "number" && Number.isFinite(o.timeoutMs) && o.timeoutMs > 0 ? Math.floor(o.timeoutMs) : null;
-    out.push({ name: o.name, vars, timeoutMs, schema: o.schema === true });
+    const estimate = parseEstimate(o.estimate);
+    out.push({ name: o.name, vars, timeoutMs, schema: o.schema === true, ...(estimate ? { estimate } : {}) });
+  }
+  return out;
+}
+
+/** The laptop's workflow report (names, inputs, step count, timeout, estimate; never the steps) is untrusted display data, sanitised like the others. */
+export function sanitizeWorkflowReport(raw: unknown): ReportedWorkflow[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ReportedWorkflow[] = [];
+  const seen = new Set<string>();
+  for (const c of raw) {
+    if (out.length >= MAX_REPORT_COMMANDS) break;
+    if (!c || typeof c !== "object" || Array.isArray(c)) continue;
+    const o = c as Record<string, unknown>;
+    if (typeof o.name !== "string" || !NAME_RE.test(o.name) || seen.has(o.name)) continue;
+    seen.add(o.name);
+    const inputs: Record<string, ArgSpec> = {};
+    if (o.inputs && typeof o.inputs === "object" && !Array.isArray(o.inputs)) {
+      let n = 0;
+      for (const [k, v] of Object.entries(o.inputs)) {
+        if (n >= MAX_ARGS) break;
+        if (!NAME_RE.test(k)) continue;
+        const spec = sanitizeArg(v);
+        if (!spec) continue;
+        Object.defineProperty(inputs, k, { value: spec, enumerable: true, writable: true, configurable: true });
+        n++;
+      }
+    }
+    const steps = typeof o.steps === "number" && Number.isFinite(o.steps) && o.steps >= 0 ? Math.min(1000, Math.floor(o.steps)) : 0;
+    const timeoutMs = typeof o.timeoutMs === "number" && Number.isFinite(o.timeoutMs) && o.timeoutMs > 0 ? Math.floor(o.timeoutMs) : null;
+    const estimate = parseEstimate(o.estimate);
+    out.push({ name: o.name, inputs, steps, timeoutMs, ...(estimate ? { estimate } : {}) });
   }
   return out;
 }

@@ -8,6 +8,7 @@ import { listReport } from "./commands.ts";
 import { throttle } from "./progress.ts";
 import { rerunSafeCommands } from "./commands.ts";
 import { listPromptReport } from "./prompts.ts";
+import { listWorkflowReport } from "./workflows.ts";
 import { MAX_RESULT_BYTES } from "../shared/limits.ts";
 import type { JobMsg } from "./tasks.ts";
 import type { Usage } from "../shared/claude-budget.ts";
@@ -89,7 +90,7 @@ export function run(cfg: Config, log: (s: string) => void = console.log): Promis
         working[lane] = false;
       };
 
-      ws.on("open", () => send({ type: "hello", version: VERSION, last_seq: loadLastSeq(), commands: listReport(), rerunSafe: rerunSafeCommands(), prompts: listPromptReport(), lanes: { commands: hintsFromTimeouts(commandTimeouts()) } }));
+      ws.on("open", () => send({ type: "hello", version: VERSION, last_seq: loadLastSeq(), commands: listReport(), rerunSafe: rerunSafeCommands(), prompts: listPromptReport(), workflows: listWorkflowReport(), lanes: { commands: hintsFromTimeouts(commandTimeouts()) } }));
       ws.on("message", raw => {
         let m: any;
         try {

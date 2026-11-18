@@ -8,6 +8,7 @@ import { checkLogin, clearFailures, LOGIN_TABLE, recordFailure, type Sql } from 
 import { laneKey, laneOf, parseHello, pickNext, type LaneHints } from "../shared/lanes.ts";
 import { ensureProjectSchema, loadReport, Projects, storeReport } from "./projects.ts";
 import { storePromptReport } from "./prompt-report.ts";
+import { loadWorkflowReport, storeWorkflowReport } from "./workflow-report.ts";
 import { fingerprint, idempotencyFresh, parseIdempotencyKey } from "./idempotency.ts";
 import { isRerunSafe, NOT_RERUN_SAFE_REASON, parseLabel, parseRerunSafe, REQUEUE_REASON, resumeRefusal, UNCOUNTED_SQL } from "./job-rules.ts";
 import { addUsage, budgetFor, ensureClaudeUsageSchema, usageSummary } from "./claude-budget.ts";
@@ -208,7 +209,7 @@ export class Hub extends DurableObject<Env> {
     try {
       if (path === "/daemon") return await this.daemonUpgrade(req);
       if (path === "/api/jobs" || path.startsWith("/api/jobs/")) return await this.clientRoute(req, path);
-      if (path === "/api/commands") return await this.commandsRoute(req);
+      if (path === "/api/commands" || path === "/api/prompts" || path === "/api/workflows") return await this.commandsRoute(req, path);
       if (path === "/mcp") return await this.mcp(req);
       if (path === "/admin/login") return await this.login(req);
       if (path.startsWith("/admin/")) return await this.admin(req, url);
@@ -244,12 +245,16 @@ export class Hub extends DurableObject<Env> {
     return ++r.n > limit;
   }
 
-  private async commandsRoute(req: Request): Promise<Response> {
+  private async commandsRoute(req: Request, path = "/api/commands"): Promise<Response> {
     const k = await this.clientAuth(req);
     if (!k) return err(401, "bad_key");
     if (this.rateLimited(k.id)) return err(429, "rate_limited", { retry_after: 60 });
     if (req.method !== "GET") return err(405, "method_not_allowed");
-    return json(this.projects.commandsFor((parse(this.contractRow(k.contract_id)!.body) as Contract).commands ?? []));
+    const c = parse(this.contractRow(k.contract_id)!.body) as Contract;
+    const bs = budgetFor(this.sql, k.id, c); // what is left of the key's Claude budget today, to say whether an estimate fits
+    if (path === "/api/prompts") return json(this.projects.promptsFor(c.prompts ?? [], bs));
+    if (path === "/api/workflows") return json(this.projects.workflowsFor(c.workflows ?? [], bs));
+    return json(this.projects.commandsFor(c.commands ?? [], bs));
   }
 
   private async clientRoute(req: Request, path: string): Promise<Response> {
@@ -790,7 +795,7 @@ export class Hub extends DurableObject<Env> {
     const d = this.daemonInfo();
     const rep = loadReport(this.sql);
     // commands: what the laptop last reported (name, project tag, timeout), or null if it never has. Display data only.
-    return { connected: d.connected, last_seen: d.last_seen, last_seq: d.last_seq, rotated_at: d.rotated_at, credential_hint: d.hint, commands: rep ? rep.commands.map((c) => ({ name: c.name, project: c.project, timeoutMs: c.timeoutMs })) : null, commands_reported_at: rep ? rep.reported_at : null, queue: this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at, id").map(this.jobOut) };
+    return { connected: d.connected, last_seen: d.last_seen, last_seq: d.last_seq, rotated_at: d.rotated_at, credential_hint: d.hint, commands: rep ? rep.commands.map((c) => ({ name: c.name, project: c.project, timeoutMs: c.timeoutMs, estimate: c.estimate ?? null })) : null, workflows: loadWorkflowReport(this.sql)?.workflows ?? null, commands_reported_at: rep ? rep.reported_at : null, queue: this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at, id").map(this.jobOut) };
   }
 
   private async rotate(): Promise<Response> {
@@ -860,6 +865,7 @@ export class Hub extends DurableObject<Env> {
       for (const n of parseRerunSafe(m.rerunSafe)) this.sql.run("INSERT OR IGNORE INTO daemon_rerun (name) VALUES (?)", n);
       this.sql.run("UPDATE daemon SET connected = 1 WHERE id = 1");
       if (m.commands !== undefined) storeReport(this.sql, m.commands); // untrusted display data; an old daemon sends none and the last snapshot stays
+      if (m.workflows !== undefined) storeWorkflowReport(this.sql, m.workflows); // same
       if (m.prompts !== undefined) storePromptReport(this.sql, m.prompts); // same: untrusted display data (names and variable specs)
       this.event("daemon.connected", {});
       this.send({ type: "welcome", server_seq: this.lastEventSeq() });
