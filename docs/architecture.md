@@ -40,6 +40,10 @@ Nothing is updated in place except job state and revocation; each change also ap
 
 The second check catches Hub bugs, stale state and symlink or path tricks the gateway cannot see. The contract arrives in the job message, so on its own it does not make the laptop independent of the Hub. The laptop policy (`~/.mailroom/policy.json`, `{folders, tasks, commands?}`, mode 0600, managed by `mailroom policy`) is that ceiling: `recheck` loads it fresh per job and refuses any job whose contract folders (symlink-safe) or tasks exceed it, or whose commands exceed it when the contract has them. With no policy file the daemon keeps the old behaviour and warns once; a malformed file refuses every job.
 
+## Lanes
+
+Two lanes so a long job does not delay a quick one. `short`: `echo`, `read_file`, `write_file`, and `run` commands the laptop reported with `timeoutMs <= 60000`. `long`: `claude`, every other `run`, anything unknown. The pure rules are in `shared/lanes.ts`. The Hub (`pushNext`) keeps at most one job in flight per lane and picks the oldest queued job of each free lane, so order is strict within a lane. The daemon (`daemon/client.ts`) keeps a queue, an abort controller and progress reporting per running job and cancels by id. The Hub cannot read a laptop's registry, so the daemon reports lane hints in its hello (`lanes.commands`); an unreported command is `long`, the conservative choice. A daemon whose hello has no `lanes` field keeps the old single lane. A lost connection requeues every running job in both lanes, as before. A policy of "short" is a hint for scheduling only; it grants nothing.
+
 ## Rules
 
 - Key and credential comparison in constant time; keys never logged; shown once.
