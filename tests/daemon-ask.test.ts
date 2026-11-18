@@ -135,6 +135,45 @@ test("schema: a wrong, truncated or prose answer fails the job naming the path a
   assert.match((await ask({ prompt: "find-stream", vars: { name: "x", mode: "PROSE" } })).error, /not valid JSON/);
 });
 
+test("resume: the second job gets --resume <session of the first>; the first job's session is stored 0600", async () => {
+  const a = await ask({ prompt: "plain", vars: { name: "one" } });
+  assert.equal(a.ok, true, a.error);
+  const file = path.join(home, ".mailroom/sessions.json");
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  const sid = JSON.parse(fs.readFileSync(file, "utf8"))[a.id].sessionId;
+  assert.match(sid, /^sess-\d+$/);
+  const b = await ask({ prompt: "plain", vars: { name: "two" }, resume: a.id });
+  assert.equal(b.ok, true, b.error);
+  assert.match(b.result.output, new RegExp(`ARG:--max-turns\\nARG:3\\nARG:--resume\\nARG:${sid}\\nARG:--output-format`));
+  assert.ok(JSON.parse(fs.readFileSync(file, "utf8"))[b.id], "the resumed job has its own entry, so the chain can go on");
+});
+
+test("resume is refused for an unknown id, an expired one, another prompt and a claude job", async () => {
+  assert.match((await ask({ prompt: "plain", vars: { name: "x" }, resume: "p_nope" })).reason, /no session/);
+  const a = await ask({ prompt: "plain", vars: { name: "one" } });
+  assert.match((await ask({ prompt: "find-text", vars: { name: "x" }, resume: a.id }, C())).reason, /prompt “plain”, not “find-text”/);
+  const id = `cl_${++n}`;
+  hub.push(job(id, "claude", { prompt: "x", cwd: "~/allowed", resume: a.id }, C({ tasks: ["claude"] })));
+  assert.match((await hub.waitFor(isResult(id))).reason, /was a ask job, not claude/);
+  const file = path.join(home, ".mailroom/sessions.json");
+  const all = JSON.parse(fs.readFileSync(file, "utf8"));
+  all[a.id].at = Date.now() - 8 * 24 * 3600_000;
+  fs.writeFileSync(file, JSON.stringify(all), { mode: 0o600 });
+  assert.match((await ask({ prompt: "plain", vars: { name: "x" }, resume: a.id })).reason, /no session/);
+});
+
+test("a claude job's session can be resumed by a claude job; resume must look like a job id", async () => {
+  const c1 = `cl_${++n}`;
+  hub.push(job(c1, "claude", { prompt: "first", cwd: "~/allowed" }, C({ tasks: ["claude"] })));
+  assert.equal((await hub.waitFor(isResult(c1))).ok, true);
+  const c2 = `cl_${++n}`;
+  hub.push(job(c2, "claude", { prompt: "second", cwd: "~/allowed", resume: c1 }, C({ tasks: ["claude"] })));
+  const r = await hub.waitFor(isResult(c2));
+  assert.equal(r.ok, true, r.error);
+  assert.match(r.result.output, /ARG:--resume\nARG:sess-\d+\n/);
+  assert.match((await ask({ prompt: "plain", vars: { name: "x" }, resume: "--flag x" })).reason, /id of an earlier job/);
+});
+
 test("without a schema the answer is text", async () => {
   const r = await ask({ prompt: "plain", vars: { name: "a" } });
   assert.equal(typeof r.result.output, "string");

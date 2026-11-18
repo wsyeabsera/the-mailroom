@@ -30,3 +30,10 @@ export function parseLabel(v: unknown): { ok: true; label: string | null } | { o
   if (/[\x00-\x1f\x7f]/.test(s)) return { ok: false, error: "label must be plain text on one line." };
   return { ok: true, label: s };
 }
+
+/** A job may resume only an earlier ask or claude job of the same key. The message is the same for "no such job" and "another key's job",
+ *  so a key cannot probe which job ids exist. The daemon then checks it holds a session for that job. */
+export function resumeRefusal(prev: { key_id?: unknown; task?: unknown } | null | undefined, keyId: string): string | null {
+  if (prev && prev.key_id === keyId && (prev.task === "ask" || prev.task === "claude")) return null;
+  return "resume must name an earlier ask or claude job of this key";
+}

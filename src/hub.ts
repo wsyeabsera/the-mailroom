@@ -6,9 +6,10 @@ import { bearer, credentialHint, displayPrefix, generateAdminToken, generateDaem
 import { formatFieldErrors, handleMcpText, ToolError, type McpApi } from "./mcp.ts";
 import { checkLogin, clearFailures, LOGIN_TABLE, recordFailure, type Sql } from "./login-limit.ts";
 import { laneKey, laneOf, parseHello, pickNext, type LaneHints } from "../shared/lanes.ts";
-import { ensureProjectSchema, Projects, storePromptReport, storeReport } from "./projects.ts";
+import { ensureProjectSchema, Projects, storeReport } from "./projects.ts";
+import { storePromptReport } from "./prompt-report.ts";
 import { fingerprint, idempotencyFresh, parseIdempotencyKey } from "./idempotency.ts";
-import { isRerunSafe, NOT_RERUN_SAFE_REASON, parseLabel, parseRerunSafe, REQUEUE_REASON, UNCOUNTED_SQL } from "./job-rules.ts";
+import { isRerunSafe, NOT_RERUN_SAFE_REASON, parseLabel, parseRerunSafe, REQUEUE_REASON, resumeRefusal, UNCOUNTED_SQL } from "./job-rules.ts";
 import { markerBytes, planResult, resultCutoff, resultExpired } from "./results.ts";
 import { MAX_RESULT_BYTES } from "../shared/limits.ts";
 import { Notifier, type NotifyEnv } from "./notify.ts";
@@ -307,7 +308,11 @@ export class Hub extends DurableObject<Env> {
       }
       this.sql.run("DELETE FROM idempotency WHERE created_at < ?", now - 24 * 3600_000);
     }
-    const verdict = check(parse(c.body), { task, args }, { now, usedToday: this.usedToday(k.id, now) });
+    let verdict = check(parse(c.body), { task, args }, { now, usedToday: this.usedToday(k.id, now) });
+    if (verdict.verdict !== "refuse" && (task === "ask" || task === "claude") && typeof args.resume === "string") {
+      const why = resumeRefusal(this.one("SELECT key_id, task FROM jobs WHERE id = ?", args.resume), k.id); // resume: only this key's own earlier ask/claude job
+      if (why) verdict = { verdict: "refuse", reason: why };
+    }
     const id = makeId("p_", this.next("job"));
     const state = verdict.verdict === "refuse" ? "refused" : verdict.verdict === "approve" ? "waiting_approval" : "queued";
     this.sql.run("INSERT INTO jobs (id, key_id, contract_id, contract_version, task, args, state, reason, result, created_at, updated_at, label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)",

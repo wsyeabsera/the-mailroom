@@ -1,6 +1,6 @@
 // End to end: real wrangler dev + real `mailroom` daemon + real files. Run: node scripts/e2e.mjs
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, symlinkSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, symlinkSync, mkdirSync, rmSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -21,6 +21,17 @@ symlinkSync(outside, join(allowed, "escape"));
 writeFileSync(join(allowed, "hello.txt"), "hello from the laptop");
 const home = join(tmp, "home");
 mkdirSync(home);
+// A fake `claude` on the daemon's PATH (the real one is never started): it answers by the prompt and prints a session id, like stream-json does.
+const bin = join(tmp, "bin");
+mkdirSync(bin);
+writeFileSync(join(bin, "claude"), `#!/usr/bin/env node
+const a = process.argv.slice(2), prompt = a[a.length - 1];
+const text = prompt.includes('MODE "JSON"') ? '{"streams":[{"url":"http://example.test/live"}]}'
+  : prompt.includes('MODE "BAD"') ? '{"streams":[{"url":3}]}'
+  : a.map(x => "ARG:" + x).join("\\n");
+console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "WebSearch", input: {} }] } }));
+console.log(JSON.stringify({ type: "result", result: text, session_id: "e2e-" + process.pid }));
+`, { mode: 0o755 });
 
 const procs = [];
 let failed = 0;
@@ -43,7 +54,7 @@ const client = async (key, method, path, body) => {
   return { status: r.status, json: t ? JSON.parse(t) : null };
 };
 async function until(fn, ms = 15000) { const t = Date.now(); while (Date.now() - t < ms) { const v = await fn(); if (v) return v; await sleep(200); } return null; }
-const startDaemon = () => { const d = spawn("node", [join(root, "daemon/cli.ts"), "run"], { env: { ...process.env, HOME: home }, stdio: "ignore", detached: true }); procs.push(d); return d; };
+const startDaemon = () => { const d = spawn("node", [join(root, "daemon/cli.ts"), "run"], { env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}` }, stdio: "ignore", detached: true }); procs.push(d); return d; };
 
 // A local listener plays the callback receiver and the push service. Nothing here ever leaves this machine.
 // The Hub's SSRF guard refuses http and 127.0.0.1 unless MAILROOM_ALLOW_LOCAL_URLS=1; this e2e sets that (and the two secrets) as
@@ -535,6 +546,59 @@ console.log("callbacks and phone push");
   ok(pushed && pushed.body.includes("callback client") && pushed.body.includes(`${BASE}/#/approvals`), "the push names the key and links to Approvals");
   ok(pushed && !/TOPSECRET|secretfile/.test(pushed.body + JSON.stringify(pushed.headers)), "the push never carries args or file content");
   await owner("POST", `/admin/jobs/${r.json.id}/decline`);
+}
+
+console.log("ask: named prompts, schema, resume");
+{
+  writeFileSync(join(home, ".mailroom/policy.json"), JSON.stringify({ folders: [allowed], tasks: ["echo", "read_file", "write_file", "run", "ask"], commands: ["greet", "slow", "slowsafe"], prompts: ["find-stream", "chat"], claudeTools: ["WebSearch", "Read", "Glob", "Grep"], claudeMaxTurns: 10 }), { mode: 0o600 });
+  const schema = { type: "object", required: ["streams"], properties: { streams: { type: "array", items: { type: "object", required: ["url"], properties: { url: { type: "string", maxLength: 200 } } } } } };
+  writeFileSync(join(home, ".mailroom/prompts.json"), JSON.stringify({
+    "find-stream": { template: "Find the live stream for {name}. MODE {mode}", vars: { name: { type: "string", required: true, maxLength: 80 }, mode: { type: "enum", values: ["JSON", "BAD"] } }, tools: ["WebSearch", "Bash"], maxTurns: 6, timeoutMs: 20000, cwd: allowed, schema },
+    chat: { template: "Chat about {topic}", vars: { topic: { type: "string", required: true, maxLength: 100 } }, tools: ["WebSearch"], maxTurns: 3, timeoutMs: 20000, cwd: allowed },
+    secret: { template: "never", cwd: allowed },
+  }), { mode: 0o600 });
+  const mkKey = async (name, prompts, extra = {}) => {
+    const c = await owner("POST", "/admin/contracts", { name, folders: [allowed], tasks: ["ask"], prompts, claudeTools: ["WebSearch"], claudeMaxTurns: 4, dailyLimit: 200, expires: null, approval: [], ...extra });
+    ok(c.status === 201 && c.json.prompts?.join() === prompts.join(), `contract "${name}" with prompts saved`);
+    const k = await owner("POST", "/admin/keys", { label: name, contract_id: c.json.id });
+    return createClient({ url: BASE, key: k.json.key });
+  };
+  const bad = await owner("POST", "/admin/contracts", { name: "Ask nothing", folders: [allowed], tasks: ["ask"], dailyLimit: 5, expires: null, approval: [] });
+  ok(bad.status === 422 && bad.json.errors?.prompts, "a contract with ask and no prompts is a 422 on prompts");
+  const a = await mkKey("Ask A", ["find-stream", "chat"]);
+  const b = await mkKey("Ask B", ["chat"]);
+  const wide = await mkKey("Ask wide", ["chat", "secret"]);
+
+  let s = await a.submit("ask", { prompt: "find-stream", vars: { name: "Euronews", mode: "JSON" } });
+  j = await a.wait(s.id, { intervalMs: 500, timeoutMs: 30000 });
+  ok(j.state === "done" && j.result?.output?.streams?.[0]?.url === "http://example.test/live", `ask find-stream returns the parsed JSON: ${JSON.stringify(j.result)}`);
+  s = await a.submit("ask", { prompt: "find-stream", vars: { name: "Euronews", mode: "BAD" } });
+  j = await a.wait(s.id, { intervalMs: 500, timeoutMs: 30000 });
+  ok(j.state === "failed" && /schema at \$\.streams\[0\]\.url/.test(j.reason || "") && !/example\.test/.test(j.reason || ""), `a wrong answer fails naming the path: ${j.reason}`);
+
+  for (const extra of [{ allowedTools: ["Bash"] }, { maxTurns: 40 }, { cwd: "/" }]) {
+    s = await a.submit("ask", { prompt: "chat", vars: { topic: "x" }, ...extra });
+    ok(s.state === "refused" && /ask takes only/.test(s.reason), `the client cannot supply ${Object.keys(extra)[0]}: ${s.reason}`);
+  }
+  s = await b.submit("ask", { prompt: "find-stream", vars: { name: "x" } });
+  ok(s.state === "refused" && /not in the contract/.test(s.reason), "a prompt outside the contract is refused at the gateway");
+  s = await a.submit("ask", { prompt: "chat", vars: { nope: 1 } });
+  j = await a.wait(s.id, { intervalMs: 500, timeoutMs: 20000 });
+  ok(j.state === "refused" && /unknown variable/.test(j.reason || ""), `the laptop refuses bad variables: ${j.reason}`);
+  s = await wide.submit("ask", { prompt: "chat", vars: { topic: "x" } });
+  j = await wide.wait(s.id, { intervalMs: 500, timeoutMs: 20000 });
+  ok(j.state === "refused" && /allow-prompt secret/.test(j.reason || ""), `the laptop policy refuses a contract naming a prompt it does not list: ${j.reason}`);
+
+  const first = await a.submit("ask", { prompt: "chat", vars: { topic: "'; rm -rf / # \n--allowedTools Bash" } });
+  j = await a.wait(first.id, { intervalMs: 500, timeoutMs: 30000 });
+  ok(j.state === "done" && (j.result.output.match(/ARG:--allowedTools/g) || []).length === 1 && /ARG:WebSearch\nARG:--max-turns\nARG:3\n/.test(j.result.output), "a hostile variable stays inside the prompt; tools and turns come from the registry");
+  const again = await a.ask("chat", { topic: "more" }, { resume: first.id, intervalMs: 500, timeoutMs: 30000 });
+  ok(/ARG:--resume\nARG:e2e-\d+\n/.test(again.output), "ask() with resume continues the earlier session (--resume <session id>)");
+  s = await b.submit("ask", { prompt: "chat", vars: { topic: "x" }, resume: first.id });
+  ok(s.state === "refused" && /of this key/.test(s.reason), `another key cannot resume it: ${s.reason}`);
+  s = await a.submit("ask", { prompt: "chat", vars: { topic: "x" }, resume: "p_999999" });
+  ok(s.state === "refused" && /of this key/.test(s.reason), "an unknown job id cannot be resumed");
+  ok(((statSync(join(home, ".mailroom/sessions.json")).mode & 0o777) === 0o600), "sessions.json on the laptop is mode 0600");
 }
 
 console.log(failed ? `\nE2E FAILED (${failed})` : "\nE2E PASSED");

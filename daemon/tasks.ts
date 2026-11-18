@@ -7,6 +7,7 @@ import { READ_ONLY_TOOLS, StreamReader, makeScratch, removeScratch } from "./cla
 import { check, normalizePath, claudeCeiling } from "../shared/contract.ts";
 import type { Contract } from "../shared/contract.ts";
 import { buildArgv, loadCommand } from "./commands.ts";
+import { findResume, recordSession, scratchRoot, type SessionEntry } from "./sessions.ts";
 import { parseAnswer } from "../shared/json-schema.ts";
 import { fillTemplate, loadPrompt, type Prompt } from "./prompts.ts";
 import { loadPolicy, exceeds } from "./policy.ts";
@@ -49,6 +50,10 @@ export function recheck(job: JobMsg, now = Date.now(), home = os.homedir()): { r
     return over ? { reason: over } : { resolved: null };
   }
   let raw = (job.task === "claude" ? job.args.cwd : job.args.path) as string;
+  if ((job.task === "claude" || job.task === "ask") && job.args.resume !== undefined) {
+    const s = findResume(job.args.resume, job.task, job.task === "ask" ? (job.args.prompt as string) : undefined, home, now);
+    if ("error" in s) return { reason: s.error };
+  }
   if (job.task === "ask") {
     const name = job.args.prompt as string;
     if (pol.policy && !(pol.policy.prompts ?? []).includes(name)) return { reason: `prompt “${name}” is not allowed by the laptop policy. To allow: mailroom policy allow-prompt ${name}` };
@@ -152,7 +157,7 @@ async function runAsk(job: JobMsg, cwd: string, signal: AbortSignal, report: (te
   const f = fillTemplate(p.prompt, a.vars);
   if ("error" in f) throw new Error(f.error);
   const opts = askOptions(p.prompt, claudeCeiling(job.contract));
-  const r = await execClaude(f.text, cwd, signal, opts, p.prompt.timeoutMs, report, job.id);
+  const r = await execClaude(f.text, cwd, signal, opts, p.prompt.timeoutMs, report, { id: job.id, task: "ask", prompt: String(a.prompt), resume: a.resume });
   const text = typeof r.result?.result === "string" ? r.result.result : r.raw;
   // A prompt with a schema never returns a result that does not match it: the answer is parsed and validated, and the parsed value is the output.
   if (p.prompt.schema) {
@@ -175,7 +180,7 @@ export function askOptions(p: Prompt, ceil: { tools: string[]; maxTurns: number 
 async function runClaude(prompt: string, cwd: string, signal: AbortSignal, args: Record<string, unknown> = {}, ceil = claudeCeiling({}), report: (text: string) => void = () => {}, jobId = "job"): Promise<unknown> {
   if (!prompt) throw new Error("claude needs a prompt");
   const opts = claudeOptions(args, ceil);
-  const r = await execClaude(prompt, cwd, signal, opts, claudeTimeout(), report, jobId);
+  const r = await execClaude(prompt, cwd, signal, opts, claudeTimeout(), report, { id: jobId, task: "claude", resume: args.resume });
   if (opts.json) {
     if (r.result) return r.result;
     throw new Error("claude did not return valid JSON (output may be truncated)");
@@ -187,15 +192,25 @@ async function runClaude(prompt: string, cwd: string, signal: AbortSignal, args:
 type ExecResult = { result: Record<string, unknown> | null; raw: string };
 
 /** Starts claude with the given options and waits: stream-json progress through `report`, the final result event, timeout, cancel, scratch cleanup. */
-function execClaude(prompt: string, cwd: string, signal: AbortSignal, opts: { argv: string[]; scratch: boolean }, timeoutMs: number, report: (text: string) => void, jobId: string): Promise<ExecResult> {
+function execClaude(prompt: string, cwd: string, signal: AbortSignal, opts: { argv: string[]; scratch: boolean }, timeoutMs: number, report: (text: string) => void, who: { id: string; task: "ask" | "claude"; prompt?: string; resume?: unknown }): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
     let runCwd = cwd;
     let scratchDir: string | null = null;
     const argv = [...opts.argv];
+    // Resume: claude finds a session by its working folder, so a resumed scratch job runs in the same scratch path as the one it continues.
+    let resumed: SessionEntry | null = null;
+    if (who.resume !== undefined) {
+      const s = findResume(who.resume, who.task, who.prompt);
+      if ("error" in s) return reject(new Error(s.error));
+      resumed = s.session;
+      argv.push("--resume", resumed.sessionId);
+    }
     if (opts.scratch) {
       // Research mode: Claude works in a throwaway folder; the contract folder is only added as an extra directory (see docs/api.md for what this does not enforce).
       try {
-        scratchDir = makeScratch(jobId);
+        const again = resumed && path.dirname(resumed.cwd) === scratchRoot() ? resumed.cwd : null;
+        if (again) fs.mkdirSync(again, { recursive: true, mode: 0o700 });
+        scratchDir = again ?? makeScratch(who.id);
       } catch (e) {
         return reject(e);
       }
@@ -244,6 +259,8 @@ function execClaude(prompt: string, cwd: string, signal: AbortSignal, opts: { ar
       stream.end();
       if (timedOut) return reject(new Error(timeoutMessage(timeoutMs)));
       if (code !== 0) return reject(new Error(`claude exited with ${code}: ${err.trim()}`));
+      const sid = stream.result?.session_id;
+      if (typeof sid === "string") recordSession(who.id, { sessionId: sid, task: who.task, ...(who.prompt !== undefined ? { prompt: who.prompt } : {}), cwd: runCwd });
       resolve({ result: stream.result, raw: raw.toString("utf8") });
     });
   });
