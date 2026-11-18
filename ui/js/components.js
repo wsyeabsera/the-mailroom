@@ -59,7 +59,7 @@ export function modal(title, ...body) {
   function onKey(e) {
     if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); return; }
     if (e.key !== "Tab") return;
-    const f = [...dlg.querySelectorAll("button:not([disabled]), a[href], input:not([disabled])")];
+    const f = [...dlg.querySelectorAll("button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled])")];
     if (!f.length) return;
     const first = f[0], last = f[f.length - 1];
     if (!dlg.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
