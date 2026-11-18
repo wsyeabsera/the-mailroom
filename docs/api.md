@@ -161,3 +161,7 @@ Resume (#2800): a job arg `resume: <job id>` on `ask` or `claude` continues the 
 ### JSON output from a command (#2806)
 
 A `commands.json` entry may set `"output": "json"`. The daemon then parses the command's stdout and returns it as `result.output` (an object or array instead of a string). Stdout that is not valid JSON, or is 200 KB or more, fails the job with `<command> printed N bytes that are not valid JSON`: the byte count, never the text. Any other `output` value makes the registry entry refuse. `client.run()` returns `{output, exitCode}` with `output` already parsed.
+
+### Lenient answers and one repair (#2802)
+
+For a prompt with a `schema`, the reader first tries the whole reply as JSON (one code fence tolerated). If that fails it takes the first balanced object or array in the text that parses (strings and escapes are respected; the text around it is dropped, never returned) and validates that against the schema. A reply that is cut off mid-JSON still fails. A prompt may set `"repair": 1` in `prompts.json`: when the answer still does not parse or match, the daemon resumes the same Claude session once (at most 2 turns, same tools and ceilings) with a fixed message asking for the JSON only, then validates again; if that also fails the job fails with the usual path-and-length error. The repair's turns and time are added to the job's usage, so they count in the daily budget, and no repair starts when the budget is already used up.

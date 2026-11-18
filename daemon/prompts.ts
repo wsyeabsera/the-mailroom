@@ -18,6 +18,7 @@ export type Prompt = {
   cwd: string;
   scratch: boolean;
   schema?: Record<string, unknown>;
+  repair?: 1; // on a schema failure, resume the session once and ask for the JSON only
 };
 
 export const DEFAULT_PROMPT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -67,11 +68,12 @@ export function loadPrompt(name: unknown, home = os.homedir()): { prompt: Prompt
   if (c.model !== undefined && (typeof c.model !== "string" || !/^[\w.\-\[\]]{1,60}$/.test(c.model))) return bad("has a bad model");
   if (c.timeoutMs !== undefined && !(typeof c.timeoutMs === "number" && c.timeoutMs > 0)) return bad("has a bad timeoutMs");
   if (c.schema !== undefined && (!c.schema || typeof c.schema !== "object" || Array.isArray(c.schema) || JSON.stringify(c.schema).length > SCHEMA_MAX)) return bad("has a bad schema");
+  if (c.repair !== undefined && c.repair !== 0 && c.repair !== 1) return bad("has a bad repair (0 or 1)");
   return {
     prompt: {
       template: c.template, vars, tools, maxTurns, ...(c.model !== undefined ? { model: c.model } : {}),
       timeoutMs: c.timeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS, cwd: c.cwd, scratch: c.scratch === true,
-      ...(c.schema !== undefined ? { schema: c.schema } : {}),
+      ...(c.schema !== undefined ? { schema: c.schema } : {}), ...(c.repair === 1 ? { repair: 1 as const } : {}),
     },
   };
 }

@@ -149,6 +149,9 @@ function claudeOptions(a: Record<string, unknown>, ceil: { tools: string[]; maxT
   return { argv, json: a.json === true, scratch: a.scratch === true };
 }
 
+export const REPAIR_MESSAGE = "Your last reply was not one JSON value that matches the schema. Reply again with only that JSON value, no other text and no code fences.";
+const REPAIR_MAX_TURNS = 2;
+
 /** The `ask` task: the laptop's registered prompt, filled with checked variables, run with the prompt's own tools, turns, model and timeout.
  *  The contract's claude ceilings still clip tools (intersection) and turns (minimum); the client supplies only variables. */
 async function runAsk(job: JobMsg, cwd: string, signal: AbortSignal, report: (text: string) => void, onUsage: (u: Usage) => void = () => {}): Promise<unknown> {
@@ -158,11 +161,27 @@ async function runAsk(job: JobMsg, cwd: string, signal: AbortSignal, report: (te
   const f = fillTemplate(p.prompt, a.vars);
   if ("error" in f) throw new Error(f.error);
   const opts = askOptions(p.prompt, claudeCeiling(job.contract));
-  const r = await execClaude(f.text, cwd, signal, opts, p.prompt.timeoutMs, report, { id: job.id, task: "ask", prompt: String(a.prompt), resume: a.resume }, onUsage, job.budget);
-  const text = typeof r.result?.result === "string" ? r.result.result : r.raw;
+  // Usage is reported cumulatively: the repair's turns and time count against the same budget as the first run.
+  const total: Usage = { turns: 0, ms: 0 };
+  const count = (u: Usage) => { total.turns += u.turns; total.ms += u.ms; onUsage({ ...total }); };
+  const r = await execClaude(f.text, cwd, signal, opts, p.prompt.timeoutMs, report, { id: job.id, task: "ask", prompt: String(a.prompt), resume: a.resume }, count, job.budget);
+  let text = typeof r.result?.result === "string" ? r.result.result : r.raw;
   // A prompt with a schema never returns a result that does not match it: the answer is parsed and validated, and the parsed value is the output.
   if (p.prompt.schema) {
-    const parsed = parseAnswer(p.prompt.schema, text);
+    let parsed = parseAnswer(p.prompt.schema, text);
+    if (!parsed.ok && p.prompt.repair === 1 && typeof r.result?.session_id === "string" && !signal.aborted) {
+      const left = job.budget ? { turns: job.budget.turns - total.turns, ms: job.budget.ms - total.ms } : undefined;
+      if (!left || (left.turns > 0 && left.ms > 0)) {
+        report("asking once more for valid JSON");
+        // Same session (the first run recorded it under this job id), a short run, the same ceilings and budget.
+        const argv = [...opts.argv];
+        const i = argv.indexOf("--max-turns");
+        if (i >= 0) argv[i + 1] = String(Math.min(Number(argv[i + 1]), REPAIR_MAX_TURNS));
+        const r2 = await execClaude(REPAIR_MESSAGE, cwd, signal, { ...opts, argv }, p.prompt.timeoutMs, report, { id: job.id, task: "ask", prompt: String(a.prompt), resume: job.id }, count, left);
+        text = typeof r2.result?.result === "string" ? r2.result.result : r2.raw;
+        parsed = parseAnswer(p.prompt.schema, text);
+      }
+    }
     if (!parsed.ok) throw new Error(parsed.error);
     return { output: parsed.value };
   }
