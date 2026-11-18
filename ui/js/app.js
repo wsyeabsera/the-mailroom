@@ -48,9 +48,10 @@ export async function refreshState() {
   try {
     const s = await api("/admin/state");
     for (const b of [badge, allBadge]) {
-      b.textContent = s.approvals;
-      b.hidden = !s.approvals;
-      b.setAttribute("aria-label", `${s.approvals} waiting`);
+      const n = s.approvals + (s.proposals || []).length;
+      b.textContent = n;
+      b.hidden = !n;
+      b.setAttribute("aria-label", `${n} waiting`);
     }
     lapDot.className = "dot" + (s.daemon.connected ? "" : " w");
     lapText.textContent = s.daemon.connected ? "Laptop connected" : "Laptop away";

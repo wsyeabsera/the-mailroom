@@ -8,6 +8,7 @@ import { checkLogin, clearFailures, LOGIN_TABLE, recordFailure, type Sql } from 
 import { laneKey, laneOf, parseHello, pickNext, type LaneHints } from "../shared/lanes.ts";
 import { ensureProjectSchema, loadReport, Projects, storeReport } from "./projects.ts";
 import { storePromptReport } from "./prompt-report.ts";
+import { Proposals, PROPOSAL_TABLE } from "./proposals.ts";
 import { fingerprint, idempotencyFresh, parseIdempotencyKey } from "./idempotency.ts";
 import { isRerunSafe, NOT_RERUN_SAFE_REASON, parseLabel, parseRerunSafe, REQUEUE_REASON, resumeRefusal, UNCOUNTED_SQL } from "./job-rules.ts";
 import { addUsage, budgetFor, ensureClaudeUsageSchema, usageSummary } from "./claude-budget.ts";
@@ -59,6 +60,7 @@ export class Hub extends DurableObject<Env> {
   private mcpRate = new Map<string, { start: number; n: number }>();
   private enc = new TextEncoder();
   private projects: Projects;
+  private proposals: Proposals;
   private usageSeen = new Set<string>(); // cancelled jobs whose usage is already counted (a repeat message must not count twice)
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -79,6 +81,7 @@ export class Hub extends DurableObject<Env> {
       "CREATE INDEX IF NOT EXISTS job_results_at ON job_results (stored_at)",
       "CREATE TABLE IF NOT EXISTS idempotency (key_id TEXT NOT NULL, idem_key TEXT NOT NULL, job_id TEXT NOT NULL, fp TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (key_id, idem_key))",
       "CREATE TABLE IF NOT EXISTS daemon_rerun (name TEXT PRIMARY KEY)", // commands the laptop flagged re-run-safe in its last hello
+      PROPOSAL_TABLE,
       LOGIN_TABLE,
     ])
       this.sql.run(q);
@@ -87,6 +90,11 @@ export class Hub extends DurableObject<Env> {
     this.projects = new Projects({
       sql: this.sql, next: (n) => this.next(n), event: (k, p) => this.event(k, p), keyOut: (k) => this.keyOut(k), jobOut: (j) => this.jobOut(j),
       progress: (id) => this.progressOf(id), contractBody: (id) => { const c = this.contractRow(id); return c ? (parse(c.body) as Contract) : undefined; }, readJson: (r) => this.readJson(r),
+    });
+    this.proposals = new Proposals({
+      sql: this.sql, next: (n) => this.next(n), event: (k, p) => this.event(k, p), allowLocalUrls: this.env.MAILROOM_ALLOW_LOCAL_URLS === "1",
+      contract: (id) => { const c = this.contractRow(id); return c ? { body: parse(c.body) as Contract, version: c.version as number } : undefined; },
+      saveContract: (id, body) => { const o = this.saveContractCore(body, this.contractRow(id)!); return "errors" in o ? o : { version: o.out.version }; },
     });
     try { this.sql.run("ALTER TABLE jobs ADD COLUMN label TEXT"); } catch { /* already there */ }
     this.sweepResults();
@@ -417,6 +425,8 @@ export class Hub extends DurableObject<Env> {
       return err(404, "not_found");
     }
 
+    if (route === "proposals") return this.proposalRoute(req, seg);
+
     if (route === "tokens") {
       if (seg.length === 2) {
         if (m === "GET") return json(this.sql.all<Row>("SELECT * FROM admin_tokens ORDER BY created_at DESC, id DESC").map((t) => this.tokenOut(t)));
@@ -488,7 +498,19 @@ export class Hub extends DurableObject<Env> {
     const needs = this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'waiting_approval' ORDER BY created_at, id").map(j => ({ ...this.jobOut(j), key: { id: j.key_id, label: this.one("SELECT label FROM keys WHERE id = ?", j.key_id)?.label ?? null } }));
     const latest = this.sql.all<Row>("SELECT * FROM events ORDER BY seq DESC LIMIT 5").map(this.evOut);
     const d = this.daemonInfo();
-    return { daemon: { connected: d.connected, last_seen: d.last_seen, last_seq: d.last_seq }, counts, needs_you: needs, latest_events: latest, approvals: needs.length };
+    return { daemon: { connected: d.connected, last_seen: d.last_seen, last_seq: d.last_seq }, counts, needs_you: needs, latest_events: latest, approvals: needs.length, proposals: this.proposals.pending() };
+  }
+
+  private async proposalRoute(req: Request, seg: string[]): Promise<Response> {
+    const m = req.method;
+    const reply = (o: ReturnType<Proposals["decline"]>) => "out" in o ? json(o.out) : "notFound" in o ? err(404, "not_found") : "conflict" in o ? err(409, "conflict", { message: o.conflict }) : invalid(o.errors);
+    if (seg.length === 2) return m === "GET" ? json(this.proposals.list(new URL(req.url).searchParams.get("state"))) : err(405, "method_not_allowed");
+    const p = this.proposals.get(seg[2]);
+    if (!p) return err(404, "not_found");
+    if (seg.length === 3) return m === "GET" ? json(p) : err(405, "method_not_allowed");
+    if (seg.length === 4 && seg[3] === "apply") return m === "POST" ? reply(this.proposals.apply(p.id)) : err(405, "method_not_allowed");
+    if (seg.length === 4 && seg[3] === "decline") return m === "POST" ? reply(this.proposals.decline(p.id)) : err(405, "method_not_allowed");
+    return err(404, "not_found");
   }
 
   private async createKey(req: Request): Promise<Response> {
@@ -657,14 +679,14 @@ export class Hub extends DurableObject<Env> {
     const scopes = parse(t.scopes) as string[];
     const res = await handleMcpText(text, {
       scopes,
-      api: this.mcpApi(),
+      api: this.mcpApi(t.id),
       audit: (e) => void this.event("mcp.call", { token_id: t.id, label: t.label, tool: e.tool, ok: e.ok, ...(e.target ? { target: e.target } : {}) }),
     });
     return res === null ? new Response(null, { status: 202, headers: { "cache-control": "no-store" } }) : json(res);
   }
 
   /** The MCP tools call the same cores the owner routes use; nothing here re-implements a rule. */
-  private mcpApi(): McpApi {
+  private mcpApi(tokenId: string | null = null): McpApi {
     const need = <T>(v: T | undefined, what: string): T => { if (v === undefined) throw new ToolError(`${what} not found.`); return v; };
     const fields = (errors: Record<string, string>) => new ToolError(`Nothing was saved. ${formatFieldErrors(errors)}`, errors);
     return {
@@ -699,6 +721,14 @@ export class Hub extends DurableObject<Env> {
         const o = this.projects.update(id, body);
         if ("errors" in o) throw fields(o.errors);
         return o.out;
+      },
+      listProposals: async (state) => this.proposals.list(state),
+      proposeContract: async (a) => {
+        const o = this.proposals.propose(a, tokenId);
+        if ("errors" in o) throw fields(o.errors);
+        if ("notFound" in o) throw new ToolError(`${o.notFound} not found.`);
+        if ("conflict" in o) throw new ToolError(o.conflict);
+        return { ...o.out, note_to_caller: "Stored only. Nothing changes until the owner applies it in Approvals." };
       },
       createKey: async (a) => {
         const o = await this.createKeyCore(a);
