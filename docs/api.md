@@ -33,7 +33,7 @@ Nothing is updated in place except job state, key revocation and `daemon`; each 
 - `allow` -> 202 `{id, state:"queued"}`; `approve` -> 202 `{id, state:"waiting_approval"}`.
 - If the daemon is connected and the job is `queued`, push it (see daemon protocol).
 
-`GET /api/jobs/:id` -> `{id, state, reason?, result?, created_at, updated_at}` only for jobs of that key, else 404.
+`GET /api/jobs/:id` -> `{id, state, reason?, result?, progress?, created_at, updated_at}` (`progress` is `{text, pct?, at}`, the latest report from a running job) only for jobs of that key, else 404.
 
 ## Owner routes (cookie session; 401 `{error:"signed_out"}` without one)
 
@@ -56,6 +56,7 @@ Bad or missing credential: 401, no upgrade. One live daemon at a time: a new val
 Daemon -> Hub:
 - `{type:"hello", version:"0.2.0", last_seq:N}` first. Hub marks the daemon connected, appends `daemon.connected`, replies `{type:"welcome", server_seq:N}`, then pushes every `queued` job in created order (one at a time, next after the previous result).
 - `{type:"result", id, ok:true, result:<any JSON>}` -> job `done`. `{type:"result", id, ok:false, error:"..."}` -> job `failed` with `reason`. `{type:"refuse", id, reason}` -> job `refused` (the daemon's own contract re-check said no).
+- `{type:"progress", id, text, pct?}` (daemon to Hub) -> stored as the latest progress of the job. `text` is capped at 500 chars, `pct` is clamped to 0..100. Accepted only for the job currently running on that daemon (anything else is ignored), cleared if the job is requeued, and returned as `progress` by the gateway and the admin job views. The daemon sends at most 2 per second. A `run` script reports by printing `MAILROOM_PROGRESS [<pct> ]<text>` lines on stderr (parsed by `daemon/progress.ts`); the `claude` task reports nothing.
 - `{type:"pong"}` for each `{type:"ping"}` (Hub pings every 25 s; no pong in 60 s -> treated as disconnected).
 
 Hub -> Daemon:

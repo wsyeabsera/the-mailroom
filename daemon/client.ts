@@ -2,6 +2,7 @@ import WebSocket from "ws";
 import { loadLastSeq, saveLastSeq } from "./config.ts";
 import type { Config } from "./config.ts";
 import { recheck, runTask } from "./tasks.ts";
+import { throttle } from "./progress.ts";
 import type { JobMsg } from "./tasks.ts";
 
 export const VERSION = "0.2.0";
@@ -58,10 +59,13 @@ export function run(cfg: Config, log: (s: string) => void = console.log): Promis
           }
           const abort = new AbortController();
           current = { id: job.id, abort };
+          const progress = throttle<{ text: string; pct?: number }>(p => send({ type: "progress", id: job.id, ...p }), 500);
           try {
-            const result = await runTask(job, verdict.resolved, abort.signal);
+            const result = await runTask(job, verdict.resolved, abort.signal, (text, pct) => progress.push(pct === undefined ? { text } : { text, pct }));
+            progress.stop();
             if (!abort.signal.aborted) send({ type: "result", id: job.id, ok: true, result });
           } catch (e) {
+            progress.stop();
             if (!abort.signal.aborted) send({ type: "result", id: job.id, ok: false, error: (e as Error).message });
           }
           current = null;
