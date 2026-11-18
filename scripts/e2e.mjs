@@ -44,7 +44,19 @@ const client = async (key, method, path, body) => {
   return { status: r.status, json: t ? JSON.parse(t) : null };
 };
 async function until(fn, ms = 15000) { const t = Date.now(); while (Date.now() - t < ms) { const v = await fn(); if (v) return v; await sleep(200); } return null; }
-const startDaemon = () => { const d = spawn("node", [join(root, "daemon/cli.ts"), "run"], { env: { ...process.env, HOME: home }, stdio: "ignore", detached: true }); procs.push(d); return d; };
+// A fake `claude` first on the daemon's PATH: prints stream-json (3 assistant turns, then a result with num_turns 3) and its own argv.
+// A prompt of "hang" prints one turn and then sleeps, so the job can be cancelled mid-run.
+const fakebin = join(tmp, "fakebin");
+mkdirSync(fakebin);
+writeFileSync(join(fakebin, "claude"), `#!/bin/sh
+for a in "$@"; do last="$a"; done
+echo '{"type":"assistant","message":{"content":[]}}'
+if [ "$last" = "hang" ]; then sleep 60; exit 0; fi
+echo '{"type":"assistant","message":{"content":[]}}'
+echo '{"type":"assistant","message":{"content":[]}}'
+echo "{\\"type\\":\\"result\\",\\"num_turns\\":3,\\"result\\":\\"fake: $*\\"}"
+`, { mode: 0o755 });
+const startDaemon = () => { const d = spawn("node", [join(root, "daemon/cli.ts"), "run"], { env: { ...process.env, HOME: home, PATH: `${fakebin}:${process.env.PATH}` }, stdio: "ignore", detached: true }); procs.push(d); return d; };
 
 // A local listener plays the callback receiver and the push service. Nothing here ever leaves this machine.
 // The Hub's SSRF guard refuses http and 127.0.0.1 unless MAILROOM_ALLOW_LOCAL_URLS=1; this e2e sets that (and the two secrets) as
@@ -314,6 +326,41 @@ console.log("overview counts");
 r = await owner("GET", "/admin/state");
 ok(r.json.counts.done === 13 && r.json.counts.refused === 7 && r.json.counts.queued === 0, `today's counts are true (done ${r.json.counts.done}, refused ${r.json.counts.refused}, queued ${r.json.counts.queued})`);
 ok(r.json.daemon.connected === true, "overview says the laptop is connected");
+
+console.log("claude daily budget");
+// The laptop policy written above has no claude; widen it for these jobs (the daemon reads it per job).
+writeFileSync(join(home, ".mailroom/policy.json"), JSON.stringify({ folders: [allowed], tasks: ["echo", "read_file", "write_file", "run", "claude"], commands: ["greet", "slow"] }), { mode: 0o600 });
+r = await owner("POST", "/admin/contracts", { name: "Budgeted", folders: [allowed], tasks: ["claude"], claudeDailyTurns: 5, claudeDailyMinutes: 60, dailyLimit: 50, expires: null, approval: [] });
+ok(r.status === 201 && r.json.claudeDailyTurns === 5 && r.json.claudeDailyMinutes === 60, "contract with a claude daily budget created");
+const budgetContract = r.json.id;
+r = await owner("POST", "/admin/contracts", { name: "Bad budget", folders: [allowed], tasks: ["claude"], claudeDailyTurns: 0, claudeDailyMinutes: 2000, dailyLimit: 50, expires: null, approval: [] });
+ok(r.status === 422 && r.json.errors?.claudeDailyTurns && r.json.errors?.claudeDailyMinutes, "a bad budget is 422 with a message per field");
+r = await owner("POST", "/admin/keys", { label: "budgeted", contract_id: budgetContract });
+const budgetKey = r.json.key, budgetKeyId = r.json.id;
+const waitBudget = async (id) => until(async () => { const x = (await client(budgetKey, "GET", `/api/jobs/${id}`)).json; return ["done", "failed", "refused"].includes(x.state) ? x : null; }, 30000);
+r = await client(budgetKey, "POST", "/api/jobs", { task: "claude", args: { prompt: "one", cwd: allowed } });
+let bj = await waitBudget(r.json.id);
+ok(bj?.state === "done" && /fake:/.test(bj.result?.output || ""), `first claude job runs against the fake claude: ${bj?.state}`);
+r = await owner("GET", `/admin/keys/${budgetKeyId}`);
+ok(r.json.claude_usage?.turns === 3 && r.json.claude_usage.budget.turns === 5 && r.json.claude_usage.over === false && r.json.claude_usage.ms > 0, `usage shows 3 of 5 turns: ${JSON.stringify(r.json.claude_usage)}`);
+r = await client(budgetKey, "POST", "/api/jobs", { task: "claude", args: { prompt: "two", cwd: allowed } });
+bj = await waitBudget(r.json.id);
+ok(bj?.state === "done" && /--max-turns 2 /.test(bj.result?.output || ""), `the second job's maxTurns is clipped to the 2 turns left: ${(bj?.result?.output || "").slice(0, 80)}`);
+r = await client(budgetKey, "POST", "/api/jobs", { task: "claude", args: { prompt: "three", cwd: allowed } });
+ok(r.status === 403 && r.json.state === "refused" && /daily budget/.test(r.json.reason || "") && /claudeDailyTurns/.test(r.json.reason || ""), `at 6 of 5 turns a new claude job is refused naming the budget: ${r.json.reason}`);
+// A cancelled job still counts what it used.
+r = await owner("POST", "/admin/contracts", { name: "Roomy budget", folders: [allowed], tasks: ["claude"], claudeDailyTurns: 100, claudeDailyMinutes: 60, dailyLimit: 50, expires: null, approval: [] });
+const roomy = r.json.id;
+r = await owner("POST", "/admin/keys", { label: "roomy", contract_id: roomy });
+const roomyKey = r.json.key, roomyKeyId = r.json.id;
+r = await client(roomyKey, "POST", "/api/jobs", { task: "claude", args: { prompt: "hang", cwd: allowed } });
+const hangId = r.json.id;
+ok(await until(async () => (await client(roomyKey, "GET", `/api/jobs/${hangId}`)).json.state === "running", 20000), "the hanging claude job is running");
+await sleep(1500);
+r = await client(roomyKey, "POST", `/api/jobs/${hangId}/cancel`);
+ok(await until(async () => (await owner("GET", `/admin/keys/${roomyKeyId}`)).json.claude_usage?.turns >= 1, 15000), "a cancelled claude job still counts the turns it used");
+r = await owner("GET", "/admin/keys");
+ok(r.json.find(k => k.id === roomyKeyId)?.claude_usage?.budget?.minutes === 60, "the key list carries the usage too");
 
 console.log("projects");
 r = await owner("POST", "/admin/projects", { name: "  " });

@@ -127,6 +127,8 @@ function detail(body, id, ctx) {
           h("p", { class: "sub" }, h("span", { class: "mono" }, k.prefix + "…"), revoked ? ` · revoked ${ago(k.revoked_at)}` : ` · created ${dayMonth(k.created_at)} · last used ${k.last_used_at ? ago(k.last_used_at) : "never"}`)),
         revoked ? null : h("button", { class: "btn d", type: "button", onclick: () => revoke(k) }, "Revoke key")));
     if (flash) body.append(flash);
+    const cu = k.claude_usage;
+    if (cu) body.append(h("p", { class: "m", id: "claude-usage" }, `Claude today (UTC): ${cu.turns} of ${cu.budget.turns} turns, ${cu.minutes} of ${cu.budget.minutes} minutes.`, cu.over ? " Budget used up; new claude jobs are refused until 00:00 UTC." : ""));
     body.append(h("div", { class: "row" },
       h("div", { class: "card f1" }, h("div", { class: "ch" }, h("h2", null, "Contract: ", c.name || "")), contractSummary(c),
         h("p", { style: "margin:0 16px 16px" }, h("a", { class: "m", href: "#/contracts/" + enc(c.id || k.contract_id) }, "Edit contract →"))),

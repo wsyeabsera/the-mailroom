@@ -2,6 +2,7 @@
 // A contract says what a key may do. The gateway checks it, and the daemon runs the same check again on the contract the Hub
 // sends with each job (with real paths and the laptop's home and clock). The laptop ceiling (daemon/policy.ts) is applied by the daemon on top.
 
+import { DEFAULT_CLAUDE_DAILY_MINUTES, DEFAULT_CLAUDE_DAILY_TURNS, MAX_CLAUDE_DAILY_MINUTES, MAX_CLAUDE_DAILY_TURNS } from "./claude-budget.ts";
 import { validateCallbackPrefixes, type UrlOpts } from "./callback.ts";
 
 export const TASKS =["echo", "read_file", "write_file", "claude", "run"] as const;
@@ -17,6 +18,8 @@ export type Contract = {
   commands?: string[]; // names the "run" task may use (registered on the laptop); missing in older contracts = none
   claudeTools?: string[]; // ceiling on a claude job's allowedTools, and what a job with no allowedTools gets; missing = DEFAULT_CLAUDE_TOOLS
   claudeMaxTurns?: number; // ceiling on a claude job's maxTurns, and what a job with no maxTurns gets; missing = DEFAULT_CLAUDE_MAX_TURNS
+  claudeDailyTurns?: number; // budget for claude (and ask) jobs per key per UTC day, in turns; missing = 100 (shared/claude-budget.ts)
+  claudeDailyMinutes?: number; // the same in wall-clock minutes; missing = 60
   callbackUrls?: string[]; // https prefixes (ending in /) a job's callback_url must start with; missing = none (shared/callback.ts)
 };
 
@@ -160,11 +163,16 @@ export function validateContract(raw: unknown, urlOpts: UrlOpts = {}): Validatio
   const cm = o.claudeMaxTurns === undefined || o.claudeMaxTurns === null ? DEFAULT_CLAUDE_MAX_TURNS : o.claudeMaxTurns;
   if (typeof cm !== "number" || !Number.isInteger(cm) || cm < 1 || cm > MAX_CLAUDE_TURNS) errors.claudeMaxTurns = `Use a whole number from 1 to ${MAX_CLAUDE_TURNS}.`;
 
+  const cdt = o.claudeDailyTurns === undefined || o.claudeDailyTurns === null ? DEFAULT_CLAUDE_DAILY_TURNS : o.claudeDailyTurns;
+  if (typeof cdt !== "number" || !Number.isInteger(cdt) || cdt < 1 || cdt > MAX_CLAUDE_DAILY_TURNS) errors.claudeDailyTurns = `Use a whole number from 1 to ${MAX_CLAUDE_DAILY_TURNS}, like 100.`;
+  const cdm = o.claudeDailyMinutes === undefined || o.claudeDailyMinutes === null ? DEFAULT_CLAUDE_DAILY_MINUTES : o.claudeDailyMinutes;
+  if (typeof cdm !== "number" || !Number.isInteger(cdm) || cdm < 1 || cdm > MAX_CLAUDE_DAILY_MINUTES) errors.claudeDailyMinutes = `Use a whole number of minutes from 1 to ${MAX_CLAUDE_DAILY_MINUTES}, like 60.`;
+
   const cb = validateCallbackPrefixes(o.callbackUrls, urlOpts);
   if (!cb.ok) errors.callbackUrls = cb.error;
 
   if (Object.keys(errors).length) return { ok: false, errors };
-  return { ok: true, contract: { name, folders, tasks, dailyLimit: dl as number, expires, approval, commands, claudeTools, claudeMaxTurns: cm as number, ...(cb.ok && cb.prefixes.length ? { callbackUrls: cb.prefixes } : {}) } };
+  return { ok: true, contract: { name, folders, tasks, dailyLimit: dl as number, expires, approval, commands, claudeTools, claudeMaxTurns: cm as number, claudeDailyTurns: cdt as number, claudeDailyMinutes: cdm as number, ...(cb.ok && cb.prefixes.length ? { callbackUrls: cb.prefixes } : {}) } };
 }
 
 /** The paths a job touches. echo touches none. */

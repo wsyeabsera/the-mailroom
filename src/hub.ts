@@ -9,6 +9,9 @@ import { laneKey, laneOf, parseHello, pickNext, type LaneHints } from "../shared
 import { ensureProjectSchema, loadReport, Projects, storeReport } from "./projects.ts";
 import { fingerprint, idempotencyFresh, parseIdempotencyKey } from "./idempotency.ts";
 import { isRerunSafe, NOT_RERUN_SAFE_REASON, parseLabel, parseRerunSafe, REQUEUE_REASON, UNCOUNTED_SQL } from "./job-rules.ts";
+import { addUsage, budgetFor, ensureClaudeUsageSchema, usageSummary } from "./claude-budget.ts";
+import { clipMaxTurns, isClaudeTask, parseUsage } from "../shared/claude-budget.ts";
+import { claudeCeiling } from "../shared/contract.ts";
 import { markerBytes, planResult, resultCutoff, resultExpired } from "./results.ts";
 import { MAX_RESULT_BYTES } from "../shared/limits.ts";
 import { Notifier, type NotifyEnv } from "./notify.ts";
@@ -55,6 +58,7 @@ export class Hub extends DurableObject<Env> {
   private mcpRate = new Map<string, { start: number; n: number }>();
   private enc = new TextEncoder();
   private projects: Projects;
+  private usageSeen = new Set<string>(); // cancelled jobs whose usage is already counted (a repeat message must not count twice)
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -78,6 +82,7 @@ export class Hub extends DurableObject<Env> {
     ])
       this.sql.run(q);
     ensureProjectSchema(this.sql);
+    ensureClaudeUsageSchema(this.sql);
     this.projects = new Projects({
       sql: this.sql, next: (n) => this.next(n), event: (k, p) => this.event(k, p), keyOut: (k) => this.keyOut(k), jobOut: (j) => this.jobOut(j),
       progress: (id) => this.progressOf(id), contractBody: (id) => { const c = this.contractRow(id); return c ? (parse(c.body) as Contract) : undefined; }, readJson: (r) => this.readJson(r),
@@ -311,6 +316,10 @@ export class Hub extends DurableObject<Env> {
       const bad = this.projects.argError(args.command, args.args);
       if (bad) verdict = { verdict: "refuse", reason: bad };
     }
+    if (verdict.verdict !== "refuse" && isClaudeTask(task)) {
+      const bs = budgetFor(this.sql, k.id, parse(c.body), now); // the key's claude budget for today (src/claude-budget.ts)
+      if (bs.over) verdict = { verdict: "refuse", reason: bs.reason! };
+    }
     const id = makeId("p_", this.next("job"));
     const state = verdict.verdict === "refuse" ? "refused" : verdict.verdict === "approve" ? "waiting_approval" : "queued";
     this.sql.run("INSERT INTO jobs (id, key_id, contract_id, contract_version, task, args, state, reason, result, created_at, updated_at, label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)",
@@ -435,7 +444,7 @@ export class Hub extends DurableObject<Env> {
 
   private keyOut(k: Row) {
     const c = this.contractRow(k.contract_id);
-    return { id: k.id, label: k.label, prefix: k.prefix, contract: { id: k.contract_id, name: c?.name ?? "" }, project_id: k.project_id ?? null, created_at: k.created_at, last_used_at: k.last_used_at, revoked_at: k.revoked_at };
+    return { id: k.id, label: k.label, prefix: k.prefix, contract: { id: k.contract_id, name: c?.name ?? "" }, project_id: k.project_id ?? null, created_at: k.created_at, last_used_at: k.last_used_at, revoked_at: k.revoked_at, claude_usage: c ? usageSummary(this.sql, k.id, parse(c.body)) : null };
   }
 
   private daemonInfo() {
@@ -556,6 +565,10 @@ export class Hub extends DurableObject<Env> {
     const now = Date.now();
     j.contract_version = c.version;
     const v = check(parse(c.body), { task: j.task, args: parse(j.args) }, { now, usedToday: this.usedToday(j.key_id, now, j.id) });
+    if (v.verdict !== "refuse" && isClaudeTask(j.task)) {
+      const bs = budgetFor(this.sql, j.key_id, parse(c.body), now);
+      if (bs.over) return bs.reason!;
+    }
     return v.verdict === "refuse" ? v.reason : null;
   }
 
@@ -830,7 +843,14 @@ export class Hub extends DurableObject<Env> {
     }
     if (!dm.hello || typeof m.id !== "string") return;
     const j = this.one("SELECT * FROM jobs WHERE id = ?", m.id);
+    if (m.type === "usage") {
+      // What a cancelled claude job used before it was killed (the daemon sends no result for it). A running job's usage rides on its result.
+      const u = parseUsage(m.usage);
+      if (j && j.state === "cancelled" && isClaudeTask(j.task) && u && !this.usageSeen.has(j.id)) { this.usageSeen.add(j.id); addUsage(this.sql, j.key_id, u); }
+      return;
+    }
     if (!j || j.state !== "running") return; // late or stray (e.g. cancelled): ignore
+    if (m.type === "result" && isClaudeTask(j.task)) { const u = parseUsage(m.usage); if (u) addUsage(this.sql, j.key_id, u); } // failed and done jobs both count
     if (m.type === "progress") {
       if (typeof m.text !== "string" || !this.isInflight(j.id)) return;
       const pct = typeof m.pct === "number" && Number.isFinite(m.pct) ? Math.min(100, Math.max(0, m.pct)) : null;
@@ -878,7 +898,15 @@ export class Hub extends DurableObject<Env> {
       if (reason) { this.setState(j, "refused", reason); continue; }
       const c = this.contractRow(j.contract_id)!;
       const lane = laneOf(j.task, parse(j.args), this.laneMode?.hints);
-      const ok = this.send({ type: "job", id: j.id, task: j.task, args: parse(j.args), lane, contract: parse(c.body), contract_version: c.version });
+      let args = parse(j.args);
+      let budget: { turns: number; ms: number } | undefined;
+      if (isClaudeTask(j.task)) {
+        // Cap this job by what is left of the key's day: maxTurns is clipped here, the daemon also clips its timeout to `budget.ms`.
+        const bs = budgetFor(this.sql, j.key_id, parse(c.body));
+        args = { ...args, maxTurns: clipMaxTurns(typeof args.maxTurns === "number" ? args.maxTurns : claudeCeiling(parse(c.body)).maxTurns, bs.turnsLeft) };
+        budget = { turns: bs.turnsLeft, ms: bs.msLeft };
+      }
+      const ok = this.send({ type: "job", id: j.id, task: j.task, args, lane, contract: parse(c.body), contract_version: c.version, ...(budget ? { budget } : {}) });
       if (!ok) return;
       this.inflight.set(laneKey(!!this.laneMode, lane), j.id);
       this.setState(j, "running");

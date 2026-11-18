@@ -156,7 +156,7 @@ test("jobs run in order, one at a time", async () => {
   assert.equal(fs.readFileSync(path.join(allowed, "o.txt"), "utf8"), "3");
 });
 
-test("cancel of a running job kills it and sends nothing", async () => {
+test("cancel of a running job kills it and sends no result (only its usage, for the daily budget)", async () => {
   const before = hub.messages.length;
   hub.push(job("k1", "claude", { prompt: "sleep", cwd: "~/allowed" }, C()));
   await new Promise(r => setTimeout(r, 500));
@@ -165,7 +165,7 @@ test("cancel of a running job kills it and sends nothing", async () => {
   // daemon is free again
   const m = await run("k2", "echo", { text: "after" });
   assert.equal(m.ok, true);
-  assert.ok(!hub.messages.slice(before).some(x => x.id === "k1"));
+  assert.ok(!hub.messages.slice(before).some(x => x.id === "k1" && x.type !== "usage"));
 });
 
 test("claude options become argv entries before -p", async () => {
