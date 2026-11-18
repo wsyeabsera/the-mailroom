@@ -20,11 +20,11 @@ const a = process.argv.slice(2), prompt = a[a.length - 1];
 const out = o => console.log(JSON.stringify(o));
 const sid = process.env.FAKE_SESSION || "sess-" + process.pid;
 let text;
-if (prompt.includes("MODE_JSON")) text = '{"streams":[{"url":"http://example.com/live"}]}';
-else if (prompt.includes("MODE_FENCED")) text = '\`\`\`json\\n{"streams":[]}\\n\`\`\`';
-else if (prompt.includes("MODE_WRONG")) text = '{"streams":[{"url":5}]}';
-else if (prompt.includes("MODE_TRUNC")) text = '{"streams":[{"url":"http://exa';
-else if (prompt.includes("MODE_PROSE")) text = "Here you go.";
+if (prompt.includes('MODE "JSON"')) text = '{"streams":[{"url":"http://example.com/live"}]}';
+else if (prompt.includes('MODE "FENCED"')) text = '\`\`\`json\\n{"streams":[]}\\n\`\`\`';
+else if (prompt.includes('MODE "WRONG"')) text = '{"streams":[{"url":5}]}';
+else if (prompt.includes('MODE "TRUNC"')) text = '{"streams":[{"url":"http://exa';
+else if (prompt.includes('MODE "PROSE"')) text = "Here you go.";
 else text = a.map(x => "ARG:" + x).join("\\n") + "\\nCWD:" + require("node:fs").realpathSync(process.cwd());
 out({ type: "assistant", message: { content: [{ type: "text", text: "hm" }] } });
 out({ type: "result", result: text, session_id: sid });
@@ -33,7 +33,8 @@ out({ type: "result", result: text, session_id: sid });
   fs.mkdirSync(path.join(home, ".mailroom"), { recursive: true });
   const schema = { type: "object", required: ["streams"], properties: { streams: { type: "array", items: { type: "object", required: ["url"], properties: { url: { type: "string", maxLength: 100 } } } } } };
   const reg = {
-    "find-stream": { template: "Find the stream for {name} MODE_{mode}", vars: { name: { type: "string", required: true, maxLength: 60 }, mode: { type: "enum", values: ["ECHO", "JSON", "FENCED", "WRONG", "TRUNC", "PROSE"] } }, tools: ["WebSearch", "WebFetch", "Bash"], maxTurns: 8, model: "sonnet", timeoutMs: 5000, cwd: "~/allowed", schema },
+    "find-stream": { template: "Find the stream for {name} MODE {mode}", vars: { name: { type: "string", required: true, maxLength: 60 }, mode: { type: "enum", values: ["ECHO", "JSON", "FENCED", "WRONG", "TRUNC", "PROSE"] } }, tools: ["WebSearch", "WebFetch", "Bash"], maxTurns: 8, model: "sonnet", timeoutMs: 5000, cwd: "~/allowed", schema },
+    "find-text": { template: "Find the stream for {name}", vars: { name: { type: "string", required: true, maxLength: 60 } }, tools: ["WebSearch", "WebFetch", "Bash"], maxTurns: 8, model: "sonnet", timeoutMs: 5000, cwd: "~/allowed" },
     plain: { template: "Say hi to {name}", vars: { name: { type: "string", required: true } }, tools: ["Read"], maxTurns: 3, timeoutMs: 5000, cwd: "~/allowed" },
     escape: { template: "x", cwd: "~/outside" },
   };
@@ -48,7 +49,7 @@ after(async () => {
   await hub.stop();
 });
 
-const C = (over: Record<string, unknown> = {}) => contract(home, { tasks: ["echo", "ask"], prompts: ["find-stream", "plain", "escape", "ghost"], claudeTools: ["WebSearch", "WebFetch", "Read"], claudeMaxTurns: 5, ...over });
+const C = (over: Record<string, unknown> = {}) => contract(home, { tasks: ["echo", "ask"], prompts: ["find-stream", "find-text", "plain", "escape", "ghost"], claudeTools: ["WebSearch", "WebFetch", "Read"], claudeMaxTurns: 5, ...over });
 let n = 0;
 async function ask(args: Record<string, unknown>, c: unknown = C()) {
   const id = `ask_${++n}`;
@@ -58,7 +59,7 @@ async function ask(args: Record<string, unknown>, c: unknown = C()) {
 
 test("hello reports prompt names and variable specs, never the template", () => {
   const h = hub.messages.find(m => m.type === "hello");
-  assert.deepEqual(h.prompts.map((p: any) => p.name).sort(), ["escape", "find-stream", "plain"]);
+  assert.deepEqual(h.prompts.map((p: any) => p.name).sort(), ["escape", "find-stream", "find-text", "plain"]);
   const f = h.prompts.find((p: any) => p.name === "find-stream");
   assert.equal(f.vars.name.type, "string");
   assert.equal(f.schema, true);
@@ -76,7 +77,7 @@ test("ask runs the registered prompt: fixed tools clipped by the contract, turns
 });
 
 test("ask clips tools to the contract and turns to its ceiling", async () => {
-  const r = await ask({ prompt: "find-stream", vars: { name: "Euronews", mode: "ECHO" } });
+  const r = await ask({ prompt: "find-text", vars: { name: "Euronews" } }, C({ prompts: ["find-text"] }));
   assert.equal(r.ok, true, r.error);
   assert.match(r.result.output, /ARG:--allowedTools\nARG:WebSearch\nARG:WebFetch\nARG:--max-turns\nARG:5\nARG:--model\nARG:sonnet\n/);
   assert.ok(!r.result.output.includes("ARG:Bash"));
@@ -114,4 +115,27 @@ test("the laptop policy refuses a prompt it does not list", async () => {
   } finally {
     fs.rmSync(path.join(home, ".mailroom/policy.json"));
   }
+});
+
+test("schema: a matching answer is returned parsed; a code fence is tolerated", async () => {
+  const r = await ask({ prompt: "find-stream", vars: { name: "Euronews", mode: "JSON" } });
+  assert.equal(r.ok, true, r.error);
+  assert.deepEqual(r.result, { output: { streams: [{ url: "http://example.com/live" }] } });
+  const f = await ask({ prompt: "find-stream", vars: { name: "x", mode: "FENCED" } });
+  assert.deepEqual(f.result, { output: { streams: [] } });
+});
+
+test("schema: a wrong, truncated or prose answer fails the job naming the path and length, not the text", async () => {
+  const w = await ask({ prompt: "find-stream", vars: { name: "x", mode: "WRONG" } });
+  assert.equal(w.ok, false);
+  assert.match(w.error, /does not match the schema at \$\.streams\[0\]\.url: expected string, got number \(reply was \d+ characters\)/);
+  const t = await ask({ prompt: "find-stream", vars: { name: "x", mode: "TRUNC" } });
+  assert.match(t.error, /not valid JSON.*truncated/);
+  assert.ok(!t.error.includes("http://exa"));
+  assert.match((await ask({ prompt: "find-stream", vars: { name: "x", mode: "PROSE" } })).error, /not valid JSON/);
+});
+
+test("without a schema the answer is text", async () => {
+  const r = await ask({ prompt: "plain", vars: { name: "a" } });
+  assert.equal(typeof r.result.output, "string");
 });

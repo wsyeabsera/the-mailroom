@@ -7,6 +7,7 @@ import { READ_ONLY_TOOLS, StreamReader, makeScratch, removeScratch } from "./cla
 import { check, normalizePath, claudeCeiling } from "../shared/contract.ts";
 import type { Contract } from "../shared/contract.ts";
 import { buildArgv, loadCommand } from "./commands.ts";
+import { parseAnswer } from "../shared/json-schema.ts";
 import { fillTemplate, loadPrompt, type Prompt } from "./prompts.ts";
 import { loadPolicy, exceeds } from "./policy.ts";
 import { MAX_RESULT_BYTES, MAX_WRITE_BYTES } from "../shared/limits.ts";
@@ -153,6 +154,12 @@ async function runAsk(job: JobMsg, cwd: string, signal: AbortSignal, report: (te
   const opts = askOptions(p.prompt, claudeCeiling(job.contract));
   const r = await execClaude(f.text, cwd, signal, opts, p.prompt.timeoutMs, report, job.id);
   const text = typeof r.result?.result === "string" ? r.result.result : r.raw;
+  // A prompt with a schema never returns a result that does not match it: the answer is parsed and validated, and the parsed value is the output.
+  if (p.prompt.schema) {
+    const parsed = parseAnswer(p.prompt.schema, text);
+    if (!parsed.ok) throw new Error(parsed.error);
+    return { output: parsed.value };
+  }
   return { output: Buffer.from(text).subarray(0, MAX_RESULT_BYTES).toString("utf8") };
 }
 
