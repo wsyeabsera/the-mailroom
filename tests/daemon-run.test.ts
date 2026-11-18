@@ -19,14 +19,34 @@ before(async () => {
   // fake claude: prints args (one per line) and cwd; "sleep" prompt hangs
   bin = path.join(home, "bin");
   fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, "fake-claude.js"), `
+const a = process.argv.slice(2), last = a[a.length - 1];
+const out = o => console.log(JSON.stringify(o));
+if (last.startsWith("jsonout")) { out({ type: "system" }); out({ type: "result", result: "ok", n: 1 }); process.exit(0); }
+if (last.startsWith("badjson")) { console.log("not json"); process.exit(0); }
+if (last.startsWith("stream")) {
+  out({ type: "system", subtype: "init" });
+  out({ type: "assistant", message: { content: [{ type: "text", text: "hm" }] } });
+  out({ type: "assistant", message: { content: [{ type: "tool_use", name: "Read", input: {} }] } });
+  setTimeout(() => { out({ type: "assistant", message: { content: [{ type: "tool_use", name: "WebFetch", input: {} }] } });
+    setTimeout(() => out({ type: "result", result: "streamed" }), 700); }, 700);
+} else {
+  const fs = require("node:fs");
+  const lines = a.map(x => "ARG:" + x); lines.push("CWD:" + fs.realpathSync(process.cwd()));
+  out({ type: "result", result: lines.join("\\n") });
+}
+`);
   fs.writeFileSync(path.join(bin, "claude"), `#!/bin/sh
 for a in "$@"; do last="$a"; done
 case "$last" in tree*) rm -f "${home}/grandchild.pid"; (sleep 30 & echo $! > "${home}/grandchild.pid"; wait) & wait;; esac
 case "$last" in sleep*) echo $$ > "${home}/claude.pid"; exec sleep 30;; esac
-for a in "$@"; do last="$a"; done
-case "$last" in jsonout*) echo '{"result":"ok","n":1}'; exit 0;; badjson*) echo 'not json'; exit 0;; esac
-for a in "$@"; do echo "ARG:$a"; done
-echo "CWD:$(pwd -P)"
+case "$last" in scratchsleep*) echo $$ > "${home}/claude.pid"; pwd -P > "${home}/scratch.cwd"; exec sleep 30;; esac
+exec node "${bin}/fake-claude.js" "$@"
+`, { mode: 0o755 });
+  // fake caffeinate: logs its argv, stays until the -w pid is gone
+  fs.writeFileSync(path.join(bin, "caffeinate"), `#!/bin/sh
+echo "$$ $*" >> "${home}/caffeinate.log"
+while kill -0 "$3" 2>/dev/null; do sleep 0.1; done
 `, { mode: 0o755 });
   await cli(home, ["login", "--url", hub.url, "--credential", CRED]).exited;
   d = cli(home, ["run"], { PATH: `${bin}:${process.env.PATH}`, MAILROOM_CLAUDE_TIMEOUT_MS: "1500" });
@@ -108,7 +128,7 @@ test("claude: prompt is a single argv entry (no shell), cwd resolved", async () 
   const m = await run("p_c1", "claude", { prompt, cwd: "~/allowed" });
   assert.equal(m.ok, true);
   const lines = m.result.output.trim().split("\n");
-  assert.deepEqual(lines, ["ARG:--allowedTools", "ARG:Read", "ARG:Glob", "ARG:Grep", "ARG:--max-turns", "ARG:10", "ARG:-p", "ARG:" + prompt, "CWD:" + allowed]);
+  assert.deepEqual(lines, ["ARG:--allowedTools", "ARG:Read", "ARG:Glob", "ARG:Grep", "ARG:--max-turns", "ARG:10", "ARG:--output-format", "ARG:stream-json", "ARG:--verbose", "ARG:-p", "ARG:" + prompt, "CWD:" + allowed]);
   assert.ok(!fs.existsSync(path.join(home, "pwned")));
 });
 
@@ -152,15 +172,15 @@ test("claude options become argv entries before -p", async () => {
   const m = await run("p_o1", "claude", { prompt: "hello", cwd: "~/allowed", allowedTools: ["Read", "Bash(git log:*)"], maxTurns: 3, model: "claude-opus-4[1m]" }, { ...C(), claudeTools: ["Read", "Bash(git log:*)"], claudeMaxTurns: 5 });
   assert.equal(m.ok, true);
   const o = m.result.output as string;
-  assert.match(o, /ARG:--allowedTools\nARG:Read\nARG:Bash\(git log:\*\)\nARG:--max-turns\nARG:3\nARG:--model\nARG:claude-opus-4\[1m\]\nARG:-p\nARG:hello\n/);
+  assert.match(o, /ARG:--allowedTools\nARG:Read\nARG:Bash\(git log:\*\)\nARG:--max-turns\nARG:3\nARG:--model\nARG:claude-opus-4\[1m\]\nARG:--output-format\nARG:stream-json\nARG:--verbose\nARG:-p\nARG:hello\n/);
 });
 
 test("claude with no options gets the contract defaults, not the CLI's", async () => {
   const m = await run("p_o0", "claude", { prompt: "hello", cwd: "~/allowed" });
   assert.equal(m.ok, true);
-  assert.match(m.result.output as string, /ARG:--allowedTools\nARG:Read\nARG:Glob\nARG:Grep\nARG:--max-turns\nARG:10\nARG:-p\nARG:hello\n/);
+  assert.match(m.result.output as string, /ARG:--allowedTools\nARG:Read\nARG:Glob\nARG:Grep\nARG:--max-turns\nARG:10\nARG:--output-format\nARG:stream-json\nARG:--verbose\nARG:-p\nARG:hello\n/);
   const w = await run("p_o0b", "claude", { prompt: "hello", cwd: "~/allowed" }, { ...C(), claudeTools: ["WebFetch", "WebSearch"], claudeMaxTurns: 6 });
-  assert.match(w.result.output as string, /ARG:--allowedTools\nARG:WebFetch\nARG:WebSearch\nARG:--max-turns\nARG:6\nARG:-p/);
+  assert.match(w.result.output as string, /ARG:--allowedTools\nARG:WebFetch\nARG:WebSearch\nARG:--max-turns\nARG:6\nARG:--output-format\nARG:stream-json\nARG:--verbose\nARG:-p/);
 });
 
 test("claude job asking for a shell tool or 50 turns is refused (contract: web tools, 6 turns)", async () => {
@@ -176,7 +196,7 @@ test("claude job asking for a shell tool or 50 turns is refused (contract: web t
 
 test("claude json option returns parsed JSON", async () => {
   const m = await run("p_o2", "claude", { prompt: "jsonout", cwd: "~/allowed", json: true });
-  assert.deepEqual(m.result, { output: { result: "ok", n: 1 } });
+  assert.deepEqual(m.result, { output: { type: "result", result: "ok", n: 1 } });
   const bad = await run("p_o3", "claude", { prompt: "badjson", cwd: "~/allowed", json: true });
   assert.equal(bad.ok, false);
 });
@@ -185,7 +205,7 @@ test("claude rejects invalid options", async () => {
   const bads: Record<string, unknown>[] = [
     { allowedTools: "Read" }, { allowedTools: [] }, { allowedTools: ["a;b"] }, { allowedTools: Array(21).fill("Read") },
     { maxTurns: 0 }, { maxTurns: 51 }, { maxTurns: 1.5 }, { maxTurns: "3" },
-    { model: "a b" }, { model: "x".repeat(61) }, { json: "yes" },
+    { model: "a b" }, { model: "x".repeat(61) }, { json: "yes" }, { scratch: "yes" },
   ];
   for (const [i, b] of bads.entries()) {
     const m = await run(`p_ob${i}`, "claude", { prompt: "x", cwd: "~/allowed", ...b });
@@ -219,4 +239,81 @@ test("timeout kills the whole tree and reports 'timed out after Ns'", async () =
   const gc = await grandchild();
   await new Promise(r => setTimeout(r, 200));
   assert.equal(alive(gc), false);
+});
+
+const scratchRoot = () => path.join(home, ".mailroom/scratch");
+const scratchLeft = () => (fs.existsSync(scratchRoot()) ? fs.readdirSync(scratchRoot()) : []);
+
+test("claude progress: turns and tool names reach the hub, final result unchanged", async () => {
+  const start = hub.messages.length;
+  const m = await run("g1", "claude", { prompt: "stream", cwd: "~/allowed" });
+  assert.deepEqual(m.result, { output: "streamed\n" });
+  const texts = hub.messages.slice(start).filter(x => x.type === "progress" && x.id === "g1").map(x => x.text);
+  assert.ok(texts.includes("turn 2: using Read"), JSON.stringify(texts));
+  assert.equal(texts.at(-1), "turn 3: using WebFetch");
+});
+
+test("claude scratch: runs in a scratch dir, contract folder via --add-dir, read-only tools by default, dir removed", async () => {
+  const m = await run("s1", "claude", { prompt: "hello", cwd: "~/allowed", scratch: true });
+  assert.equal(m.ok, true);
+  const o = m.result.output as string;
+  assert.match(o, /ARG:--allowedTools\nARG:Read\nARG:Grep\nARG:Glob\nARG:--max-turns\nARG:10\nARG:--add-dir\nARG:/);
+  assert.ok(o.includes("ARG:--add-dir\nARG:" + allowed + "\n"));
+  const cwd = /CWD:(.*)/.exec(o)![1];
+  assert.ok(cwd.startsWith(fs.realpathSync(scratchRoot()) + path.sep), cwd);
+  assert.deepEqual(scratchLeft(), []);
+  // caller's own allowedTools are kept, no default added
+  const wide = { ...C(), claudeTools: ["Read", "Write"], claudeMaxTurns: 10 };
+  const m2 = await run("s2", "claude", { prompt: "hello", cwd: "~/allowed", scratch: true, allowedTools: ["Read", "Write"] }, wide);
+  assert.match(m2.result.output, /ARG:--allowedTools\nARG:Read\nARG:Write\nARG:--max-turns\nARG:10\nARG:--add-dir/);
+  assert.deepEqual(scratchLeft(), []);
+  // the ceiling still applies: Write is refused under the default contract
+  const m3 = await run("s2b", "claude", { prompt: "hello", cwd: "~/allowed", scratch: true, allowedTools: ["Read", "Write"] });
+  assert.equal(m3.type, "refuse");
+  // scratch default tools are clipped by the ceiling, never widened
+  const clip = await run("s2c", "claude", { prompt: "hello", cwd: "~/allowed", scratch: true }, { ...C(), claudeTools: ["Read", "WebFetch"], claudeMaxTurns: 10 });
+  assert.match(clip.result.output, /ARG:--allowedTools\nARG:Read\nARG:--max-turns/);
+  const none = await run("s2d", "claude", { prompt: "hello", cwd: "~/allowed", scratch: true }, { ...C(), claudeTools: ["WebFetch"], claudeMaxTurns: 10 });
+  assert.equal(none.ok, false);
+  assert.deepEqual(scratchLeft(), []);
+});
+
+test("claude scratch: removed after timeout and cancel", async () => {
+  assert.equal((await run("s3", "claude", { prompt: "scratchsleep", cwd: "~/allowed", scratch: true })).ok, false); // timeout
+  assert.ok(fs.readFileSync(path.join(home, "scratch.cwd"), "utf8").includes(".mailroom/scratch/"));
+  assert.deepEqual(scratchLeft(), []);
+  hub.push(job("s4", "claude", { prompt: "scratchsleep", cwd: "~/allowed", scratch: true }, C()));
+  await new Promise(r => setTimeout(r, 500));
+  assert.equal(scratchLeft().length, 1);
+  hub.push({ type: "cancel", id: "s4" });
+  await new Promise(r => setTimeout(r, 400));
+  assert.deepEqual(scratchLeft(), []);
+  assert.equal((await run("s5", "echo", { text: "free" })).ok, true);
+});
+
+test("claude scratch: removed after a failed job", async () => {
+  const m = await run("s6", "claude", { prompt: "badjson", cwd: "~/allowed", scratch: true, json: true });
+  assert.equal(m.ok, false);
+  assert.deepEqual(scratchLeft(), []);
+});
+
+test("caffeinate -i -w <pid> wraps a claude job and nothing is left after", { skip: process.platform !== "darwin" }, async () => {
+  const log = path.join(home, "caffeinate.log");
+  fs.rmSync(log, { force: true });
+  await run("c1", "claude", { prompt: "hello", cwd: "~/allowed" });
+  const lines = fs.readFileSync(log, "utf8").trim().split("\n");
+  assert.equal(lines.length, 1);
+  const [cpid, i, w, pid] = lines[0].split(" ");
+  assert.deepEqual([i, w], ["-i", "-w"]);
+  assert.ok(Number(pid) > 0);
+  await new Promise(r => setTimeout(r, 400));
+  assert.equal(alive(Number(cpid)), false);
+  fs.rmSync(log, { force: true });
+  hub.push(job("c2", "claude", { prompt: "sleep", cwd: "~/allowed" }, C()));
+  await new Promise(r => setTimeout(r, 500));
+  const c2 = Number(fs.readFileSync(log, "utf8").trim().split(" ")[0]);
+  assert.ok(alive(c2));
+  hub.push({ type: "cancel", id: "c2" });
+  await new Promise(r => setTimeout(r, 500));
+  assert.equal(alive(c2), false);
 });

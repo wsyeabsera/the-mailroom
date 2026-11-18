@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseProgressLine } from "./progress.ts";
-import { killTree, killTreeOnAbort, spawnTree, timeoutMessage } from "./proc.ts";
+import { keepAwake, killTree, killTreeOnAbort, spawnTree, timeoutMessage } from "./proc.ts";
+import { READ_ONLY_TOOLS, StreamReader, makeScratch, removeScratch } from "./claude.ts";
 import { check, normalizePath, claudeCeiling } from "../shared/contract.ts";
 import type { Contract } from "../shared/contract.ts";
 import { buildArgv, loadCommand } from "./commands.ts";
@@ -88,7 +89,7 @@ export async function runTask(job: JobMsg, resolved: string | null, signal: Abor
       return { bytes };
     }
     case "claude":
-      return { output: await runClaude(String(a.prompt ?? ""), resolved!, signal, a, claudeCeiling(job.contract)) };
+      return { output: await runClaude(String(a.prompt ?? ""), resolved!, signal, a, claudeCeiling(job.contract), report, job.id) };
     case "run":
       return runCommand(a, resolved!, signal, report);
     default:
@@ -96,10 +97,15 @@ export async function runTask(job: JobMsg, resolved: string | null, signal: Abor
   }
 }
 
-function claudeOptions(a: Record<string, unknown>, ceil: { tools: string[]; maxTurns: number }): { argv: string[]; json: boolean } {
+function claudeOptions(a: Record<string, unknown>, ceil: { tools: string[]; maxTurns: number }): { argv: string[]; json: boolean; scratch: boolean } {
   const argv: string[] = [];
   // Re-checked here so the daemon holds even if recheck were skipped; no option = the contract's defaults, never the CLI's.
-  if (a.allowedTools === undefined) argv.push("--allowedTools", ...ceil.tools);
+  if (a.allowedTools === undefined) {
+    // scratch default is read-only tools, clipped by the ceiling so a scratch job never gets more than the contract allows
+    const def = a.scratch === true ? READ_ONLY_TOOLS.filter(x => ceil.tools.includes(x)) : ceil.tools;
+    if (!def.length) throw new Error("scratch needs a read-only tool (Read, Grep or Glob) in the contract's claudeTools");
+    argv.push("--allowedTools", ...def);
+  }
   else {
     const t = a.allowedTools;
     if (!Array.isArray(t) || t.length < 1 || t.length > 20) throw new Error("allowedTools must be an array of 1 to 20 strings");
@@ -119,52 +125,82 @@ function claudeOptions(a: Record<string, unknown>, ceil: { tools: string[]; maxT
     argv.push("--model", a.model);
   }
   if (a.json !== undefined && typeof a.json !== "boolean") throw new Error("json must be true or false");
-  if (a.json) argv.push("--output-format", "json");
-  return { argv, json: a.json === true };
+  if (a.scratch !== undefined && typeof a.scratch !== "boolean") throw new Error("scratch must be true or false");
+  // --output-format is added by runClaude (always stream-json internally; json:true returns the final result object)
+  return { argv, json: a.json === true, scratch: a.scratch === true };
 }
 
-function runClaude(prompt: string, cwd: string, signal: AbortSignal, args: Record<string, unknown> = {}, ceil = claudeCeiling({})): Promise<unknown> {
+function runClaude(prompt: string, cwd: string, signal: AbortSignal, args: Record<string, unknown> = {}, ceil = claudeCeiling({}), report: (text: string) => void = () => {}, jobId = "job"): Promise<unknown> {
   return new Promise((resolve, reject) => {
     if (!prompt) return reject(new Error("claude needs a prompt"));
-    let opts: { argv: string[]; json: boolean };
+    let opts: ReturnType<typeof claudeOptions>;
     try {
       opts = claudeOptions(args, ceil);
     } catch (e) {
       return reject(e);
     }
+    let runCwd = cwd;
+    let scratchDir: string | null = null;
+    const argv = [...opts.argv];
+    if (opts.scratch) {
+      // Research mode: Claude works in a throwaway folder; the contract folder is only added as an extra directory (see docs/api.md for what this does not enforce).
+      try {
+        scratchDir = makeScratch(jobId);
+      } catch (e) {
+        return reject(e);
+      }
+      runCwd = scratchDir;
+      argv.push("--add-dir", cwd);
+    }
+    argv.push("--output-format", "stream-json", "--verbose");
     // options go before the prompt; "--" is not used because --allowedTools is variadic
-    const child = spawnTree("claude", [...opts.argv, "-p", prompt], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    let child;
+    try {
+      child = spawnTree("claude", [...argv, "-p", prompt], { cwd: runCwd, stdio: ["ignore", "pipe", "pipe"] });
+    } catch (e) {
+      if (scratchDir) removeScratch(scratchDir);
+      return reject(e);
+    }
     const unhook = killTreeOnAbort(child, signal);
-    let out = Buffer.alloc(0);
+    const release = keepAwake(child);
+    let last = "";
+    const stream = new StreamReader(text => { if (text !== last) { last = text; report(text); } });
     let err = "";
+    let raw = Buffer.alloc(0); // non-stream fallback (a claude that ignored stream-json)
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
       killTree(child);
     }, claudeTimeout());
+    const cleanup = () => {
+      clearTimeout(timer);
+      unhook();
+      release();
+      if (scratchDir) removeScratch(scratchDir);
+    };
     child.stdout!.on("data", (d: Buffer) => {
-      if (out.length < MAX_RESULT_BYTES) out = Buffer.concat([out, d]).subarray(0, MAX_RESULT_BYTES);
+      stream.push(d);
+      if (raw.length < MAX_RESULT_BYTES) raw = Buffer.concat([raw, d]).subarray(0, MAX_RESULT_BYTES);
     });
     child.stderr!.on("data", (d: Buffer) => {
       err = (err + d).slice(-2000);
     });
     child.on("error", e => {
-      clearTimeout(timer);
-      unhook();
+      cleanup();
       reject(e);
     });
     child.on("close", code => {
-      clearTimeout(timer);
-      unhook();
-      if (timedOut) reject(new Error(timeoutMessage(claudeTimeout())));
-      else if (code !== 0) reject(new Error(`claude exited with ${code}: ${err.trim()}`));
-      else if (opts.json) {
-        try {
-          resolve(JSON.parse(out.toString("utf8")));
-        } catch {
-          reject(new Error("claude did not return valid JSON (output may be truncated)"));
-        }
-      } else resolve(out.toString("utf8"));
+      cleanup();
+      stream.end();
+      if (timedOut) return reject(new Error(timeoutMessage(claudeTimeout())));
+      if (code !== 0) return reject(new Error(`claude exited with ${code}: ${err.trim()}`));
+      const r = stream.result;
+      if (opts.json) {
+        if (r) return resolve(r);
+        return reject(new Error("claude did not return valid JSON (output may be truncated)"));
+      }
+      if (r && typeof r.result === "string") return resolve(Buffer.from(r.result + "\n").subarray(0, MAX_RESULT_BYTES).toString("utf8"));
+      resolve(raw.toString("utf8"));
     });
   });
 }
@@ -178,6 +214,7 @@ function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal
     if ("error" in b) return reject(new Error(b.error));
     const child = spawnTree(c.command.script, b.argv, { cwd, stdio: ["ignore", "pipe", "pipe"], shell: false });
     const unhook = killTreeOnAbort(child, signal);
+    const release = keepAwake(child);
     let out = Buffer.alloc(0);
     let err = "";
     let timedOut = false;
@@ -201,11 +238,13 @@ function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal
     child.on("error", e => {
       clearTimeout(timer);
       unhook();
+      release();
       reject(e);
     });
     child.on("close", code => {
       clearTimeout(timer);
       unhook();
+      release();
       if (timedOut) reject(new Error(timeoutMessage(c.command.timeoutMs)));
       else if (code !== 0) reject(new Error(`${a.command} exited with ${code}: ${err.trim()}`));
       else resolve({ output: out.toString("utf8"), exitCode: 0 });

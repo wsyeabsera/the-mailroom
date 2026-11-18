@@ -26,5 +26,19 @@ export function killTreeOnAbort(child: ChildProcess, signal: AbortSignal): () =>
   return () => signal.removeEventListener("abort", f);
 }
 
+/** macOS only: hold the Mac awake while `child` runs, via `caffeinate -i -w <pid>` (argv, no shell).
+ *  Skipped silently when caffeinate is missing. Returns a release function (safe to call twice). */
+export function keepAwake(child: ChildProcess): () => void {
+  if (process.platform !== "darwin" || child.pid === undefined) return () => {};
+  let c: ChildProcess;
+  try {
+    c = spawn("caffeinate", ["-i", "-w", String(child.pid)], { stdio: "ignore" });
+  } catch {
+    return () => {};
+  }
+  c.on("error", () => {}); // ENOENT: no caffeinate, nothing to hold
+  return () => { try { c.kill("SIGTERM"); } catch { /* gone */ } };
+}
+
 /** The distinct timeout error text shared by every task that runs a child. */
 export const timeoutMessage = (ms: number) => `timed out after ${Math.max(1, Math.round(ms / 1000))}s`;
