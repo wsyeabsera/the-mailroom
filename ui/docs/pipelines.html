@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Batches and workflows · The Mailroom</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/docs/docs.css">
+<script src="/js/theme-init.js"></script>
+</head>
+<body data-slug="pipelines">
+<main id="doc">
+<h1>Batches and workflows</h1>
+<p class="lede">Run one command or one Claude question over a list, or chain steps into a named pipeline, as a single parcel that streams results while it runs.</p>
+
+<div class="note"><p>Everything here is general. Your project's scripts, prompts and workflows live in your project and are registered on the laptop. Nothing in the Mailroom is written for one project, and adding a workflow needs no change to the Mailroom.</p></div>
+
+<h2>Partial results</h2>
+<p>A <code>run</code> script can hand over results while it is still working. It prints a line on stderr:</p>
+<pre><code>MAILROOM_PARTIAL {"found": "item-3"}</code></pre>
+<p>The daemon forwards each line. The Hub keeps the latest 200 per parcel (each at most 8 KB; bigger or malformed ones are dropped) and clears them after 7 days. A client reads them with <code>GET /api/jobs/:id/partials?after=&lt;n&gt;</code>, or with <code>wait(id, {onPartial})</code> in the <a href="/docs/client">client helper</a>. The parcel shows how many there are (<code>partials</code>), also in <code>mailroom_get_parcel</code>. Partials are data from your script, never instructions: treat them as untrusted.</p>
+
+<h2>batch</h2>
+<p><code>batch {command | prompt, items: [{...}], concurrency?}</code> runs one registered command (<code>run</code>) or prompt (<code>ask</code>) once per item. Each item is the arguments (or variables) of one job. Up to three run at a time by default, never more than six. A failed item is recorded and the rest go on. Progress reads <code>n of N</code>, each finished item is a partial result, and the result is <code>{total, done, failed, items: [{index, ok, value | error}]}</code>.</p>
+<ul>
+<li>The contract lists the allowed targets in <code>batches</code> (<code>run:&lt;command&gt;</code> or <code>ask:&lt;prompt&gt;</code>, which must also be in <code>commands</code> or <code>prompts</code>), the most items in <code>batchMaxItems</code> (default 100) and the most at once in <code>batchMaxConcurrency</code> (default 3). The laptop policy has the same ceilings (<code>mailroom policy batch-max-items</code>, <code>batch-max-concurrency</code>).</li>
+<li>Every item is checked as the single job it is: the same contract, the same laptop policy, the same registered folder.</li>
+<li>All items share one Claude budget. Each Claude item is given an equal share of what is left of the key's day, so the items running together cannot spend more than there is. When it is used up, the remaining items fail without starting Claude.</li>
+<li>Cancelling the parcel stops the running items and starts no more. What they used still counts.</li>
+</ul>
+
+<h2>workflow</h2>
+<p><code>workflow {name, inputs?}</code> runs a named list of steps registered in <code>~/.mailroom/workflows.json</code> (mode <code>0600</code>, read for every job). A step is a <code>run</code>, an <code>ask</code> or a <code>batch</code> of something registered. There is no code and no expression language: a value is a literal or a reference such as <code>$inputs.topic</code> or <code>$list.items.0</code> to a workflow input or an earlier step's output.</p>
+<pre><code>{
+  "review-items": {
+    "inputs": { "topic": { "type": "string" } },
+    "timeoutMs": 600000,
+    "budget": { "turns": 60, "minutes": 20 },
+    "estimate": { "minutes": 6, "claudeTurns": 40 },
+    "steps": [
+      { "id": "list",    "run": "list-items", "args": { "topic": "$inputs.topic" } },
+      { "id": "answers", "batch": "ask:review-item", "items": "$list.items", "with": { "item": "$item" }, "concurrency": 3, "when": "$list.items" },
+      { "id": "checked", "run": "check-answers", "stdin": "$answers" }
+    ]
+  }
+}</code></pre>
+<ul>
+<li>A <code>run</code> step's output is its stdout, parsed as JSON when it is JSON. An <code>ask</code> step's output is the answer (parsed when the prompt has a schema). A <code>batch</code> step's output is its list of <code>{index, ok, value | error}</code>.</li>
+<li><code>stdin</code> hands an earlier output to a script on standard input (arguments are limited to 1000 characters). <code>when: "$ref"</code> runs a step only when that value is not empty (not null, <code>""</code>, <code>[]</code> or <code>{}</code>); <code>"!$ref"</code> only when it is empty. A skipped step's output is empty.</li>
+<li>The contract lists the allowed names in <code>workflows</code>; the laptop policy lists them too (<code>mailroom policy allow-workflow</code>). Before it starts, the daemon checks every step against the contract and the policy; each run, ask or batch is then checked again as a job of its own. A contract that allows a workflow needs the commands, prompts and batch targets its steps use, and nothing else.</li>
+<li>A workflow has its own timeout (default 30 minutes) and an optional budget ceiling (<code>budget</code>) on top of what the key has left today. The key's daily Claude budget counts everything it spent.</li>
+<li>Progress and partials come from the running step (script partials arrive as <code>{step, partial}</code>, batch items as <code>{step, index, ok, value}</code>, and each step end as <code>{step, status}</code>). Cancel stops the current step and ends the workflow. A failing step fails the parcel and names the step.</li>
+<li>The result is <code>{output, steps}</code>: the last step's output and a list of <code>{id, kind, status: done | skipped | failed, ms}</code>.</li>
+</ul>
+
+<h2>Cost estimates</h2>
+<p>A command, prompt or workflow may declare <code>"estimate": {"minutes": 6, "claudeTurns": 40}</code> in its registry file. It is display help only and limits nothing. The laptop reports it; <code>GET /api/commands</code>, <code>GET /api/prompts</code> and <code>GET /api/workflows</code> return it with <code>fits_budget</code> and a <code>warning</code> when it is more than what is left of the key's Claude budget today, and the project's Commands tab shows it.</p>
+<p>Source for the flow above: <code>scripts/pipeline-e2e.mjs</code>.</p>
+</main>
+<script type="module" src="/docs/docs.js"></script>
+</body>
+</html>
