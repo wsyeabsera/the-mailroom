@@ -2,6 +2,7 @@ import WebSocket from "ws";
 import { loadLastSeq, saveLastSeq } from "./config.ts";
 import type { Config } from "./config.ts";
 import { recheck, runTask } from "./tasks.ts";
+import { listReport } from "./commands.ts";
 import { throttle } from "./progress.ts";
 import type { JobMsg } from "./tasks.ts";
 
@@ -73,7 +74,7 @@ export function run(cfg: Config, log: (s: string) => void = console.log): Promis
         working = false;
       };
 
-      ws.on("open", () => send({ type: "hello", version: VERSION, last_seq: loadLastSeq() }));
+      ws.on("open", () => send({ type: "hello", version: VERSION, last_seq: loadLastSeq(), commands: listReport() }));
       ws.on("message", raw => {
         let m: any;
         try {
