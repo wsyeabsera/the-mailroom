@@ -76,6 +76,7 @@
 <tr><td><code>mailroom policy allow-folder &lt;path&gt;</code></td><td>Lets contracts use this folder or anything inside it.</td></tr>
 <tr><td><code>mailroom policy allow-task &lt;task&gt;</code></td><td>Lets contracts use this task.</td></tr>
 <tr><td><code>mailroom policy allow-command &lt;name&gt;</code></td><td>Lets contracts name this command for the <code>run</code> task. The name is letters, numbers, dots and dashes, up to 60.</td></tr>
+<tr><td><code>mailroom policy allow-prompt &lt;name&gt;</code></td><td>Lets contracts name this prompt for the <code>ask</code> task (the prompt itself lives in <code>~/.mailroom/prompts.json</code>).</td></tr>
 <tr><td><code>mailroom policy allow-claude-tool &lt;tool&gt;</code></td><td>Lets contracts grant this tool to the <code>claude</code> task, like <code>'Bash(git log:*)'</code>.</td></tr>
 <tr><td><code>mailroom policy claude-max-turns &lt;n&gt;</code></td><td>Sets the most turns a contract may grant a <code>claude</code> job (1 to 50).</td></tr>
 </tbody>

@@ -3,6 +3,7 @@
 import type { Contract } from "../shared/contract.ts";
 import { buildArgv } from "../shared/args.ts";
 import { commandsView, sanitizeReport, validateProject, type ReportedCommand } from "../shared/projects.ts";
+import { PROMPT_REPORT_TABLE } from "./prompt-report.ts";
 import { makeId } from "./keys.ts";
 import type { Sql } from "./login-limit.ts";
 
@@ -17,6 +18,7 @@ export const UNASSIGNED = "unassigned";
 export const PROJECT_TABLES = [
   "CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, folder TEXT, notes TEXT NOT NULL DEFAULT '', color TEXT, created_at INTEGER NOT NULL, archived_at INTEGER)",
   "CREATE TABLE IF NOT EXISTS laptop_report (id INTEGER PRIMARY KEY CHECK (id = 1), commands TEXT NOT NULL, reported_at INTEGER NOT NULL)",
+  PROMPT_REPORT_TABLE, // sibling of laptop_report (src/prompt-report.ts)
 ];
 
 /** Tables plus the guarded ALTER: safe on every start (a second run hits "duplicate column" and carries on). */
