@@ -4,6 +4,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { check, normalizePath } from "../shared/contract.ts";
 import type { Contract } from "../shared/contract.ts";
+import { loadPolicy, exceeds } from "./policy.ts";
 
 export type JobMsg = { id: string; task: string; args: Record<string, unknown>; contract: Contract };
 
@@ -33,12 +34,21 @@ export function resolvePath(p: string, home: string): string | null {
 export function recheck(job: JobMsg, now = Date.now(), home = os.homedir()): { reason: string } | { resolved: string | null } {
   const v = check(job.contract, { task: job.task, args: job.args ?? {} }, { now, usedToday: 0, home });
   if (v.verdict === "refuse") return { reason: v.reason };
-  if (job.task === "echo") return { resolved: null };
+  // The laptop ceiling: whatever contract the Hub sent, it may not go beyond ~/.mailroom/policy.json (see policy.ts).
+  const pol = loadPolicy(home);
+  if ("error" in pol) return { reason: `laptop policy unusable: ${pol.error}` };
+  const ceil = (r: string | null) => (pol.policy ? exceeds(pol.policy, job.contract, r, home) : null);
+  if (job.task === "echo") {
+    const over = ceil(null);
+    return over ? { reason: over } : { resolved: null };
+  }
   const raw = (job.task === "claude" ? job.args.cwd : job.args.path) as string;
   const real = resolvePath(raw, home);
   const folders = job.contract.folders.map(f => resolvePath(f, home));
   if (real === null || !folders.some(f => f !== null && (real === f || real.startsWith(f === "/" ? "/" : f + "/"))))
     return { reason: `${raw} resolves outside the contract folders` };
+  const over = ceil(real);
+  if (over) return { reason: over };
   return { resolved: real };
 }
 

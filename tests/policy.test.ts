@@ -1,0 +1,66 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { recheck } from "../daemon/tasks.ts";
+import { savePolicy, resetPolicyWarning } from "../daemon/policy.ts";
+
+const CLI = path.resolve(import.meta.dirname, "../daemon/cli.ts");
+const mk = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mr-pol-")));
+const contract = (folders: string[], tasks: string[], extra: object = {}) =>
+  ({ name: "k", folders, tasks, dailyLimit: 10, expires: null, approval: [], ...extra }) as any;
+const job = (c: any, task: string, args: any) => ({ id: "j", task, args, contract: c });
+
+test("no policy file: current behaviour, warns once", () => {
+  const home = mk();
+  const warns: string[] = [];
+  const orig = console.warn;
+  console.warn = (m: string) => warns.push(m);
+  resetPolicyWarning();
+  try {
+    const r1 = recheck(job(contract([home], ["read_file"]), "read_file", { path: path.join(home, "a") }), Date.now(), home);
+    recheck(job(contract([home], ["echo"]), "echo", {}), Date.now(), home);
+    assert.ok("resolved" in r1);
+  } finally { console.warn = orig; }
+  assert.equal(warns.length, 1);
+});
+
+test("widened contract is refused by the laptop policy", () => {
+  const home = mk();
+  const ok = path.join(home, "proj");
+  fs.mkdirSync(ok);
+  savePolicy({ folders: [ok], tasks: ["read_file", "echo"] }, home);
+  const t = (c: any, task: string, args: any) => recheck(job(c, task, args), Date.now(), home);
+  assert.ok("resolved" in t(contract([ok], ["read_file"]), "read_file", { path: path.join(ok, "f") }));
+  assert.match((t(contract([home], ["read_file"]), "read_file", { path: path.join(ok, "f") }) as any).reason, /outside the laptop policy/);
+  assert.match((t(contract([ok], ["echo", "claude"]), "echo", {}) as any).reason, /claude/);
+  assert.match((t(contract([ok], ["claude"]), "claude", { cwd: ok, prompt: "x" }) as any).reason, /not allowed by the laptop policy/);
+  assert.match((t(contract([ok], ["echo"], { commands: ["rm"] }), "echo", {}) as any).reason, /commands rm/);
+  // symlink inside the policy folder pointing out
+  const out = path.join(home, "secret");
+  fs.mkdirSync(out);
+  fs.symlinkSync(out, path.join(ok, "link"));
+  assert.ok("reason" in t(contract([path.join(ok, "link")], ["read_file"]), "read_file", { path: path.join(ok, "link", "f") }));
+});
+
+test("malformed policy fails closed; policy is reloaded per job", () => {
+  const home = mk();
+  fs.mkdirSync(path.join(home, ".mailroom"));
+  fs.writeFileSync(path.join(home, ".mailroom", "policy.json"), "{nope");
+  assert.match((recheck(job(contract([home], ["echo"]), "echo", {}), Date.now(), home) as any).reason, /policy unusable/);
+  savePolicy({ folders: [home], tasks: ["echo"] }, home);
+  assert.ok("resolved" in recheck(job(contract([home], ["echo"]), "echo", {}), Date.now(), home));
+});
+
+test("mailroom policy CLI", () => {
+  const home = mk();
+  const run = (...a: string[]) => spawnSync(process.execPath, [CLI, "policy", ...a], { env: { ...process.env, HOME: home }, encoding: "utf8" });
+  assert.match(run("show").stdout, /not set/);
+  assert.equal(run("allow-folder", "~/work").status, 0);
+  assert.equal(run("allow-task", "echo").status, 0);
+  const file = path.join(home, ".mailroom", "policy.json");
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { folders: ["~/work"], tasks: ["echo"] });
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+});
