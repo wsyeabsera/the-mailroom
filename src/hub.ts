@@ -7,8 +7,9 @@ import { formatFieldErrors, handleMcpText, ToolError, type McpApi } from "./mcp.
 import { checkLogin, clearFailures, LOGIN_TABLE, recordFailure, type Sql } from "./login-limit.ts";
 import { laneKey, laneOf, parseHello, pickNext, type LaneHints } from "../shared/lanes.ts";
 import { ensureProjectSchema, loadReport, Projects, storeReport } from "./projects.ts";
+import { storePromptReport } from "./prompt-report.ts";
 import { fingerprint, idempotencyFresh, parseIdempotencyKey } from "./idempotency.ts";
-import { isRerunSafe, NOT_RERUN_SAFE_REASON, parseLabel, parseRerunSafe, REQUEUE_REASON, UNCOUNTED_SQL } from "./job-rules.ts";
+import { isRerunSafe, NOT_RERUN_SAFE_REASON, parseLabel, parseRerunSafe, REQUEUE_REASON, resumeRefusal, UNCOUNTED_SQL } from "./job-rules.ts";
 import { addUsage, budgetFor, ensureClaudeUsageSchema, usageSummary } from "./claude-budget.ts";
 import { clipMaxTurns, isClaudeTask, parseUsage } from "../shared/claude-budget.ts";
 import { claudeCeiling } from "../shared/contract.ts";
@@ -288,6 +289,8 @@ export class Hub extends DurableObject<Env> {
       if (task === "echo" && typeof args.text !== "string") errors.args = "echo needs a text string.";
       if (task === "write_file" && typeof args.content !== "string") errors.args = "write_file needs a content string.";
       if (task === "claude" && typeof args.prompt !== "string") errors.args = "claude needs a prompt string.";
+      if (task === "ask" && typeof args.prompt !== "string") errors.args = "ask needs a prompt name string.";
+      if (task === "ask" && args.vars !== undefined && (args.vars === null || typeof args.vars !== "object" || Array.isArray(args.vars))) errors.args = "ask vars must be an object.";
       if (task === "run" && typeof args.command !== "string") errors.args = "run needs a command name string.";
       if (task === "run" && args.args !== undefined && (args.args === null || typeof args.args !== "object" || Array.isArray(args.args))) errors.args = "run args must be an object.";
       if ((task === "read_file" || task === "write_file") && args.path !== undefined && typeof args.path !== "string") errors.args = `${task} needs a path string.`;
@@ -319,6 +322,10 @@ export class Hub extends DurableObject<Env> {
     if (verdict.verdict !== "refuse" && isClaudeTask(task)) {
       const bs = budgetFor(this.sql, k.id, parse(c.body), now); // the key's claude budget for today (src/claude-budget.ts)
       if (bs.over) verdict = { verdict: "refuse", reason: bs.reason! };
+    }
+    if (verdict.verdict !== "refuse" && (task === "ask" || task === "claude") && typeof args.resume === "string") {
+      const why = resumeRefusal(this.one("SELECT key_id, task FROM jobs WHERE id = ?", args.resume), k.id); // resume: only this key's own earlier ask/claude job
+      if (why) verdict = { verdict: "refuse", reason: why };
     }
     const id = makeId("p_", this.next("job"));
     const state = verdict.verdict === "refuse" ? "refused" : verdict.verdict === "approve" ? "waiting_approval" : "queued";
@@ -836,6 +843,7 @@ export class Hub extends DurableObject<Env> {
       for (const n of parseRerunSafe(m.rerunSafe)) this.sql.run("INSERT OR IGNORE INTO daemon_rerun (name) VALUES (?)", n);
       this.sql.run("UPDATE daemon SET connected = 1 WHERE id = 1");
       if (m.commands !== undefined) storeReport(this.sql, m.commands); // untrusted display data; an old daemon sends none and the last snapshot stays
+      if (m.prompts !== undefined) storePromptReport(this.sql, m.prompts); // same: untrusted display data (names and variable specs)
       this.event("daemon.connected", {});
       this.send({ type: "welcome", server_seq: this.lastEventSeq() });
       this.pushNext();
@@ -903,7 +911,8 @@ export class Hub extends DurableObject<Env> {
       if (isClaudeTask(j.task)) {
         // Cap this job by what is left of the key's day: maxTurns is clipped here, the daemon also clips its timeout to `budget.ms`.
         const bs = budgetFor(this.sql, j.key_id, parse(c.body));
-        args = { ...args, maxTurns: clipMaxTurns(typeof args.maxTurns === "number" ? args.maxTurns : claudeCeiling(parse(c.body)).maxTurns, bs.turnsLeft) };
+        // An ask takes no maxTurns from the client (the daemon would refuse it): its prompt sets the turns and the daemon clips them to budget.turns.
+        if (j.task === "claude") args = { ...args, maxTurns: clipMaxTurns(typeof args.maxTurns === "number" ? args.maxTurns : claudeCeiling(parse(c.body)).maxTurns, bs.turnsLeft) };
         budget = { turns: bs.turnsLeft, ms: bs.msLeft };
       }
       const ok = this.send({ type: "job", id: j.id, task: j.task, args, lane, contract: parse(c.body), contract_version: c.version, ...(budget ? { budget } : {}) });

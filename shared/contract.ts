@@ -5,7 +5,7 @@
 import { DEFAULT_CLAUDE_DAILY_MINUTES, DEFAULT_CLAUDE_DAILY_TURNS, MAX_CLAUDE_DAILY_MINUTES, MAX_CLAUDE_DAILY_TURNS } from "./claude-budget.ts";
 import { validateCallbackPrefixes, type UrlOpts } from "./callback.ts";
 
-export const TASKS =["echo", "read_file", "write_file", "claude", "run"] as const;
+export const TASKS = ["echo", "read_file", "write_file", "claude", "run", "ask"] as const;
 export type TaskName = (typeof TASKS)[number];
 
 export type Contract = {
@@ -16,6 +16,7 @@ export type Contract = {
   expires: string | null; // ISO date or datetime; null = never
   approval: string[]; // tasks that wait for the owner before they run
   commands?: string[]; // names the "run" task may use (registered on the laptop); missing in older contracts = none
+  prompts?: string[]; // names the "ask" task may use (registered on the laptop in prompts.json); missing in older contracts = none
   claudeTools?: string[]; // ceiling on a claude job's allowedTools, and what a job with no allowedTools gets; missing = DEFAULT_CLAUDE_TOOLS
   claudeMaxTurns?: number; // ceiling on a claude job's maxTurns, and what a job with no maxTurns gets; missing = DEFAULT_CLAUDE_MAX_TURNS
   claudeDailyTurns?: number; // budget for claude (and ask) jobs per key per UTC day, in turns; missing = 100 (shared/claude-budget.ts)
@@ -51,6 +52,11 @@ export type ValidationResult = { ok: true; contract: Contract } | { ok: false; e
 
 const NAME_RE = /^[\w .()-]{1,60}$/;
 export const COMMAND_RE = /^[\w.-]{1,60}$/;
+export const PROMPT_RE = COMMAND_RE;
+/** The only args an `ask` job may carry: the prompt's name, its variables and an earlier job to resume. Never a prompt text, tools or turns. */
+export const ASK_ARG_KEYS = ["prompt", "vars", "resume"] as const;
+/** A job id the Hub made (p_...): what `resume` may name. */
+export const JOB_ID_RE = /^[\w-]{1,80}$/;
 
 /** "~/a/../b" -> "~/b", "/a//b/" -> "/a/b". Returns null for a relative path or one that climbs out of its root. */
 export function normalizePath(p: string, home?: string): string | null {
@@ -149,6 +155,19 @@ export function validateContract(raw: unknown, urlOpts: UrlOpts = {}): Validatio
     }
   if (!errors.commands && tasks.includes("run") && commands.length === 0) errors.commands = "Name at least one command for the run task.";
 
+  const prIn = Array.isArray(o.prompts) ? o.prompts : o.prompts === undefined || o.prompts === null ? [] : null;
+  const prompts: string[] = [];
+  if (prIn === null) errors.prompts = "Prompts must be a list of names.";
+  else
+    for (const c of prIn) {
+      if (typeof c !== "string" || !PROMPT_RE.test(c.trim())) {
+        errors.prompts = `“${String(c)}” is not a prompt name (letters, numbers, dots, dashes, up to 60).`;
+        break;
+      }
+      if (!prompts.includes(c.trim())) prompts.push(c.trim());
+    }
+  if (!errors.prompts && tasks.includes("ask") && prompts.length === 0) errors.prompts = "Name at least one prompt for the ask task.";
+
   const ctIn = o.claudeTools === undefined || o.claudeTools === null ? [...DEFAULT_CLAUDE_TOOLS] : o.claudeTools;
   const claudeTools: string[] = [];
   if (!Array.isArray(ctIn) || ctIn.length === 0 || ctIn.length > 20) errors.claudeTools = "List 1 to 20 tool names, like Read or Bash(git log:*).";
@@ -172,13 +191,13 @@ export function validateContract(raw: unknown, urlOpts: UrlOpts = {}): Validatio
   if (!cb.ok) errors.callbackUrls = cb.error;
 
   if (Object.keys(errors).length) return { ok: false, errors };
-  return { ok: true, contract: { name, folders, tasks, dailyLimit: dl as number, expires, approval, commands, claudeTools, claudeMaxTurns: cm as number, claudeDailyTurns: cdt as number, claudeDailyMinutes: cdm as number, ...(cb.ok && cb.prefixes.length ? { callbackUrls: cb.prefixes } : {}) } };
+  return { ok: true, contract: { name, folders, tasks, dailyLimit: dl as number, expires, approval, commands, prompts, claudeTools, claudeMaxTurns: cm as number, claudeDailyTurns: cdt as number, claudeDailyMinutes: cdm as number, ...(cb.ok && cb.prefixes.length ? { callbackUrls: cb.prefixes } : {}) } };
 }
 
 /** The paths a job touches. echo touches none. */
 export function jobPaths(job: Job): string[] | { error: string } {
   const a = job.args ?? {};
-  if (job.task === "echo" || job.task === "run") return []; // run: the daemon checks the registered cwd itself
+  if (job.task === "echo" || job.task === "run" || job.task === "ask") return []; // run and ask: the daemon checks the registered cwd itself
   const key = job.task === "claude" ? "cwd" : "path";
   const v = a[key];
   if (typeof v !== "string") return { error: `${job.task} needs a ${key}` };
@@ -195,6 +214,17 @@ export function check(contract: Contract, job: Job, ctx: CheckContext): Verdict 
     const cmd = job.args?.command;
     if (typeof cmd !== "string" || !(contract.commands ?? []).includes(cmd)) return { verdict: "refuse", reason: `command “${String(cmd)}” is not in the contract` };
   }
+
+  if (job.task === "ask") {
+    const a = job.args ?? {};
+    const p = a.prompt;
+    if (typeof p !== "string" || !(contract.prompts ?? []).includes(p)) return { verdict: "refuse", reason: `prompt “${String(p)}” is not in the contract` };
+    const extra = Object.keys(a).filter(k => !(ASK_ARG_KEYS as readonly string[]).includes(k));
+    if (extra.length) return { verdict: "refuse", reason: `ask takes only prompt, vars and resume (not ${extra.join(", ")}); the laptop decides tools, turns and model` };
+    if (a.vars !== undefined && (a.vars === null || typeof a.vars !== "object" || Array.isArray(a.vars))) return { verdict: "refuse", reason: "ask vars must be an object" };
+  }
+  if ((job.task === "ask" || job.task === "claude") && job.args?.resume !== undefined && (typeof job.args.resume !== "string" || !JOB_ID_RE.test(job.args.resume)))
+    return { verdict: "refuse", reason: "resume must be the id of an earlier job" };
 
   if (job.task === "claude") {
     const ceil = claudeCeiling(contract);

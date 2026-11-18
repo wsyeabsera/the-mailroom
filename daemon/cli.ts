@@ -3,7 +3,7 @@ import readline from "node:readline";
 import { deleteConfig, configPath, loadConfig, saveConfig } from "./config.ts";
 import { probe, run } from "./client.ts";
 import { loadPolicy, savePolicy, policyPath, policyClaude } from "./policy.ts";
-import { COMMAND_RE, CLAUDE_TOOL_RE } from "../shared/contract.ts";
+import { COMMAND_RE, PROMPT_RE, CLAUDE_TOOL_RE } from "../shared/contract.ts";
 import * as service from "./service.ts";
 import { SCOPES, runPlugin, setupNote } from "./plugin.ts";
 import type { Scope } from "./plugin.ts";
@@ -13,7 +13,7 @@ const HELP = `mailroom <command>
   login [--url URL] [--credential mrd_...]   save the Hub URL and daemon credential (or env MAILROOM_URL / MAILROOM_CREDENTIAL)
   run                                        connect to the Hub and do its jobs
   status                                     show the config and whether the Hub accepts the credential
-  policy show|allow-folder <path>|allow-task <task>|allow-command <name>|allow-claude-tool <tool>|claude-max-turns <n>   the laptop ceiling the daemon never goes beyond (~/.mailroom/policy.json)
+  policy show|allow-folder <path>|allow-task <task>|allow-command <name>|allow-prompt <name>|allow-claude-tool <tool>|claude-max-turns <n>   the laptop ceiling the daemon never goes beyond (~/.mailroom/policy.json)
   plugin install|uninstall [--scope user|project|local]   add the Claude Code plugin to the project in the current folder (default scope: project)
   plugin install|uninstall [--scope user|project|local]   add the Claude Code plugin to the project in this folder (default: project)
   logout                                   delete the saved config
@@ -107,6 +107,7 @@ async function main() {
         console.log(`folders: ${p.folders.join(", ") || "(none)"}`);
         console.log(`tasks: ${p.tasks.join(", ") || "(none)"}`);
         console.log(`commands: ${(p.commands ?? []).join(", ") || "(none)"}`);
+        console.log(`prompts: ${(p.prompts ?? []).join(", ") || "(none)"}`);
         const pc = policyClaude(p);
         console.log(`claude tools: ${pc.tools.join(", ")}${p.claudeTools ? "" : " (default)"}`);
         console.log(`claude max turns: ${pc.maxTurns}${p.claudeMaxTurns === undefined ? " (default)" : ""}`);
@@ -116,6 +117,14 @@ async function main() {
         if (!COMMAND_RE.test(args[1])) return fail(`“${args[1]}” is not a command name (letters, numbers, dots, dashes, up to 60).`);
         p.commands = p.commands ?? [];
         if (!p.commands.includes(args[1])) p.commands.push(args[1]);
+        savePolicy(p);
+        console.log(`Saved ${policyPath()}`);
+        return 0;
+      }
+      if (sub === "allow-prompt" && args[1]) {
+        if (!PROMPT_RE.test(args[1])) return fail(`“${args[1]}” is not a prompt name (letters, numbers, dots, dashes, up to 60).`);
+        p.prompts = p.prompts ?? [];
+        if (!p.prompts.includes(args[1])) p.prompts.push(args[1]);
         savePolicy(p);
         console.log(`Saved ${policyPath()}`);
         return 0;
@@ -143,7 +152,7 @@ async function main() {
         console.log(`Saved ${policyPath()}`);
         return 0;
       }
-      return fail("Usage: mailroom policy show|allow-folder <path>|allow-task <task>|allow-command <name>|allow-claude-tool <tool>|claude-max-turns <n>");
+      return fail("Usage: mailroom policy show|allow-folder <path>|allow-task <task>|allow-command <name>|allow-prompt <name>|allow-claude-tool <tool>|claude-max-turns <n>");
     }
     case "logout":
       console.log(deleteConfig() ? "Logged out." : "Nothing to delete.");
