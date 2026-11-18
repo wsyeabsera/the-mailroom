@@ -2,6 +2,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { listReport } from "../daemon/commands.ts";
 import { CRED, FakeHub, cli, contract, isResult, job, tmpHome } from "./daemon-helpers.ts";
 
 let hub: FakeHub, home: string, d: ReturnType<typeof cli>;
@@ -19,7 +20,7 @@ before(async () => {
   fs.writeFileSync(script, `#!/bin/sh\nfor a in "$@"; do echo "ARG:$a"; done\necho "CWD:$(pwd -P)"\n[ "$2" = "fail" ] && { echo boom >&2; exit 3; }\nexit 0\n`, { mode: 0o755 });
   fs.mkdirSync(path.join(home, ".mailroom"), { recursive: true });
   const spec = (cwd: string) => ({ script, cwd, timeoutMs: 5000, args: { msg: { type: "string", required: true, maxLength: 50 }, n: { type: "number" }, mode: { type: "enum", values: ["a", "b"] }, loud: { type: "boolean" } } });
-  fs.writeFileSync(path.join(home, ".mailroom/commands.json"), JSON.stringify({ show: spec("~/allowed"), escape: spec("~/allowed/link") }), { mode: 0o600 });
+  fs.writeFileSync(path.join(home, ".mailroom/commands.json"), JSON.stringify({ show: { ...spec("~/allowed"), project: "pr_1000" }, escape: spec("~/allowed/link") }), { mode: 0o600 });
   await cli(home, ["login", "--url", hub.url, "--credential", CRED]).exited;
   d = cli(home, ["run"]);
   await hub.waitFor(m => m.type === "hello");
@@ -76,4 +77,35 @@ test("run: a registry that is not mode 0600 is refused", async () => {
   fs.chmodSync(f, 0o644);
   assert.equal((await run("r7", { command: "show", args: { msg: "x" } })).type, "refuse");
   fs.chmodSync(f, 0o600);
+});
+
+test("hello reports commands: name, project tag, arg specs, timeout; never script or cwd", async () => {
+  const hello = hub.messages.find(m => m.type === "hello");
+  const show = hello.commands.find((c: any) => c.name === "show");
+  assert.equal(show.project, "pr_1000");
+  assert.equal(show.timeoutMs, 5000);
+  assert.deepEqual(show.args.mode, { type: "enum", values: ["a", "b"] });
+  assert.equal(show.args.msg.required, true);
+  assert.equal(show.args.msg.maxLength, 50);
+  assert.equal(hello.commands.find((c: any) => c.name === "escape").project, null);
+  assert.doesNotMatch(JSON.stringify(hello.commands), /script|cwd|show\.sh/);
+});
+
+test("listReport: a missing registry or a 0644 one reports nothing", () => {
+  const empty = tmpHome();
+  assert.deepEqual(listReport(empty), []);
+  const f = path.join(home, ".mailroom/commands.json");
+  assert.ok(listReport(home).length > 0);
+  fs.chmodSync(f, 0o644);
+  assert.deepEqual(listReport(home), []);
+  fs.chmodSync(f, 0o600);
+});
+
+test("a laptop with no commands.json says hello with commands: []", async () => {
+  const h2 = tmpHome();
+  await cli(h2, ["login", "--url", hub.url, "--credential", CRED]).exited;
+  const d2 = cli(h2, ["run"]);
+  const m = await hub.waitFor(x => x.type === "hello" && Array.isArray(x.commands) && x.commands.length === 0);
+  assert.deepEqual(m.commands, []);
+  d2.kill();
 });
