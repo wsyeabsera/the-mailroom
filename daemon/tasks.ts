@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseProgressLine } from "./progress.ts";
+import { parsePartialLine } from "../shared/partials.ts";
 import { keepAwake, killTree, killTreeOnAbort, spawnTree, timeoutMessage } from "./proc.ts";
 import { READ_ONLY_TOOLS, StreamReader, makeScratch, removeScratch } from "./claude.ts";
 import { check, normalizePath, claudeCeiling } from "../shared/contract.ts";
@@ -15,6 +16,9 @@ import { loadPolicy, exceeds } from "./policy.ts";
 import { writeLog } from "./logs.ts";
 import { mcpConfigArgs, mcpRefusal, mcpServerOf } from "./mcp.ts";
 import { MAX_RESULT_BYTES, MAX_WRITE_BYTES } from "../shared/limits.ts";
+import { runBatch, runWorkflow } from "./pipeline.ts";
+import { loadWorkflow } from "./workflows.ts";
+import { batchTarget } from "../shared/pipeline.ts";
 
 export type JobMsg = { id: string; task: string; args: Record<string, unknown>; contract: Contract; budget?: { turns: number; ms: number } /* what is left of the key's claude day; from the Hub */ };
 
@@ -41,14 +45,21 @@ export function resolvePath(p: string, home: string): string | null {
 }
 
 /** Returns a refuse reason, or null if the job may run. Also returns the resolved path. */
-export function recheck(job: JobMsg, now = Date.now(), home = os.homedir()): { reason: string } | { resolved: string | null } {
-  const v = check(job.contract, { task: job.task, args: job.args ?? {} }, { now, usedToday: 0, home });
+export function recheck(job: JobMsg, now = Date.now(), home = os.homedir(), implicit: string[] = []): { reason: string } | { resolved: string | null } {
+  // `implicit`: a batch item or workflow step is checked as the single job it is (run, ask or batch) without the contract having to list that task.
+  const v = check(implicit.length ? { ...job.contract, tasks: [...new Set([...job.contract.tasks, ...implicit])] } : job.contract, { task: job.task, args: job.args ?? {} }, { now, usedToday: 0, home });
   if (v.verdict === "refuse") return { reason: v.reason };
   // The laptop ceiling: whatever contract the Hub sent, it may not go beyond ~/.mailroom/policy.json (see policy.ts).
   const pol = loadPolicy(home);
   if ("error" in pol) return { reason: `laptop policy unusable: ${pol.error}` };
-  const ceil = (r: string | null) => (pol.policy ? exceeds(pol.policy, job.contract, r, home) : null);
+  const ceil = (r: string | null) => (pol.policy ? exceeds(pol.policy, job.contract, r, home, implicit) : null);
   if (job.task === "echo") {
+    const over = ceil(null);
+    return over ? { reason: over } : { resolved: null };
+  }
+  if (job.task === "batch" || job.task === "workflow") {
+    const why = job.task === "batch" ? batchRefusal(job, home) : workflowRefusal(job, home, implicit);
+    if (why) return { reason: why };
     const over = ceil(null);
     return over ? { reason: over } : { resolved: null };
   }
@@ -93,7 +104,7 @@ export function recheck(job: JobMsg, now = Date.now(), home = os.homedir()): { r
   return { resolved: real };
 }
 
-export async function runTask(job: JobMsg, resolved: string | null, signal: AbortSignal, report: (text: string, pct?: number) => void = () => {}, onUsage: (u: Usage) => void = () => {}): Promise<unknown> {
+export async function runTask(job: JobMsg, resolved: string | null, signal: AbortSignal, report: (text: string, pct?: number) => void = () => {}, onUsage: (u: Usage) => void = () => {}, onPartial: (value: unknown) => void = () => {}, extra: { stdin?: string } = {}): Promise<unknown> {
   const a = job.args;
   switch (job.task) {
     case "echo":
@@ -123,7 +134,11 @@ export async function runTask(job: JobMsg, resolved: string | null, signal: Abor
     case "ask":
       return runAsk(job, resolved!, signal, report, onUsage);
     case "run":
-      return runCommand(a, resolved!, signal, report);
+      return runCommand(a, resolved!, signal, report, onPartial, extra.stdin);
+    case "batch":
+      return runBatch(job, signal, report, onUsage, onPartial);
+    case "workflow":
+      return runWorkflow(job, signal, report, onUsage, onPartial);
     default:
       throw new Error(`unknown task ${job.task}`);
   }
@@ -325,13 +340,18 @@ function execClaude(prompt: string, cwd: string, signal: AbortSignal, opts: { ar
 }
 
 /** Starts a registered command: argv array, no shell, so metacharacters in args stay literal. */
-function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal, report: (text: string, pct?: number) => void): Promise<{ output: unknown; exitCode: number }> {
+function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal, report: (text: string, pct?: number) => void, onPartial: (value: unknown) => void = () => {}, stdin?: string): Promise<{ output: unknown; exitCode: number }> {
   return new Promise((resolve, reject) => {
     const c = loadCommand(a.command);
     if ("error" in c) return reject(new Error(c.error));
     const b = buildArgv(c.command, a.args);
     if ("error" in b) return reject(new Error(b.error));
-    const child = spawnTree(c.command.script, b.argv, { cwd, stdio: ["ignore", "pipe", "pipe"], shell: false });
+    const child = spawnTree(c.command.script, b.argv, { cwd, stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"], shell: false });
+    if (stdin !== undefined) {
+      // A workflow step may hand earlier output to the script on standard input (args are too short for data). A script that never reads it is fine.
+      child.stdin!.on("error", () => {});
+      child.stdin!.end(Buffer.from(stdin).subarray(0, MAX_RESULT_BYTES));
+    }
     const unhook = killTreeOnAbort(child, signal);
     const release = keepAwake(child);
     let out = Buffer.alloc(0);
@@ -352,6 +372,10 @@ function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal
       for (const l of lines) {
         const p = parseProgressLine(l);
         if (p) report(p.text, p.pct);
+        else {
+          const q = parsePartialLine(l);
+          if (q) onPartial(q.value);
+        }
       }
     });
     child.on("error", e => {
@@ -377,4 +401,35 @@ function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal
       } else resolve({ output: out.toString("utf8"), exitCode: 0 });
     });
   });
+}
+
+/** Refusal for a batch job beyond the contract's check: its target must be registered on this laptop. */
+function batchRefusal(job: JobMsg, home: string): string | null {
+  const t = batchTarget(job.args);
+  if ("error" in t) return t.error;
+  const r = t.kind === "run" ? loadCommand(t.name, home) : loadPrompt(t.name, home);
+  return "error" in r ? r.error : null;
+}
+
+/** Refusal for a workflow job before it starts: it must be registered and valid, and every step's target must be allowed by the contract and the policy
+ *  (each item is checked again when it runs; this is the early, whole-workflow look). */
+function workflowRefusal(job: JobMsg, home: string, implicit: string[]): string | null {
+  const w = loadWorkflow(job.args.name, home);
+  if ("error" in w) return w.error;
+  const c = { ...job.contract, tasks: [...new Set([...job.contract.tasks, ...implicit, "run", "ask", "batch"])] };
+  const loaded = loadPolicy(home);
+  const policy = "policy" in loaded ? loaded.policy : null;
+  for (const s of w.workflow.steps) {
+    const [bk, bn] = s.kind === "batch" ? s.target.split(":") : [s.kind, s.target];
+    const probe = s.kind === "run" ? { task: "run", args: { command: s.target } } : s.kind === "ask" ? { task: "ask", args: { prompt: s.target } } : { task: "batch", args: { [bk === "run" ? "command" : "prompt"]: bn, items: [{}] } };
+    const v = check(c, probe, { now: Date.now(), usedToday: 0, home });
+    if (v.verdict === "refuse") return `step “${s.id}”: ${v.reason}`;
+    const reg = bk === "run" ? loadCommand(bn ?? s.target, home) : loadPrompt(bn ?? s.target, home);
+    if ("error" in reg) return `step “${s.id}”: ${reg.error}`;
+    if (policy) {
+      const allowed = (bk === "run" ? policy.commands : policy.prompts) ?? [];
+      if (!allowed.includes(bn ?? s.target)) return `step “${s.id}”: ${bk === "run" ? "command" : "prompt"} “${bn ?? s.target}” is not allowed by the laptop policy. To allow: mailroom policy allow-${bk === "run" ? "command" : "prompt"} ${bn ?? s.target}`;
+    }
+  }
+  return null;
 }

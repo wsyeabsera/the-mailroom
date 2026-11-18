@@ -123,7 +123,11 @@ const idArg = (what: string, eg: string): Schema => ({ type: "object", propertie
 const CONTRACT_PROPS: Record<string, Schema> = {
   name: { type: "string", minLength: 1, maxLength: 60, description: "Short name for the contract (letters, numbers, spaces)." },
   folders: { type: "array", items: { type: "string", maxLength: 1000 }, minItems: 1, maxItems: 50, description: "Folders the key may touch, each starting with ~/ or / (never the whole home or root)." },
-  tasks: { type: "array", items: { type: "string", enum: ["echo", "read_file", "write_file", "claude", "run", "ask"] }, minItems: 1, description: "Tasks the key may ask for: echo, read_file, write_file, claude, run, ask." },
+  tasks: { type: "array", items: { type: "string", enum: ["echo", "read_file", "write_file", "claude", "run", "ask", "batch", "workflow"] }, minItems: 1, description: "Tasks the key may ask for: echo, read_file, write_file, claude, run, ask, batch (one command or prompt over a list of items), workflow (a named multi-step pipeline registered on the laptop)." },
+  batches: { type: "array", items: { type: "string", maxLength: 64 }, maxItems: 50, description: "Targets the batch task may run, each run:<command> or ask:<prompt> (required and non-empty when tasks includes batch; each must also be in commands or prompts). Omit or [] otherwise." },
+  batchMaxItems: { type: "integer", minimum: 1, maximum: 1000, description: "Most items in one batch. Default 100." },
+  batchMaxConcurrency: { type: "integer", minimum: 1, maximum: 6, description: "Most items a batch runs at once. Default 3, at most 6." },
+  workflows: { type: "array", items: { type: "string", maxLength: 60 }, maxItems: 50, description: "Names of the laptop-registered workflows the workflow task may run (required and non-empty when tasks includes workflow). Every step of a workflow is still checked against this contract (its commands, prompts and batches). Omit or [] otherwise." },
   prompts: { type: "array", items: { type: "string", maxLength: 60 }, maxItems: 50, description: "Names of the laptop-registered prompts the ask task may run (required and non-empty when tasks includes ask). The laptop's prompts.json fixes each prompt's text, tools, turns and model; a job supplies only variables. Omit or [] otherwise." },
   commands: { type: "array", items: { type: "string", maxLength: 60 }, maxItems: 50, description: "Names of the laptop-registered commands the run task may start (required and non-empty when tasks includes run). Omit or [] otherwise." },
   claudeTools: { type: "array", items: { type: "string", maxLength: 100 }, minItems: 1, maxItems: 20, description: "Ceiling for the claude task: the tool names (exact match, like Read or Bash(git log:*)) a claude job may ask for; a job with no allowedTools gets exactly these. Default Read, Glob, Grep. Keep it read-only unless the owner says otherwise." },
@@ -159,7 +163,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "mailroom_get_parcel", scope: "read", inputSchema: idArg("parcel", "p_1001"),
-    description: "Get one parcel with its timeline of events, a fresh contract check (what the contract says about this parcel now) and the key that sent it. Use this to see exactly what a parcel will do before the owner decides on it.",
+    description: "Get one parcel with its timeline of events, its count of partial results so far (partials; clients read them at GET /api/jobs/:id/partials), a fresh contract check (what the contract says about this parcel now) and the key that sent it. Use this to see exactly what a parcel will do before the owner decides on it.",
     run: (a, api) => api.getParcel(a.id),
   },
   {

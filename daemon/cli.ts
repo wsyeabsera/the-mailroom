@@ -123,6 +123,8 @@ async function main() {
         console.log(`tasks: ${p.tasks.join(", ") || "(none)"}`);
         console.log(`commands: ${(p.commands ?? []).join(", ") || "(none)"}`);
         console.log(`prompts: ${(p.prompts ?? []).join(", ") || "(none)"}`);
+        console.log(`workflows: ${(p.workflows ?? []).join(", ") || "(none)"}`);
+        console.log(`batch max items: ${p.batchMaxItems ?? "(no ceiling)"}, max concurrency: ${p.batchMaxConcurrency ?? "(no ceiling)"}`);
         const pc = policyClaude(p);
         console.log(`claude tools: ${pc.tools.join(", ")}${p.claudeTools ? "" : " (default)"}`);
         console.log(`claude max turns: ${pc.maxTurns}${p.claudeMaxTurns === undefined ? " (default)" : ""}`);
@@ -141,6 +143,23 @@ async function main() {
         if (!PROMPT_RE.test(args[1])) return fail(`“${args[1]}” is not a prompt name (letters, numbers, dots, dashes, up to 60).`);
         p.prompts = p.prompts ?? [];
         if (!p.prompts.includes(args[1])) p.prompts.push(args[1]);
+        savePolicy(p);
+        console.log(`Saved ${policyPath()}`);
+        return 0;
+      }
+      if (sub === "allow-workflow" && args[1]) {
+        if (!COMMAND_RE.test(args[1])) return fail(`“${args[1]}” is not a workflow name (letters, numbers, dots, dashes, up to 60).`);
+        p.workflows = p.workflows ?? [];
+        if (!p.workflows.includes(args[1])) p.workflows.push(args[1]);
+        savePolicy(p);
+        console.log(`Saved ${policyPath()}`);
+        return 0;
+      }
+      if ((sub === "batch-max-items" || sub === "batch-max-concurrency") && args[1]) {
+        const n = Number(args[1]);
+        if (!Number.isInteger(n) || n < 1 || n > 1000) return fail(`${sub} needs a whole number from 1 to 1000.`);
+        if (sub === "batch-max-items") p.batchMaxItems = n;
+        else p.batchMaxConcurrency = n;
         savePolicy(p);
         console.log(`Saved ${policyPath()}`);
         return 0;
@@ -174,7 +193,7 @@ async function main() {
         console.log(`Saved ${policyPath()}`);
         return 0;
       }
-      return fail("Usage: mailroom policy show|allow-folder <path>|allow-task <task>|allow-command <name>|allow-prompt <name>|allow-claude-tool <tool>|claude-max-turns <n>|logs on|off");
+      return fail("Usage: mailroom policy show|allow-folder <path>|allow-task <task>|allow-command <name>|allow-prompt <name>|allow-workflow <name>|allow-claude-tool <tool>|claude-max-turns <n>|batch-max-items <n>|batch-max-concurrency <n>|logs on|off");
     }
     case "doctor": {
       let contracts: any[] | null = null;

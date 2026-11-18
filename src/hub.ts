@@ -9,10 +9,12 @@ import { laneKey, laneOf, parseHello, pickNext, type LaneHints } from "../shared
 import { ensureProjectSchema, loadReport, Projects, storeReport } from "./projects.ts";
 import { storePromptReport } from "./prompt-report.ts";
 import { Proposals, PROPOSAL_TABLE } from "./proposals.ts";
+import { loadWorkflowReport, storeWorkflowReport } from "./workflow-report.ts";
 import { fingerprint, idempotencyFresh, parseIdempotencyKey } from "./idempotency.ts";
 import { isRerunSafe, NOT_RERUN_SAFE_REASON, parseLabel, parseRerunSafe, REQUEUE_REASON, resumeRefusal, UNCOUNTED_SQL } from "./job-rules.ts";
 import { addUsage, budgetFor, ensureClaudeUsageSchema, usageSummary } from "./claude-budget.ts";
-import { clipMaxTurns, isClaudeTask, parseUsage } from "../shared/claude-budget.ts";
+import { cleanPartial, oldestKept } from "../shared/partials.ts";
+import { clipMaxTurns, refusedWhenOver, usesBudget, parseUsage } from "../shared/claude-budget.ts";
 import { claudeCeiling } from "../shared/contract.ts";
 import { markerBytes, planResult, resultCutoff, resultExpired } from "./results.ts";
 import { MAX_RESULT_BYTES } from "../shared/limits.ts";
@@ -72,6 +74,7 @@ export class Hub extends DurableObject<Env> {
       "CREATE TABLE IF NOT EXISTS keys (id TEXT PRIMARY KEY, label TEXT NOT NULL, prefix TEXT NOT NULL, hash TEXT NOT NULL, contract_id TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER, last_used_at INTEGER)",
       "CREATE TABLE IF NOT EXISTS contracts (id TEXT PRIMARY KEY, name TEXT NOT NULL, body TEXT NOT NULL, version INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
       "CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, key_id TEXT NOT NULL, contract_id TEXT NOT NULL, contract_version INTEGER NOT NULL, task TEXT NOT NULL, args TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, result TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS job_partials (job_id TEXT NOT NULL, n INTEGER NOT NULL, body TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (job_id, n))", // partial results, newest MAX_PARTIALS per job
       "CREATE TABLE IF NOT EXISTS job_progress (job_id TEXT PRIMARY KEY, text TEXT NOT NULL, pct REAL, at INTEGER NOT NULL)",
       "CREATE INDEX IF NOT EXISTS jobs_key ON jobs (key_id, created_at)",
       "CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL)",
@@ -133,8 +136,12 @@ export class Hub extends DurableObject<Env> {
 
   private jobOut = (r: Row) => ({
     id: r.id, key_id: r.key_id, contract_id: r.contract_id, contract_version: r.contract_version, task: r.task, args: parse(r.args), state: r.state,
-    label: r.label ?? undefined, reason: r.reason ?? undefined, result: parse(r.result), progress: this.progressOf(r.id), created_at: r.created_at, updated_at: r.updated_at,
+    label: r.label ?? undefined, reason: r.reason ?? undefined, result: parse(r.result), progress: this.progressOf(r.id), partials: this.partialCount(r.id), created_at: r.created_at, updated_at: r.updated_at,
   });
+  /** How many partial results the job has produced (numbers are never reused, so this is also the last number). */
+  private partialCount(id: string): number {
+    return (this.one("SELECT MAX(n) AS n FROM job_partials WHERE job_id = ?", id)?.n as number | null) ?? 0;
+  }
   private progressOf(id: string) {
     const p = this.one("SELECT text, pct, at FROM job_progress WHERE job_id = ?", id);
     return p ? { text: p.text as string, ...(p.pct === null ? {} : { pct: p.pct as number }), at: p.at as number } : undefined;
@@ -149,7 +156,10 @@ export class Hub extends DurableObject<Env> {
     return parse(big.body);
   }
   /** Removes big results older than 7 days. Runs when the Hub wakes, when a big result is stored and when one is read. */
-  private sweepResults() { this.sql.run("DELETE FROM job_results WHERE stored_at < ?", resultCutoff(Date.now())); }
+  private sweepResults() {
+    this.sql.run("DELETE FROM job_results WHERE stored_at < ?", resultCutoff(Date.now()));
+    this.sql.run("DELETE FROM job_partials WHERE at < ?", resultCutoff(Date.now())); // partials follow the big-result retention
+  }
 
   /** A job that was running when the laptop dropped: queued again if re-running it is safe, otherwise failed. */
   private requeueOrFail(j: Row) {
@@ -174,7 +184,7 @@ export class Hub extends DurableObject<Env> {
     this.sql.run("UPDATE jobs SET state = ?, reason = ?, result = ?, updated_at = ?, contract_version = ? WHERE id = ?", state, reason ?? null, stored, now, job.contract_version, job.id);
     job.result = stored;
     job.state = state;
-    if (state === "queued") this.sql.run("DELETE FROM job_progress WHERE job_id = ?", job.id); // a requeued job starts over
+    if (state === "queued") { this.sql.run("DELETE FROM job_progress WHERE job_id = ?", job.id); this.sql.run("DELETE FROM job_partials WHERE job_id = ?", job.id); } // a requeued job starts over
     const p: Record<string, unknown> = { job_id: job.id, key_id: job.key_id, task: job.task };
     if (reason) p.reason = reason;
     this.event(kind ?? `job.${state}`, p);
@@ -209,7 +219,7 @@ export class Hub extends DurableObject<Env> {
     try {
       if (path === "/daemon") return await this.daemonUpgrade(req);
       if (path === "/api/jobs" || path.startsWith("/api/jobs/")) return await this.clientRoute(req, path);
-      if (path === "/api/commands") return await this.commandsRoute(req);
+      if (path === "/api/commands" || path === "/api/prompts" || path === "/api/workflows") return await this.commandsRoute(req, path);
       if (path === "/mcp") return await this.mcp(req);
       if (path === "/admin/login") return await this.login(req);
       if (path.startsWith("/admin/")) return await this.admin(req, url);
@@ -245,12 +255,16 @@ export class Hub extends DurableObject<Env> {
     return ++r.n > limit;
   }
 
-  private async commandsRoute(req: Request): Promise<Response> {
+  private async commandsRoute(req: Request, path = "/api/commands"): Promise<Response> {
     const k = await this.clientAuth(req);
     if (!k) return err(401, "bad_key");
     if (this.rateLimited(k.id)) return err(429, "rate_limited", { retry_after: 60 });
     if (req.method !== "GET") return err(405, "method_not_allowed");
-    return json(this.projects.commandsFor((parse(this.contractRow(k.contract_id)!.body) as Contract).commands ?? []));
+    const c = parse(this.contractRow(k.contract_id)!.body) as Contract;
+    const bs = budgetFor(this.sql, k.id, c); // what is left of the key's Claude budget today, to say whether an estimate fits
+    if (path === "/api/prompts") return json(this.projects.promptsFor(c.prompts ?? [], bs));
+    if (path === "/api/workflows") return json(this.projects.workflowsFor(c.workflows ?? [], bs));
+    return json(this.projects.commandsFor(c.commands ?? [], bs));
   }
 
   private async clientRoute(req: Request, path: string): Promise<Response> {
@@ -277,11 +291,19 @@ export class Hub extends DurableObject<Env> {
       return json({ id: cj.id, state: "cancelled" });
     }
     if (req.method !== "GET") return err(405, "method_not_allowed");
+    if (rest.endsWith("/partials")) {
+      // Partial results so far; ?after=<n> returns those numbered above n. Untrusted data from the laptop's script, served as stored.
+      const pj = this.one("SELECT id FROM jobs WHERE id = ? AND key_id = ?", rest.slice(0, -"/partials".length), k.id);
+      if (!pj) return err(404, "not_found");
+      const after = Number(new URL(req.url).searchParams.get("after") ?? 0);
+      const rows = this.sql.all<Row>("SELECT n, body, at FROM job_partials WHERE job_id = ? AND n > ? ORDER BY n LIMIT 200", pj.id, Number.isFinite(after) ? after : 0);
+      return json({ id: pj.id, count: this.partialCount(pj.id as string), partials: rows.map(r => ({ n: r.n, at: r.at, value: parse(r.body) })) });
+    }
     const j = this.one("SELECT * FROM jobs WHERE id = ? AND key_id = ?", rest, k.id);
     if (!j) return err(404, "not_found");
     const o = this.jobOut(j);
     this.sweepResults();
-    return json({ id: o.id, state: o.state, label: o.label, reason: o.reason, result: this.resultOf(j), progress: o.progress, created_at: o.created_at, updated_at: o.updated_at });
+    return json({ id: o.id, state: o.state, label: o.label, reason: o.reason, result: this.resultOf(j), progress: o.progress, partials: o.partials, created_at: o.created_at, updated_at: o.updated_at });
   }
 
   private async submit(req: Request, k: Row): Promise<Response> {
@@ -329,7 +351,7 @@ export class Hub extends DurableObject<Env> {
       const bad = this.projects.argError(args.command, args.args);
       if (bad) verdict = { verdict: "refuse", reason: bad };
     }
-    if (verdict.verdict !== "refuse" && isClaudeTask(task)) {
+    if (verdict.verdict !== "refuse" && refusedWhenOver(task, args)) {
       const bs = budgetFor(this.sql, k.id, parse(c.body), now); // the key's claude budget for today (src/claude-budget.ts)
       if (bs.over) verdict = { verdict: "refuse", reason: bs.reason! };
     }
@@ -596,7 +618,7 @@ export class Hub extends DurableObject<Env> {
     const now = Date.now();
     j.contract_version = c.version;
     const v = check(parse(c.body), { task: j.task, args: parse(j.args) }, { now, usedToday: this.usedToday(j.key_id, now, j.id) });
-    if (v.verdict !== "refuse" && isClaudeTask(j.task)) {
+    if (v.verdict !== "refuse" && refusedWhenOver(j.task, parse(j.args))) {
       const bs = budgetFor(this.sql, j.key_id, parse(c.body), now);
       if (bs.over) return bs.reason!;
     }
@@ -807,7 +829,7 @@ export class Hub extends DurableObject<Env> {
     // commands: what the laptop last reported (name, project tag, timeout), or null if it never has. Display data only.
     const row = this.one("SELECT daemon_version, daemon_commit FROM daemon WHERE id = 1");
     const daemonVersion = d.connected ? ((row?.daemon_version as string | null) ?? null) : null;
-    return { connected: d.connected, last_seen: d.last_seen, last_seq: d.last_seq, rotated_at: d.rotated_at, credential_hint: d.hint, hub_version: HUB_VERSION, daemon_version: daemonVersion, daemon_commit: d.connected ? ((row?.daemon_commit as string | null) ?? null) : null, daemon_notice: daemonNotice(daemonVersion, HUB_VERSION, d.connected), commands: rep ? rep.commands.map((c) => ({ name: c.name, project: c.project, timeoutMs: c.timeoutMs })) : null, commands_reported_at: rep ? rep.reported_at : null, queue: this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at, id").map(this.jobOut) };
+    return { connected: d.connected, last_seen: d.last_seen, last_seq: d.last_seq, rotated_at: d.rotated_at, credential_hint: d.hint, hub_version: HUB_VERSION, daemon_version: daemonVersion, daemon_commit: d.connected ? ((row?.daemon_commit as string | null) ?? null) : null, daemon_notice: daemonNotice(daemonVersion, HUB_VERSION, d.connected), commands: rep ? rep.commands.map((c) => ({ name: c.name, project: c.project, timeoutMs: c.timeoutMs, estimate: c.estimate ?? null })) : null, workflows: loadWorkflowReport(this.sql)?.workflows ?? null, commands_reported_at: rep ? rep.reported_at : null, queue: this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at, id").map(this.jobOut) };
   }
 
   private async rotate(): Promise<Response> {
@@ -877,6 +899,7 @@ export class Hub extends DurableObject<Env> {
       for (const n of parseRerunSafe(m.rerunSafe)) this.sql.run("INSERT OR IGNORE INTO daemon_rerun (name) VALUES (?)", n);
       this.sql.run("UPDATE daemon SET connected = 1, daemon_version = ?, daemon_commit = ? WHERE id = 1", cleanVersion(m.version), cleanCommit(m.commit)); // untrusted: only a plain x.y.z and a hex commit are kept
       if (m.commands !== undefined) storeReport(this.sql, m.commands); // untrusted display data; an old daemon sends none and the last snapshot stays
+      if (m.workflows !== undefined) storeWorkflowReport(this.sql, m.workflows); // same
       if (m.prompts !== undefined) storePromptReport(this.sql, m.prompts); // same: untrusted display data (names and variable specs)
       this.event("daemon.connected", {});
       this.send({ type: "welcome", server_seq: this.lastEventSeq() });
@@ -888,15 +911,23 @@ export class Hub extends DurableObject<Env> {
     if (m.type === "usage") {
       // What a cancelled claude job used before it was killed (the daemon sends no result for it). A running job's usage rides on its result.
       const u = parseUsage(m.usage);
-      if (j && j.state === "cancelled" && isClaudeTask(j.task) && u && !this.usageSeen.has(j.id)) { this.usageSeen.add(j.id); addUsage(this.sql, j.key_id, u); }
+      if (j && j.state === "cancelled" && usesBudget(j.task, parse(j.args)) && u && !this.usageSeen.has(j.id)) { this.usageSeen.add(j.id); addUsage(this.sql, j.key_id, u); }
       return;
     }
     if (!j || j.state !== "running") return; // late or stray (e.g. cancelled): ignore
-    if (m.type === "result" && isClaudeTask(j.task)) { const u = parseUsage(m.usage); if (u) addUsage(this.sql, j.key_id, u); } // failed and done jobs both count
+    if (m.type === "result" && usesBudget(j.task, parse(j.args))) { const u = parseUsage(m.usage); if (u) addUsage(this.sql, j.key_id, u); } // failed and done jobs both count
     if (m.type === "progress") {
       if (typeof m.text !== "string" || !this.isInflight(j.id)) return;
       const pct = typeof m.pct === "number" && Number.isFinite(m.pct) ? Math.min(100, Math.max(0, m.pct)) : null;
       this.sql.run("INSERT OR REPLACE INTO job_progress (job_id, text, pct, at) VALUES (?, ?, ?, ?)", j.id, m.text.slice(0, 500), pct, Date.now());
+      return;
+    }
+    if (m.type === "partial") {
+      const body = cleanPartial(m.value);
+      if (body === null || !this.isInflight(j.id)) return;
+      const n = this.partialCount(j.id as string) + 1;
+      this.sql.run("INSERT INTO job_partials (job_id, n, body, at) VALUES (?, ?, ?, ?)", j.id, n, body, Date.now());
+      this.sql.run("DELETE FROM job_partials WHERE job_id = ? AND n < ?", j.id, oldestKept(n));
       return;
     }
     if (m.type === "result") {
@@ -942,7 +973,7 @@ export class Hub extends DurableObject<Env> {
       const lane = laneOf(j.task, parse(j.args), this.laneMode?.hints);
       let args = parse(j.args);
       let budget: { turns: number; ms: number } | undefined;
-      if (isClaudeTask(j.task)) {
+      if (usesBudget(j.task, parse(j.args))) {
         // Cap this job by what is left of the key's day: maxTurns is clipped here, the daemon also clips its timeout to `budget.ms`.
         const bs = budgetFor(this.sql, j.key_id, parse(c.body));
         // An ask takes no maxTurns from the client (the daemon would refuse it): its prompt sets the turns and the daemon clips them to budget.turns.

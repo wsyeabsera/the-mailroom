@@ -3,7 +3,11 @@
 import type { Contract } from "../shared/contract.ts";
 import { buildArgv } from "../shared/args.ts";
 import { commandsView, sanitizeReport, validateProject, type ReportedCommand } from "../shared/projects.ts";
-import { PROMPT_REPORT_TABLE } from "./prompt-report.ts";
+import { PROMPT_REPORT_TABLE, loadPromptReport } from "./prompt-report.ts";
+import { loadWorkflowReport } from "./workflow-report.ts";
+import { budgetFor } from "./claude-budget.ts";
+import { estimateFits } from "../shared/estimate.ts";
+import { WORKFLOW_REPORT_TABLE } from "./workflow-report.ts";
 import { makeId } from "./keys.ts";
 import type { Sql } from "./login-limit.ts";
 
@@ -19,6 +23,7 @@ export const PROJECT_TABLES = [
   "CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, folder TEXT, notes TEXT NOT NULL DEFAULT '', color TEXT, created_at INTEGER NOT NULL, archived_at INTEGER)",
   "CREATE TABLE IF NOT EXISTS laptop_report (id INTEGER PRIMARY KEY CHECK (id = 1), commands TEXT NOT NULL, reported_at INTEGER NOT NULL)",
   PROMPT_REPORT_TABLE, // sibling of laptop_report (src/prompt-report.ts)
+  WORKFLOW_REPORT_TABLE, // and src/workflow-report.ts
 ];
 
 /** Tables plus the guarded ALTER: safe on every start (a second run hits "duplicate column" and carries on). */
@@ -121,16 +126,22 @@ export class Projects {
     const keys = sql.all<Row>(`SELECT * FROM keys WHERE ${where} ORDER BY created_at DESC, id DESC`, ...args);
     const jobs = sql.all<Row>(`SELECT j.* FROM jobs j JOIN keys k ON k.id = j.key_id WHERE k.${where} ORDER BY j.created_at DESC, j.id DESC LIMIT 20`, ...args);
     const report = loadReport(sql);
-    const keyContracts = keys
-      .filter((k) => !k.revoked_at)
-      .map((k) => ({ keyId: k.id as string, commands: this.c.contractBody(k.contract_id)?.commands ?? [] }));
+    const activeKeys = keys.filter((k) => !k.revoked_at);
+    const keyContracts = activeKeys.map((k) => ({ keyId: k.id as string, commands: this.c.contractBody(k.contract_id)?.commands ?? [] }));
+    // A command's estimate is compared with what is left of each allowing key's Claude budget today; the warning shows when none of them could cover it.
+    const left = new Map(activeKeys.map((k) => { const c = this.c.contractBody(k.contract_id); return [k.id as string, c ? budgetFor(sql, k.id as string, c) : null] as const; }));
     const projects = sql.all<Row>("SELECT id, archived_at FROM projects").map((r) => ({ id: r.id as string, archived: !!r.archived_at }));
+    const view = commandsView({ projectId: id, projects, reported: report?.commands ?? null, keyContracts });
+    for (const r of view.rows) {
+      const fits = r.viaKeys.map((kid) => left.get(kid)).filter((b): b is NonNullable<typeof b> => !!b).map((b) => estimateFits(r.estimate, b));
+      if (r.estimate && fits.length && fits.every((f) => !f.fits)) r.warning = fits[0].warning;
+    }
     return {
       ...base,
       ...this.card(id),
       keys: keys.map((k) => this.c.keyOut(k)),
       recent_jobs: jobs.map((j) => this.c.jobOut(j)),
-      commands: commandsView({ projectId: id, projects, reported: report?.commands ?? null, keyContracts }),
+      commands: view,
       laptop_reported_at: report?.reported_at ?? null,
     };
   }
@@ -243,11 +254,37 @@ export class Projects {
   }
 
   /** GET /api/commands: the calling key's contract commands joined with what the laptop reported. Display help only. */
-  commandsFor(contractCommands: string[]) {
+  commandsFor(contractCommands: string[], left?: { turnsLeft: number; msLeft: number }) {
     const rep = new Map((loadReport(this.c.sql)?.commands ?? []).map((c) => [c.name, c]));
     return contractCommands.map((name) => {
       const c = rep.get(name);
-      return { name, on_laptop: !!c, args: c ? c.args : null, timeoutMs: c ? c.timeoutMs : null };
+      return { name, on_laptop: !!c, args: c ? c.args : null, timeoutMs: c ? c.timeoutMs : null, ...this.costOf(c?.estimate, left) };
     });
+  }
+
+  /** GET /api/prompts: the key's contract prompts joined with the laptop's report (variables, timeout, estimate). Display help only. */
+  promptsFor(contractPrompts: string[], left?: { turnsLeft: number; msLeft: number }) {
+    const rep = new Map((loadPromptReport(this.c.sql)?.prompts ?? []).map((c) => [c.name, c]));
+    return contractPrompts.map((name) => {
+      const c = rep.get(name);
+      return { name, on_laptop: !!c, vars: c ? c.vars : null, timeoutMs: c ? c.timeoutMs : null, ...this.costOf(c?.estimate, left) };
+    });
+  }
+
+  /** GET /api/workflows: the key's contract workflows joined with the laptop's report (inputs, step count, timeout, estimate). Display help only. */
+  workflowsFor(contractWorkflows: string[], left?: { turnsLeft: number; msLeft: number }) {
+    const rep = new Map((loadWorkflowReport(this.c.sql)?.workflows ?? []).map((c) => [c.name, c]));
+    return contractWorkflows.map((name) => {
+      const c = rep.get(name);
+      return { name, on_laptop: !!c, inputs: c ? c.inputs : null, steps: c ? c.steps : null, timeoutMs: c ? c.timeoutMs : null, ...this.costOf(c?.estimate, left) };
+    });
+  }
+
+  /** The declared estimate, and (given what is left of the key's budget today) whether it fits. A warning never blocks anything. */
+  private costOf(estimate: { minutes?: number; claudeTurns?: number } | undefined, left?: { turnsLeft: number; msLeft: number }) {
+    if (!estimate) return { estimate: null };
+    if (!left) return { estimate };
+    const f = estimateFits(estimate, left);
+    return { estimate, fits_budget: f.fits, ...(f.warning ? { warning: f.warning } : {}) };
   }
 }

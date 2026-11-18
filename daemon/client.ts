@@ -11,6 +11,7 @@ import { listReport } from "./commands.ts";
 import { throttle } from "./progress.ts";
 import { rerunSafeCommands } from "./commands.ts";
 import { listPromptReport } from "./prompts.ts";
+import { listWorkflowReport } from "./workflows.ts";
 import { MAX_RESULT_BYTES } from "../shared/limits.ts";
 import type { JobMsg } from "./tasks.ts";
 import type { Usage } from "../shared/claude-budget.ts";
@@ -27,6 +28,7 @@ export function gitCommit(): string | null {
   }
 }
 const COMMIT = gitCommit();
+const MAX_FORWARDED_PARTIALS = 2000;
 
 export const wsUrl = (url: string) => url.replace(/^http/, "ws").replace(/\/+$/, "") + "/daemon";
 
@@ -82,9 +84,10 @@ export function run(cfg: Config, log: (s: string) => void = console.log): Promis
           const abort = new AbortController();
           running.set(job.id, abort);
           const progress = throttle<{ text: string; pct?: number }>(p => send({ type: "progress", id: job.id, ...p }), 500);
+          let partials = 0; // a runaway script cannot flood the socket: the Hub keeps only the latest 200 anyway
           let usage: Usage | undefined; // claude jobs: turns and wall time, for the Hub's daily budget
           try {
-            const result = await runTask(job, verdict.resolved, abort.signal, (text, pct) => progress.push(pct === undefined ? { text } : { text, pct }), u => { usage = u; });
+            const result = await runTask(job, verdict.resolved, abort.signal, (text, pct) => progress.push(pct === undefined ? { text } : { text, pct }), u => { usage = u; }, value => { if (partials++ < MAX_FORWARDED_PARTIALS) send({ type: "partial", id: job.id, value }); });
             progress.stop();
             if (!abort.signal.aborted) {
               // The Hub refuses a result over the cap; say so here, in words, instead of sending megabytes it will drop.
@@ -101,7 +104,7 @@ export function run(cfg: Config, log: (s: string) => void = console.log): Promis
         working[lane] = false;
       };
 
-      ws.on("open", () => send({ type: "hello", version: VERSION, ...(COMMIT ? { commit: COMMIT } : {}), last_seq: loadLastSeq(), commands: listReport(), rerunSafe: rerunSafeCommands(), prompts: listPromptReport(), lanes: { commands: hintsFromTimeouts(commandTimeouts()) } }));
+      ws.on("open", () => send({ type: "hello", version: VERSION, ...(COMMIT ? { commit: COMMIT } : {}), last_seq: loadLastSeq(), commands: listReport(), rerunSafe: rerunSafeCommands(), prompts: listPromptReport(), workflows: listWorkflowReport(), lanes: { commands: hintsFromTimeouts(commandTimeouts()) } }));
       ws.on("message", raw => {
         let m: any;
         try {

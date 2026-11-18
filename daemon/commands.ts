@@ -5,10 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import { buildArgv as buildArgvShared } from "../shared/args.ts";
 import { COMMAND_RE } from "../shared/contract.ts";
+import { parseEstimate, type Estimate } from "../shared/estimate.ts";
 import { sanitizeReport, type ArgSpec, type ReportedCommand } from "../shared/projects.ts";
 
 export type { ArgSpec, ReportedCommand };
-export type Command = { script: string; args: Record<string, ArgSpec>; timeoutMs: number; cwd: string; rerunSafe: boolean; project?: string; output?: "json" };
+export type Command = { script: string; args: Record<string, ArgSpec>; timeoutMs: number; cwd: string; rerunSafe: boolean; project?: string; output?: "json"; estimate?: Estimate };
 
 export const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -36,7 +37,7 @@ export function loadCommand(name: unknown, home = os.homedir()): { command: Comm
   }
   if (c.output !== undefined && c.output !== "json") return { error: `command “${name}” has a bad output (only "json" is known)` };
   const timeoutMs = typeof c.timeoutMs === "number" && c.timeoutMs > 0 ? c.timeoutMs : DEFAULT_TIMEOUT_MS;
-  return { command: { script: c.script, args, timeoutMs, cwd: c.cwd, rerunSafe: c.rerunSafe === true, ...(c.output === "json" ? { output: "json" as const } : {}), ...(typeof c.project === "string" ? { project: c.project } : {}) } };
+  return { command: { script: c.script, args, timeoutMs, cwd: c.cwd, rerunSafe: c.rerunSafe === true, ...(c.output === "json" ? { output: "json" as const } : {}), ...(typeof c.project === "string" ? { project: c.project } : {}), ...(parseEstimate(c.estimate) ? { estimate: parseEstimate(c.estimate) } : {}) } };
 }
 
 /** What the daemon tells the Hub on hello: name, project tag, arg specs and timeout for every registered command.
@@ -55,7 +56,7 @@ export function listReport(home = os.homedir()): ReportedCommand[] {
   for (const name of Object.keys(reg)) {
     const r = loadCommand(name, home);
     if ("error" in r) continue;
-    out.push({ name, project: r.command.project ?? null, args: r.command.args, timeoutMs: r.command.timeoutMs });
+    out.push({ name, project: r.command.project ?? null, args: r.command.args, timeoutMs: r.command.timeoutMs, ...(r.command.estimate ? { estimate: r.command.estimate } : {}) });
   }
   return sanitizeReport(out);
 }

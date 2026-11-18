@@ -16,6 +16,7 @@ export const NAV = [
   { group: "Using it", pages: [
     { slug: "admin-ui", title: "The admin app", summary: "A tour of every page." },
     { slug: "extension", title: "The browser extension", summary: "See what needs you, from your toolbar." },
+    { slug: "pipelines", title: "Batches and workflows", summary: "Partial results, a list one at a time or three at a time, and multi-step pipelines." },
     { slug: "mcp", title: "Claude and other apps (MCP)", summary: "Tokens, scopes and the plugin." },
   ] },
   { group: "Reference", pages: [
