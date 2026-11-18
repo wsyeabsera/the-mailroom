@@ -37,6 +37,16 @@ export function loadCommand(name: unknown, home = os.homedir()): { command: Comm
   return { command: { script: c.script, args, timeoutMs, cwd: c.cwd } };
 }
 
+/** Every registered command's timeoutMs, for the hello lane report. Never throws; an unreadable registry reports nothing (all runs are long). */
+export function commandTimeouts(home = os.homedir()): Record<string, number> {
+  const out: Record<string, number> = {};
+  try {
+    const reg = JSON.parse(fs.readFileSync(path.join(home, ".mailroom", "commands.json"), "utf8"));
+    for (const [name, c] of Object.entries<any>(reg ?? {})) out[name] = c && typeof c.timeoutMs === "number" && c.timeoutMs > 0 ? c.timeoutMs : DEFAULT_TIMEOUT_MS;
+  } catch { /* no registry */ }
+  return out;
+}
+
 /** Checks the job's args against the command's schema and builds the argv: `--name value` pairs, a boolean is a bare `--name` when true. */
 export function buildArgv(cmd: Command, given: unknown): { argv: string[] } | { error: string } {
   if (given === undefined || given === null) given = {};

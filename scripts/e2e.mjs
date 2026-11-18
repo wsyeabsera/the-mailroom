@@ -196,6 +196,27 @@ j = await mr.wait(nextJob.id, { intervalMs: 1000, timeoutMs: 20000 });
 ok(j.state === "done" && j.result?.echo === "after cancel", "the daemon takes the next job after the cancel");
 ok((await mr.get(sub.id)).state === "cancelled", "the cancelled job stays cancelled");
 
+// Lanes: a long job (the slow script has the default 5 minute timeout, so it is `long`) must not block a short echo.
+console.log("lanes: long does not block short");
+const longJob = await mr.submit("run", { command: "slow", args: { mode: "hang" } });
+await untilSlow(async () => (await mr.get(longJob.id)).state === "running", 20000);
+const longSelf = readPid("self"), longGrand = readPid("grandchild");
+const shortJob = await mr.submit("echo", { text: "beside the long one" });
+j = await mr.wait(shortJob.id, { intervalMs: 1000, timeoutMs: 15000 });
+ok(j.state === "done" && j.result?.echo === "beside the long one", "a short echo finishes while the long job is still running");
+ok((await mr.get(longJob.id)).state === "running", "the long job is still running after the short one finished");
+const behind = await mr.submit("run", { command: "slow", args: { mode: "quick" } });
+await sleep(1500);
+ok((await mr.get(behind.id)).state === "queued", "a second long job waits its turn (one job per lane)");
+const cl = await mr.cancel(longJob.id);
+ok(cl.state === "cancelled", "cancel of the long job answers cancelled");
+ok(await until(async () => !alive(longSelf) && !alive(longGrand), 10000), "the cancelled long job's process tree is gone");
+const afterCancel = await mr.submit("echo", { text: "short lane after cancel" });
+j = await mr.wait(afterCancel.id, { intervalMs: 1000, timeoutMs: 15000 });
+ok(j.state === "done" && j.result?.echo === "short lane after cancel", "the short lane keeps working after the long one is cancelled");
+j = await mr.wait(behind.id, { intervalMs: 1000, timeoutMs: 30000 });
+ok(j.state === "done", "the queued long job runs once its lane is free");
+
 // The laptop policy ceiling: a contract that allows a command the policy does not list is refused by the daemon.
 mkdirSync(join(home, ".mailroom"), { recursive: true });
 writeFileSync(join(home, ".mailroom/policy.json"), JSON.stringify({ folders: [allowed], tasks: ["echo", "read_file", "write_file", "run"], commands: ["greet", "slow"] }), { mode: 0o600 });
@@ -231,7 +252,7 @@ ok(r.status === 401, "a revoked key stops at once");
 
 console.log("overview counts");
 r = await owner("GET", "/admin/state");
-ok(r.json.counts.done === 8 && r.json.counts.refused === 5 && r.json.counts.queued === 0, `today's counts are true (done ${r.json.counts.done}, refused ${r.json.counts.refused}, queued ${r.json.counts.queued})`);
+ok(r.json.counts.done === 11 && r.json.counts.refused === 5 && r.json.counts.queued === 0, `today's counts are true (done ${r.json.counts.done}, refused ${r.json.counts.refused}, queued ${r.json.counts.queued})`);
 ok(r.json.daemon.connected === true, "overview says the laptop is connected");
 
 console.log("events");

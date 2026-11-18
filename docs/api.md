@@ -58,14 +58,16 @@ Timeouts: a job that outruns its time limit ends `failed` with reason `timed out
 Bad or missing credential: 401, no upgrade. One live daemon at a time: a new valid connection replaces the old (old gets close code 4002). Messages are JSON text frames.
 
 Daemon -> Hub:
-- `{type:"hello", version:"0.2.0", last_seq:N}` first. Hub marks the daemon connected, appends `daemon.connected`, replies `{type:"welcome", server_seq:N}`, then pushes every `queued` job in created order (one at a time, next after the previous result).
+- `{type:"hello", version:"0.2.0", last_seq:N, lanes?:{commands:{<name>:"short"|"long"}}}` first. Hub marks the daemon connected, appends `daemon.connected`, replies `{type:"welcome", server_seq:N}`, then pushes `queued` jobs in created order, at most one in flight per lane (see Lanes below). `lanes.commands` lists every command in the laptop's registry as `short` when its `timeoutMs` is 60000 or less, else `long`. A hello without `lanes` is an old daemon: one lane, one job at a time, as before.
 - `{type:"result", id, ok:true, result:<any JSON>}` -> job `done`. `{type:"result", id, ok:false, error:"..."}` -> job `failed` with `reason`. `{type:"refuse", id, reason}` -> job `refused` (the daemon's own contract re-check said no).
 - `{type:"progress", id, text, pct?}` (daemon to Hub) -> stored as the latest progress of the job. `text` is capped at 500 chars, `pct` is clamped to 0..100. Accepted only for the job currently running on that daemon (anything else is ignored), cleared if the job is requeued, and returned as `progress` by the gateway and the admin job views. The daemon sends at most 2 per second. A `run` script reports by printing `MAILROOM_PROGRESS [<pct> ]<text>` lines on stderr (parsed by `daemon/progress.ts`); the `claude` task reports nothing.
 - `{type:"pong"}` for each `{type:"ping"}` (Hub pings every 25 s; no pong in 60 s -> treated as disconnected).
 
 Hub -> Daemon:
-- `{type:"job", id, task, args, contract:<Contract>, contract_version:N}` (job becomes `running`, event `job.running`).
+- `{type:"job", id, task, args, lane:"short"|"long", contract:<Contract>, contract_version:N}` (job becomes `running`, event `job.running`).
 - `{type:"cancel", id}` when a running or queued job is cancelled, by key revoke or by the client (`POST /api/jobs/:id/cancel`). The daemon aborts it, kills the child's whole process group (children are spawned detached and killed with `kill -pgid`, helper `daemon/proc.ts` `killTree`), and sends no result.
+
+Lanes: `short` = `echo`, `read_file`, `write_file`, and `run` of a command reported short in hello; `long` = `claude`, any other `run` (the Hub cannot know a command's timeout unless the daemon reported it, so unreported means long), and anything else. A long job never delays a short one; two long jobs (or two short ones) still run one after the other in created order. Cancel is by job id and works in either lane. The hint is a separate hello field (`lanes`) because the projects work's hello `commands` list was not in this tree. Logic lives in `shared/lanes.ts`.
 
 On close the Hub appends `daemon.disconnected`; `running` jobs of that daemon go back to `queued`. The daemon reconnects with backoff 1s -> 30s and runs jobs in order.
 

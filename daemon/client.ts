@@ -1,6 +1,8 @@
 import WebSocket from "ws";
 import { loadLastSeq, saveLastSeq } from "./config.ts";
 import type { Config } from "./config.ts";
+import { commandTimeouts } from "./commands.ts";
+import { hintsFromTimeouts, laneOf, type Lane } from "../shared/lanes.ts";
 import { recheck, runTask } from "./tasks.ts";
 import { throttle } from "./progress.ts";
 import type { JobMsg } from "./tasks.ts";
@@ -40,15 +42,16 @@ export function run(cfg: Config, log: (s: string) => void = console.log): Promis
 
     const connect = () => {
       const ws = new WebSocket(wsUrl(cfg.url), { headers: { Authorization: `Bearer ${cfg.credential}` }, handshakeTimeout: 10000 });
-      const queue: JobMsg[] = [];
+      const queues: Record<Lane, JobMsg[]> = { short: [], long: [] }; // strict order within a lane
       const cancelled = new Set<string>();
-      let current: { id: string; abort: AbortController } | null = null;
-      let working = false;
+      const running = new Map<string, AbortController>(); // job id -> its abort controller, one per busy lane
+      const working: Record<Lane, boolean> = { short: false, long: false };
       const send = (m: unknown) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(m));
 
-      const pump = async () => {
-        if (working) return;
-        working = true;
+      const pump = async (lane: Lane) => {
+        if (working[lane]) return;
+        working[lane] = true;
+        const queue = queues[lane];
         while (queue.length && ws.readyState === WebSocket.OPEN) {
           const job = queue.shift()!;
           if (cancelled.delete(job.id)) continue;
@@ -58,7 +61,7 @@ export function run(cfg: Config, log: (s: string) => void = console.log): Promis
             continue;
           }
           const abort = new AbortController();
-          current = { id: job.id, abort };
+          running.set(job.id, abort);
           const progress = throttle<{ text: string; pct?: number }>(p => send({ type: "progress", id: job.id, ...p }), 500);
           try {
             const result = await runTask(job, verdict.resolved, abort.signal, (text, pct) => progress.push(pct === undefined ? { text } : { text, pct }));
@@ -68,12 +71,12 @@ export function run(cfg: Config, log: (s: string) => void = console.log): Promis
             progress.stop();
             if (!abort.signal.aborted) send({ type: "result", id: job.id, ok: false, error: (e as Error).message });
           }
-          current = null;
+          running.delete(job.id);
         }
-        working = false;
+        working[lane] = false;
       };
 
-      ws.on("open", () => send({ type: "hello", version: VERSION, last_seq: loadLastSeq() }));
+      ws.on("open", () => send({ type: "hello", version: VERSION, last_seq: loadLastSeq(), lanes: { commands: hintsFromTimeouts(commandTimeouts()) } }));
       ws.on("message", raw => {
         let m: any;
         try {
@@ -87,12 +90,14 @@ export function run(cfg: Config, log: (s: string) => void = console.log): Promis
           if (Number.isInteger(m.server_seq)) saveLastSeq(m.server_seq);
           log("connected to the Hub");
         } else if (m.type === "job" && typeof m.id === "string") {
-          queue.push(m);
-          void pump();
+          // The Hub names the lane; fall back to our own rule if it did not (never trust it beyond the two names).
+          const lane: Lane = m.lane === "short" || m.lane === "long" ? m.lane : laneOf(m.task, m.args);
+          queues[lane].push(m);
+          void pump(lane);
         } else if (m.type === "cancel") {
-          const cur = current as { id: string; abort: AbortController } | null;
-          if (cur && cur.id === m.id) cur.abort.abort();
-          else if (queue.some(j => j.id === m.id)) cancelled.add(m.id);
+          const abort = running.get(m.id);
+          if (abort) abort.abort();
+          else if (queues.short.some(j => j.id === m.id) || queues.long.some(j => j.id === m.id)) cancelled.add(m.id);
         }
       });
       ws.on("unexpected-response", (_q, res) => {
@@ -102,8 +107,9 @@ export function run(cfg: Config, log: (s: string) => void = console.log): Promis
       });
       ws.on("error", () => {}); // 'close' follows
       ws.on("close", code => {
-        current?.abort.abort(); // the Hub requeues running jobs when we drop
-        queue.length = 0;
+        for (const a of running.values()) a.abort(); // the Hub requeues running jobs when we drop
+        queues.short.length = 0;
+        queues.long.length = 0;
         if (stopped) return;
         if (code === 4001) fatal({ code, message: "The daemon credential was rotated. Run `mailroom login` with the new credential." });
         else if (code === 4002) fatal({ code, message: "Replaced by another daemon. Exiting." });

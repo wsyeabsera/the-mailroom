@@ -5,6 +5,7 @@ import { cancelAction } from "../shared/cancel.ts";
 import { bearer, credentialHint, displayPrefix, generateAdminToken, generateDaemonCredential, generateKey, hashToken, makeId, safeEqual, safeEqualSecret, tokenKind, validateTokenInput } from "./keys.ts";
 import { formatFieldErrors, handleMcpText, ToolError, type McpApi } from "./mcp.ts";
 import { checkLogin, clearFailures, LOGIN_TABLE, recordFailure, type Sql } from "./login-limit.ts";
+import { laneKey, laneOf, parseHello, pickNext, type LaneHints } from "../shared/lanes.ts";
 import { SESSION_SECONDS, sessionCookie, signSession } from "./session.ts";
 
 export interface Env {
@@ -38,7 +39,8 @@ const utcMidnight = (now: number) => now - (now % 86_400_000);
 export class Hub extends DurableObject<Env> {
   private sql: Sql;
   private daemon: Daemon | null = null;
-  private inflight: string | null = null;
+  private inflight = new Map<string, string>(); // lane key -> running job id (see shared/lanes.ts)
+  private laneMode: { hints: LaneHints } | null = null; // null = old daemon: one lane
   private lastSeq = 0; // last seq the daemon said it saw
   private subs = new Set<ReadableStreamDefaultController<Uint8Array>>();
   private sseTimer: ReturnType<typeof setInterval> | null = null;
@@ -193,7 +195,7 @@ export class Hub extends DurableObject<Env> {
       if (action === "conflict") return err(409, "not_cancellable", { state: cj.state });
       this.setState(cj, "cancelled", "cancelled by client"); // appends job.cancelled
       if (action === "stop") {
-        if (this.inflight === cj.id) this.inflight = null;
+        this.clearInflight(cj.id);
         this.send({ type: "cancel", id: cj.id });
       }
       this.pushNext();
@@ -419,7 +421,7 @@ export class Hub extends DurableObject<Env> {
       this.setState(j, "cancelled", "key revoked");
       cancelled++;
       if (wasRunning) {
-        if (this.inflight === j.id) this.inflight = null;
+        this.clearInflight(j.id);
         this.send({ type: "cancel", id: j.id });
       }
     }
@@ -707,6 +709,7 @@ export class Hub extends DurableObject<Env> {
     if (m.type === "hello") {
       if (dm.hello) return;
       dm.hello = true;
+      this.laneMode = parseHello(m.lanes);
       this.lastSeq = Number.isInteger(m.last_seq) ? m.last_seq : 0;
       this.sql.run("UPDATE daemon SET connected = 1 WHERE id = 1");
       this.event("daemon.connected", {});
@@ -718,7 +721,7 @@ export class Hub extends DurableObject<Env> {
     const j = this.one("SELECT * FROM jobs WHERE id = ?", m.id);
     if (!j || j.state !== "running") return; // late or stray (e.g. cancelled): ignore
     if (m.type === "progress") {
-      if (typeof m.text !== "string" || this.inflight !== j.id) return;
+      if (typeof m.text !== "string" || !this.isInflight(j.id)) return;
       const pct = typeof m.pct === "number" && Number.isFinite(m.pct) ? Math.min(100, Math.max(0, m.pct)) : null;
       this.sql.run("INSERT OR REPLACE INTO job_progress (job_id, text, pct, at) VALUES (?, ?, ?, ?)", j.id, m.text.slice(0, 500), pct, Date.now());
       return;
@@ -728,7 +731,7 @@ export class Hub extends DurableObject<Env> {
       else this.setState(j, "failed", typeof m.error === "string" ? m.error.slice(0, 2000) : "failed");
     } else if (m.type === "refuse") this.setState(j, "refused", typeof m.reason === "string" ? m.reason.slice(0, 2000) : "refused by laptop");
     else return;
-    if (this.inflight === j.id) this.inflight = null;
+    this.clearInflight(j.id);
     this.pushNext();
   }
 
@@ -739,26 +742,31 @@ export class Hub extends DurableObject<Env> {
     if (code) { try { dm.ws.close(code, code === 4001 ? "rotated" : code === 4002 ? "replaced" : "closing"); } catch { /* already closed */ } }
     if (this.daemon !== dm) return;
     this.daemon = null;
-    this.inflight = null;
+    this.inflight.clear();
+    this.laneMode = null;
     this.sql.run("UPDATE daemon SET connected = 0 WHERE id = 1");
     if (dm.hello) this.event("daemon.disconnected", {});
     for (const j of this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'running' ORDER BY created_at, id")) this.setState(j, "queued", "laptop disconnected");
   }
 
-  /** Pushes the oldest queued job when the daemon is idle, re-checking its contract first. One job at a time. */
+  private isInflight(id: string) { return [...this.inflight.values()].includes(id); }
+  private clearInflight(id: string) { for (const [k, v] of this.inflight) if (v === id) this.inflight.delete(k); }
+
+  /** Pushes the oldest queued job of every free lane, re-checking its contract first. One job per lane (one in all for an old daemon). */
   private pushNext() {
     for (let guard = 0; guard < 1000; guard++) {
-      if (!this.daemon?.hello || this.inflight) return;
-      const j = this.one("SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at, id LIMIT 1");
+      if (!this.daemon?.hello) return;
+      const queued = this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at, id LIMIT 500").map(r => ({ row: r, task: r.task as string, args: parse(r.args) }));
+      const j = pickNext(queued, new Set(this.inflight.keys()), this.laneMode)?.row;
       if (!j) return;
       const reason = this.recheck(j);
       if (reason) { this.setState(j, "refused", reason); continue; }
       const c = this.contractRow(j.contract_id)!;
-      const ok = this.send({ type: "job", id: j.id, task: j.task, args: parse(j.args), contract: parse(c.body), contract_version: c.version });
+      const lane = laneOf(j.task, parse(j.args), this.laneMode?.hints);
+      const ok = this.send({ type: "job", id: j.id, task: j.task, args: parse(j.args), lane, contract: parse(c.body), contract_version: c.version });
       if (!ok) return;
-      this.inflight = j.id;
+      this.inflight.set(laneKey(!!this.laneMode, lane), j.id);
       this.setState(j, "running");
-      return;
     }
   }
 }
