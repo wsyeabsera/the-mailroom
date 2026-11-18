@@ -50,7 +50,8 @@ export function recheck(job: JobMsg, now = Date.now(), home = os.homedir()): { r
   return { resolved: real };
 }
 
-export async function runTask(job: JobMsg, resolved: string | null, signal: AbortSignal): Promise<unknown> {
+export async function runTask(job: JobMsg, resolved: string | null, signal: AbortSignal, report: (text: string, pct?: number) => void = () => {}): Promise<unknown> {
+  void report; // `run` scripts report via parseProgressLine on stderr; the claude task reports nothing
   const a = job.args;
   switch (job.task) {
     case "echo":

@@ -53,6 +53,7 @@ export class Hub extends DurableObject<Env> {
       "CREATE TABLE IF NOT EXISTS keys (id TEXT PRIMARY KEY, label TEXT NOT NULL, prefix TEXT NOT NULL, hash TEXT NOT NULL, contract_id TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER, last_used_at INTEGER)",
       "CREATE TABLE IF NOT EXISTS contracts (id TEXT PRIMARY KEY, name TEXT NOT NULL, body TEXT NOT NULL, version INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
       "CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, key_id TEXT NOT NULL, contract_id TEXT NOT NULL, contract_version INTEGER NOT NULL, task TEXT NOT NULL, args TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, result TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS job_progress (job_id TEXT PRIMARY KEY, text TEXT NOT NULL, pct REAL, at INTEGER NOT NULL)",
       "CREATE INDEX IF NOT EXISTS jobs_key ON jobs (key_id, created_at)",
       "CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL)",
       "CREATE TABLE IF NOT EXISTS daemon (id INTEGER PRIMARY KEY CHECK (id = 1), hash TEXT NOT NULL, hint TEXT, rotated_at INTEGER NOT NULL, last_seen INTEGER, connected INTEGER NOT NULL DEFAULT 0)",
@@ -93,14 +94,19 @@ export class Hub extends DurableObject<Env> {
 
   private jobOut = (r: Row) => ({
     id: r.id, key_id: r.key_id, contract_id: r.contract_id, contract_version: r.contract_version, task: r.task, args: parse(r.args), state: r.state,
-    reason: r.reason ?? undefined, result: parse(r.result), created_at: r.created_at, updated_at: r.updated_at,
+    reason: r.reason ?? undefined, result: parse(r.result), progress: this.progressOf(r.id), created_at: r.created_at, updated_at: r.updated_at,
   });
+  private progressOf(id: string) {
+    const p = this.one("SELECT text, pct, at FROM job_progress WHERE job_id = ?", id);
+    return p ? { text: p.text as string, ...(p.pct === null ? {} : { pct: p.pct as number }), at: p.at as number } : undefined;
+  }
 
   /** Moves a job to a new state, appends the event. `kind` defaults to job.<state>. */
   private setState(job: Row, state: string, reason?: string | null, result?: unknown, kind?: string) {
     const now = Date.now();
     this.sql.run("UPDATE jobs SET state = ?, reason = ?, result = ?, updated_at = ?, contract_version = ? WHERE id = ?", state, reason ?? null, result === undefined ? job.result ?? null : JSON.stringify(result), now, job.contract_version, job.id);
     job.state = state;
+    if (state === "queued") this.sql.run("DELETE FROM job_progress WHERE job_id = ?", job.id); // a requeued job starts over
     const p: Record<string, unknown> = { job_id: job.id, key_id: job.key_id, task: job.task };
     if (reason) p.reason = reason;
     this.event(kind ?? `job.${state}`, p);
@@ -181,7 +187,7 @@ export class Hub extends DurableObject<Env> {
     const j = this.one("SELECT * FROM jobs WHERE id = ? AND key_id = ?", path.slice("/api/jobs/".length), k.id);
     if (!j) return err(404, "not_found");
     const o = this.jobOut(j);
-    return json({ id: o.id, state: o.state, reason: o.reason, result: o.result, created_at: o.created_at, updated_at: o.updated_at });
+    return json({ id: o.id, state: o.state, reason: o.reason, result: o.result, progress: o.progress, created_at: o.created_at, updated_at: o.updated_at });
   }
 
   private async submit(req: Request, k: Row): Promise<Response> {
@@ -675,6 +681,12 @@ export class Hub extends DurableObject<Env> {
     if (!dm.hello || typeof m.id !== "string") return;
     const j = this.one("SELECT * FROM jobs WHERE id = ?", m.id);
     if (!j || j.state !== "running") return; // late or stray (e.g. cancelled): ignore
+    if (m.type === "progress") {
+      if (typeof m.text !== "string" || this.inflight !== j.id) return;
+      const pct = typeof m.pct === "number" && Number.isFinite(m.pct) ? Math.min(100, Math.max(0, m.pct)) : null;
+      this.sql.run("INSERT OR REPLACE INTO job_progress (job_id, text, pct, at) VALUES (?, ?, ?, ?)", j.id, m.text.slice(0, 500), pct, Date.now());
+      return;
+    }
     if (m.type === "result") {
       if (m.ok === true) this.setState(j, "done", null, m.result ?? null);
       else this.setState(j, "failed", typeof m.error === "string" ? m.error.slice(0, 2000) : "failed");
