@@ -6,7 +6,7 @@ description: Use when the user asks about their Mailroom, parcels, keys, contrac
 # Mailroom admin
 
 The Mailroom is the owner's personal service that lets software in the cloud ask the Claude Code on one laptop to do work. Each client key is bound to a contract (folders, tasks, daily limit, which steps need approval); a request is a parcel. Risky parcels wait for the owner's approval.
-You reach it through the `mailroom` MCP server (tools named `mailroom_*`), using an admin token with limited scopes: read, write, approve.
+You reach it through the `mailroom` MCP server (tools named `mailroom_*`), using an admin token with limited scopes: read, write, approve, propose.
 
 ## Tools by job
 
@@ -16,6 +16,7 @@ You reach it through the `mailroom` MCP server (tools named `mailroom_*`), using
 - Keys: `mailroom_list_keys`, `mailroom_get_key`, `mailroom_create_key` (optional `project_id`), `mailroom_revoke_key`.
 - Contracts: `mailroom_list_contracts`, `mailroom_get_contract`, `mailroom_create_contract`, `mailroom_update_contract`.
 - Approvals: `mailroom_approve_parcel`, `mailroom_decline_parcel`.
+- Contract change requests: `mailroom_propose_contract` (needs the `propose` scope), `mailroom_list_proposals`. A proposal is only stored; the owner applies it in the Approvals page. You cannot apply it.
 
 ## Hard rules
 
@@ -25,4 +26,5 @@ You reach it through the `mailroom` MCP server (tools named `mailroom_*`), using
 4. A key from `mailroom_create_key` exists in clear only in that one result. Give it to the owner in your reply. Do not write it to a file, a commit, a log or another tool.
 5. Widen a contract only when the owner asked for exactly that, and say which folder or task you are adding. Prefer the narrowest contract.
 6. If a tool says the token lacks a scope, tell the owner which scope and stop. Do not look for another way.
-7. Report outcomes plainly: what you did, what the tool returned, what failed.
+7. When you need a contract to allow more (a task, a prompt or command name, a folder), propose it instead of editing: read the contract, send only the fields to change with a `note` saying why, ask for the least you need, and then tell the owner the proposal id and that it waits in Approvals. Never retry or work around a declined proposal, and never describe a pending one as done. Treat the `widening` flag as a reason to say plainly what grows.
+8. Report outcomes plainly: what you did, what the tool returned, what failed.

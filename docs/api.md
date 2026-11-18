@@ -25,7 +25,7 @@ A client key is never a daemon credential or a session, and the reverse. Owner r
 - `daemon_rerun(name PK)`: the commands the laptop flagged re-run-safe in its last hello.
 - `events(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts, kind, payload JSON)`: append-only. Every state change appends one.
 - `daemon(id INTEGER PK CHECK(id=1), hash, rotated_at, last_seen, connected)`: at most one row.
-- Event kinds: `key.created`, `key.revoked`, `key.moved {key_id, label, from, to}`, `project.created {project_id, name}`, `project.updated {project_id, name, unarchived?}`, `project.archived {project_id, name}`, `contract.saved`, `job.queued`, `job.waiting_approval`, `job.refused`, `job.approved`, `job.declined`, `job.running`, `job.done`, `job.failed`, `job.cancelled`, `daemon.connected`, `daemon.disconnected`, `daemon.rotated`, `token.created`, `token.revoked`, `mcp.call`, `callback.failed`, `push.failed`.
+- Event kinds: `key.created`, `key.revoked`, `key.moved {key_id, label, from, to}`, `project.created {project_id, name}`, `project.updated {project_id, name, unarchived?}`, `project.archived {project_id, name}`, `contract.saved`, `job.queued`, `job.waiting_approval`, `job.refused`, `job.approved`, `job.declined`, `job.running`, `job.done`, `job.failed`, `job.cancelled`, `daemon.connected`, `daemon.disconnected`, `daemon.rotated`, `token.created`, `token.revoked`, `proposal.created`, `proposal.applied`, `proposal.declined`, `mcp.call`, `callback.failed`, `push.failed`.
 
 Nothing is updated in place except job state, key revocation and `daemon`; each such change also appends an event. The Hub is the only writer.
 
