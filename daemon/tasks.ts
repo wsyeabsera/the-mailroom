@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { killTree, killTreeOnAbort, spawnTree, timeoutMessage } from "./proc.ts";
 import { check, normalizePath } from "../shared/contract.ts";
 import type { Contract } from "../shared/contract.ts";
 
@@ -77,27 +77,30 @@ export async function runTask(job: JobMsg, resolved: string | null, signal: Abor
 function runClaude(prompt: string, cwd: string, signal: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     if (!prompt) return reject(new Error("claude needs a prompt"));
-    const child = spawn("claude", ["-p", prompt], { cwd, stdio: ["ignore", "pipe", "pipe"], signal });
+    const child = spawnTree("claude", ["-p", prompt], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const unhook = killTreeOnAbort(child, signal);
     let out = Buffer.alloc(0);
     let err = "";
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      killTree(child);
     }, claudeTimeout());
-    child.stdout.on("data", (d: Buffer) => {
+    child.stdout!.on("data", (d: Buffer) => {
       if (out.length < MAX_BYTES) out = Buffer.concat([out, d]).subarray(0, MAX_BYTES);
     });
-    child.stderr.on("data", (d: Buffer) => {
+    child.stderr!.on("data", (d: Buffer) => {
       err = (err + d).slice(-2000);
     });
     child.on("error", e => {
       clearTimeout(timer);
+      unhook();
       reject(e);
     });
     child.on("close", code => {
       clearTimeout(timer);
-      if (timedOut) reject(new Error("claude timed out"));
+      unhook();
+      if (timedOut) reject(new Error(timeoutMessage(claudeTimeout())));
       else if (code !== 0) reject(new Error(`claude exited with ${code}: ${err.trim()}`));
       else resolve(out.toString("utf8"));
     });

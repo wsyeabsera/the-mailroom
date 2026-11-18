@@ -20,6 +20,7 @@ before(async () => {
   bin = path.join(home, "bin");
   fs.mkdirSync(bin);
   fs.writeFileSync(path.join(bin, "claude"), `#!/bin/sh
+case "$2" in tree*) rm -f "${home}/grandchild.pid"; (sleep 30 & echo $! > "${home}/grandchild.pid"; wait) & wait;; esac
 case "$2" in sleep*) echo $$ > "${home}/claude.pid"; exec sleep 30;; esac
 for a in "$@"; do echo "ARG:$a"; done
 echo "CWD:$(pwd -P)"
@@ -112,7 +113,7 @@ test("claude timeout kills the child", async () => {
   const t0 = Date.now();
   const m = await run("p_c3", "claude", { prompt: "sleep", cwd: "~/allowed" });
   assert.equal(m.ok, false);
-  assert.match(m.error, /timed out/);
+  assert.match(m.error, /^timed out after \d+s$/);
   assert.ok(Date.now() - t0 < 10000);
   const pid = Number(fs.readFileSync(path.join(home, "claude.pid"), "utf8"));
   await new Promise(r => setTimeout(r, 200));
@@ -138,4 +139,32 @@ test("cancel of a running job kills it and sends nothing", async () => {
   const m = await run("k2", "echo", { text: "after" });
   assert.equal(m.ok, true);
   assert.ok(!hub.messages.slice(before).some(x => x.id === "k1"));
+});
+
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const grandchild = async () => {
+  for (let i = 0; i < 40; i++) {
+    try { const n = Number(fs.readFileSync(path.join(home, "grandchild.pid"), "utf8")); if (n) return n; } catch { /* not yet */ }
+    await new Promise(r => setTimeout(r, 50));
+  }
+  throw new Error("grandchild never started");
+};
+
+test("cancel kills the whole process tree, grandchildren included", async () => {
+  hub.push(job("t1", "claude", { prompt: "tree", cwd: "~/allowed" }, C()));
+  const gc = await grandchild();
+  assert.ok(alive(gc));
+  hub.push({ type: "cancel", id: "t1" });
+  await new Promise(r => setTimeout(r, 400));
+  assert.equal(alive(gc), false);
+  assert.equal((await run("t2", "echo", { text: "free" })).ok, true);
+});
+
+test("timeout kills the whole tree and reports 'timed out after Ns'", async () => {
+  const m = await run("t3", "claude", { prompt: "tree", cwd: "~/allowed" });
+  assert.equal(m.ok, false);
+  assert.equal(m.error, "timed out after 2s"); // MAILROOM_CLAUDE_TIMEOUT_MS=1500 rounds to 2s
+  const gc = await grandchild();
+  await new Promise(r => setTimeout(r, 200));
+  assert.equal(alive(gc), false);
 });

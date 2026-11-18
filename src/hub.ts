@@ -1,6 +1,7 @@
 // The Hub: the one Durable Object and the only writer. SQLite state, append-only events, SSE replay, the daemon WebSocket.
 import { DurableObject } from "cloudflare:workers";
 import { check, validateContract, type Contract } from "../shared/contract.ts";
+import { cancelAction } from "../shared/cancel.ts";
 import { bearer, credentialHint, displayPrefix, generateAdminToken, generateDaemonCredential, generateKey, hashToken, makeId, safeEqual, safeEqualSecret, tokenKind, validateTokenInput } from "./keys.ts";
 import { formatFieldErrors, handleMcpText, ToolError, type McpApi } from "./mcp.ts";
 import { checkLogin, clearFailures, LOGIN_TABLE, recordFailure, type Sql } from "./login-limit.ts";
@@ -177,8 +178,23 @@ export class Hub extends DurableObject<Env> {
       if (req.method !== "POST") return err(405, "method_not_allowed");
       return this.submit(req, k);
     }
+    const rest = path.slice("/api/jobs/".length);
+    if (rest.endsWith("/cancel")) {
+      if (req.method !== "POST") return err(405, "method_not_allowed");
+      const cj = this.one("SELECT * FROM jobs WHERE id = ? AND key_id = ?", rest.slice(0, -"/cancel".length), k.id);
+      if (!cj) return err(404, "not_found");
+      const action = cancelAction(cj.state);
+      if (action === "conflict") return err(409, "not_cancellable", { state: cj.state });
+      this.setState(cj, "cancelled", "cancelled by client"); // appends job.cancelled
+      if (action === "stop") {
+        if (this.inflight === cj.id) this.inflight = null;
+        this.send({ type: "cancel", id: cj.id });
+      }
+      this.pushNext();
+      return json({ id: cj.id, state: "cancelled" });
+    }
     if (req.method !== "GET") return err(405, "method_not_allowed");
-    const j = this.one("SELECT * FROM jobs WHERE id = ? AND key_id = ?", path.slice("/api/jobs/".length), k.id);
+    const j = this.one("SELECT * FROM jobs WHERE id = ? AND key_id = ?", rest, k.id);
     if (!j) return err(404, "not_found");
     const o = this.jobOut(j);
     return json({ id: o.id, state: o.state, reason: o.reason, result: o.result, created_at: o.created_at, updated_at: o.updated_at });
