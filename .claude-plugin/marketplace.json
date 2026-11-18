@@ -1,0 +1,7 @@
+{
+  "name": "the-mailroom",
+  "owner": { "name": "The Mailroom" },
+  "plugins": [
+    { "name": "the-mailroom", "source": "./plugin", "description": "Administer your Mailroom from Claude Code: parcels, keys, contracts and approvals." }
+  ]
+}

@@ -4,6 +4,8 @@ import { deleteConfig, configPath, loadConfig, saveConfig } from "./config.ts";
 import { probe, run } from "./client.ts";
 import { loadPolicy, savePolicy, policyPath } from "./policy.ts";
 import * as service from "./service.ts";
+import { SCOPES, runPlugin, setupNote } from "./plugin.ts";
+import type { Scope } from "./plugin.ts";
 import { fileURLToPath } from "node:url";
 
 const HELP = `mailroom <command>
@@ -11,6 +13,8 @@ const HELP = `mailroom <command>
   run                                        connect to the Hub and do its jobs
   status                                     show the config and whether the Hub accepts the credential
   policy show|allow-folder <path>|allow-task <task>   the laptop ceiling the daemon never goes beyond (~/.mailroom/policy.json)
+  plugin install|uninstall [--scope user|project|local]   add the Claude Code plugin to the project in the current folder (default scope: project)
+  plugin install|uninstall [--scope user|project|local]   add the Claude Code plugin to the project in this folder (default: project)
   logout                                   delete the saved config
   service install|uninstall|status           keep the daemon running in the background (macOS launchd, starts at login)`;
 
@@ -82,6 +86,15 @@ async function main() {
         return st.running ? 0 : 1;
       }
       return fail("Usage: mailroom service install|uninstall|status");
+    }
+    case "plugin": {
+      const sub = args[0];
+      const scope = (flag(args, "scope") ?? "project") as Scope;
+      if ((sub !== "install" && sub !== "uninstall") || !SCOPES.includes(scope)) return fail("Usage: mailroom plugin install|uninstall [--scope user|project|local]");
+      const bad = runPlugin(sub, scope, process.cwd());
+      if (bad) return fail(bad);
+      console.log(sub === "install" ? `Installed the-mailroom (scope ${scope}) for ${process.cwd()}.\n${setupNote()}` : "Removed.");
+      return 0;
     }
     case "policy": {
       const sub = args[0];
