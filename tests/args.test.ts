@@ -24,7 +24,7 @@ test("buildArgv: unknown arg, bad enum, wrong type, required, length", () => {
 });
 
 test("the daemon's buildArgv is the shared one", () => {
-  const cmd = { script: "/x", args: S, timeoutMs: 1, cwd: "/" };
+  const cmd = { script: "/x", args: S, timeoutMs: 1, cwd: "/", rerunSafe: false };
   for (const given of [{ who: 5 }, { who: "a", mode: "no" }, { who: "a", z: 1 }, { who: "ok", loud: true }]) assert.deepEqual(daemonBuildArgv(cmd, given), buildArgv(S, given));
 });
 
