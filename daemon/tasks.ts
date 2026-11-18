@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { parseProgressLine } from "./progress.ts";
 import { killTree, killTreeOnAbort, spawnTree, timeoutMessage } from "./proc.ts";
-import { check, normalizePath } from "../shared/contract.ts";
+import { check, normalizePath, claudeCeiling } from "../shared/contract.ts";
 import type { Contract } from "../shared/contract.ts";
 import { buildArgv, loadCommand } from "./commands.ts";
 import { loadPolicy, exceeds } from "./policy.ts";
@@ -87,7 +87,7 @@ export async function runTask(job: JobMsg, resolved: string | null, signal: Abor
       return { bytes };
     }
     case "claude":
-      return { output: await runClaude(String(a.prompt ?? ""), resolved!, signal, a) };
+      return { output: await runClaude(String(a.prompt ?? ""), resolved!, signal, a, claudeCeiling(job.contract)) };
     case "run":
       return runCommand(a, resolved!, signal, report);
     default:
@@ -95,16 +95,22 @@ export async function runTask(job: JobMsg, resolved: string | null, signal: Abor
   }
 }
 
-function claudeOptions(a: Record<string, unknown>): { argv: string[]; json: boolean } {
+function claudeOptions(a: Record<string, unknown>, ceil: { tools: string[]; maxTurns: number }): { argv: string[]; json: boolean } {
   const argv: string[] = [];
-  if (a.allowedTools !== undefined) {
+  // Re-checked here so the daemon holds even if recheck were skipped; no option = the contract's defaults, never the CLI's.
+  if (a.allowedTools === undefined) argv.push("--allowedTools", ...ceil.tools);
+  else {
     const t = a.allowedTools;
     if (!Array.isArray(t) || t.length < 1 || t.length > 20) throw new Error("allowedTools must be an array of 1 to 20 strings");
     for (const x of t) if (typeof x !== "string" || !/^[\w:*() .\-]{1,100}$/.test(x)) throw new Error(`allowedTools has an invalid entry: ${JSON.stringify(x)}`);
+    const over = (t as string[]).filter(x => !ceil.tools.includes(x));
+    if (over.length) throw new Error(`allowedTools ${over.join(", ")} not allowed by the contract`);
     argv.push("--allowedTools", ...(t as string[]));
   }
-  if (a.maxTurns !== undefined) {
+  if (a.maxTurns === undefined) argv.push("--max-turns", String(ceil.maxTurns));
+  else {
     if (typeof a.maxTurns !== "number" || !Number.isInteger(a.maxTurns) || a.maxTurns < 1 || a.maxTurns > 50) throw new Error("maxTurns must be an integer from 1 to 50");
+    if (a.maxTurns > ceil.maxTurns) throw new Error(`maxTurns ${a.maxTurns} is more than the contract allows (${ceil.maxTurns})`);
     argv.push("--max-turns", String(a.maxTurns));
   }
   if (a.model !== undefined) {
@@ -116,12 +122,12 @@ function claudeOptions(a: Record<string, unknown>): { argv: string[]; json: bool
   return { argv, json: a.json === true };
 }
 
-function runClaude(prompt: string, cwd: string, signal: AbortSignal, args: Record<string, unknown> = {}): Promise<unknown> {
+function runClaude(prompt: string, cwd: string, signal: AbortSignal, args: Record<string, unknown> = {}, ceil = claudeCeiling({})): Promise<unknown> {
   return new Promise((resolve, reject) => {
     if (!prompt) return reject(new Error("claude needs a prompt"));
     let opts: { argv: string[]; json: boolean };
     try {
-      opts = claudeOptions(args);
+      opts = claudeOptions(args, ceil);
     } catch (e) {
       return reject(e);
     }

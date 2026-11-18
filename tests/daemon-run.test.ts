@@ -20,8 +20,9 @@ before(async () => {
   bin = path.join(home, "bin");
   fs.mkdirSync(bin);
   fs.writeFileSync(path.join(bin, "claude"), `#!/bin/sh
-case "$2" in tree*) rm -f "${home}/grandchild.pid"; (sleep 30 & echo $! > "${home}/grandchild.pid"; wait) & wait;; esac
-case "$2" in sleep*) echo $$ > "${home}/claude.pid"; exec sleep 30;; esac
+for a in "$@"; do last="$a"; done
+case "$last" in tree*) rm -f "${home}/grandchild.pid"; (sleep 30 & echo $! > "${home}/grandchild.pid"; wait) & wait;; esac
+case "$last" in sleep*) echo $$ > "${home}/claude.pid"; exec sleep 30;; esac
 for a in "$@"; do last="$a"; done
 case "$last" in jsonout*) echo '{"result":"ok","n":1}'; exit 0;; badjson*) echo 'not json'; exit 0;; esac
 for a in "$@"; do echo "ARG:$a"; done
@@ -103,7 +104,7 @@ test("claude: prompt is a single argv entry (no shell), cwd resolved", async () 
   const m = await run("p_c1", "claude", { prompt, cwd: "~/allowed" });
   assert.equal(m.ok, true);
   const lines = m.result.output.trim().split("\n");
-  assert.deepEqual(lines, ["ARG:-p", "ARG:" + prompt, "CWD:" + allowed]);
+  assert.deepEqual(lines, ["ARG:--allowedTools", "ARG:Read", "ARG:Glob", "ARG:Grep", "ARG:--max-turns", "ARG:10", "ARG:-p", "ARG:" + prompt, "CWD:" + allowed]);
   assert.ok(!fs.existsSync(path.join(home, "pwned")));
 });
 
@@ -144,10 +145,29 @@ test("cancel of a running job kills it and sends nothing", async () => {
 });
 
 test("claude options become argv entries before -p", async () => {
-  const m = await run("p_o1", "claude", { prompt: "hello", cwd: "~/allowed", allowedTools: ["Read", "Bash(git log:*)"], maxTurns: 3, model: "claude-opus-4[1m]" });
+  const m = await run("p_o1", "claude", { prompt: "hello", cwd: "~/allowed", allowedTools: ["Read", "Bash(git log:*)"], maxTurns: 3, model: "claude-opus-4[1m]" }, { ...C(), claudeTools: ["Read", "Bash(git log:*)"], claudeMaxTurns: 5 });
   assert.equal(m.ok, true);
   const o = m.result.output as string;
   assert.match(o, /ARG:--allowedTools\nARG:Read\nARG:Bash\(git log:\*\)\nARG:--max-turns\nARG:3\nARG:--model\nARG:claude-opus-4\[1m\]\nARG:-p\nARG:hello\n/);
+});
+
+test("claude with no options gets the contract defaults, not the CLI's", async () => {
+  const m = await run("p_o0", "claude", { prompt: "hello", cwd: "~/allowed" });
+  assert.equal(m.ok, true);
+  assert.match(m.result.output as string, /ARG:--allowedTools\nARG:Read\nARG:Glob\nARG:Grep\nARG:--max-turns\nARG:10\nARG:-p\nARG:hello\n/);
+  const w = await run("p_o0b", "claude", { prompt: "hello", cwd: "~/allowed" }, { ...C(), claudeTools: ["WebFetch", "WebSearch"], claudeMaxTurns: 6 });
+  assert.match(w.result.output as string, /ARG:--allowedTools\nARG:WebFetch\nARG:WebSearch\nARG:--max-turns\nARG:6\nARG:-p/);
+});
+
+test("claude job asking for a shell tool or 50 turns is refused (contract: web tools, 6 turns)", async () => {
+  const web = { ...C(), claudeTools: ["WebFetch", "WebSearch"], claudeMaxTurns: 6 };
+  const shell = await run("p_o4", "claude", { prompt: "x", cwd: "~/allowed", allowedTools: ["Bash"] }, web);
+  assert.equal(shell.type, "refuse");
+  assert.match(shell.reason, /"Bash"/);
+  const turns = await run("p_o5", "claude", { prompt: "x", cwd: "~/allowed", maxTurns: 50 }, web);
+  assert.equal(turns.type, "refuse");
+  assert.match(turns.reason, /maxTurns 50/);
+  assert.equal((await run("p_o6", "claude", { prompt: "x", cwd: "~/allowed", allowedTools: ["WebFetch"], maxTurns: 6 }, web)).ok, true);
 });
 
 test("claude json option returns parsed JSON", async () => {
@@ -165,7 +185,7 @@ test("claude rejects invalid options", async () => {
   ];
   for (const [i, b] of bads.entries()) {
     const m = await run(`p_ob${i}`, "claude", { prompt: "x", cwd: "~/allowed", ...b });
-    assert.equal(m.ok, false, JSON.stringify(b));
+    assert.ok(m.ok === false || m.type === "refuse", JSON.stringify(b));
   }
 });
 

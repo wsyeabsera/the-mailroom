@@ -232,6 +232,17 @@ ok(r.state === "queued" || r.state === "running" || r.state === "dispatched", `t
 j = await wide.wait(r.id, { intervalMs: 1000, timeoutMs: 20000 });
 ok(j?.state === "refused" && /rm-everything/.test(j.reason || "") && /policy/.test(j.reason || ""), `the daemon refuses: ${j?.reason}`);
 
+// A key whose contract allows only web tools and 6 turns cannot run a claude job asking for a shell tool or more turns.
+r = await owner("POST", "/admin/contracts", { name: "Web only", folders: [allowed], tasks: ["claude"], claudeTools: ["WebFetch", "WebSearch"], claudeMaxTurns: 6, dailyLimit: 50, expires: null, approval: [] });
+ok(r.status === 201 && r.json.claudeMaxTurns === 6 && r.json.claudeTools?.length === 2, "contract with claude ceilings created");
+const webContract = r.json.id;
+r = await owner("POST", "/admin/keys", { label: "web only", contract_id: webContract });
+const webKey = r.json.key;
+r = await client(webKey, "POST", "/api/jobs", { task: "claude", args: { prompt: "x", cwd: allowed, allowedTools: ["Bash"] } });
+ok(r.status === 403 && r.json.state === "refused" && /Bash/.test(r.json.reason || ""), `a shell tool is refused at the gateway: ${r.json.reason}`);
+r = await client(webKey, "POST", "/api/jobs", { task: "claude", args: { prompt: "x", cwd: allowed, maxTurns: 50 } });
+ok(r.status === 403 && r.json.state === "refused" && /maxTurns 50/.test(r.json.reason || ""), `50 turns is refused at the gateway: ${r.json.reason}`);
+
 console.log("offline queue");
 killGroup(d);
 ok(await until(async () => !(await owner("GET", "/admin/laptop")).json.connected, 90000), "laptop shows away after the daemon dies");
@@ -252,7 +263,7 @@ ok(r.status === 401, "a revoked key stops at once");
 
 console.log("overview counts");
 r = await owner("GET", "/admin/state");
-ok(r.json.counts.done === 11 && r.json.counts.refused === 5 && r.json.counts.queued === 0, `today's counts are true (done ${r.json.counts.done}, refused ${r.json.counts.refused}, queued ${r.json.counts.queued})`);
+ok(r.json.counts.done === 11 && r.json.counts.refused === 7 && r.json.counts.queued === 0, `today's counts are true (done ${r.json.counts.done}, refused ${r.json.counts.refused}, queued ${r.json.counts.queued})`);
 ok(r.json.daemon.connected === true, "overview says the laptop is connected");
 
 console.log("projects");

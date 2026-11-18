@@ -67,6 +67,21 @@
 <h2>logout</h2>
 <p>Deletes <code>~/.mailroom/config.json</code>. It prints "Logged out." or "Nothing to delete.". It does not touch the background service. A daemon that is already running keeps its connection until it stops, and after that it cannot start again. To fully stop, run <code>mailroom service uninstall</code> first, then <code>mailroom logout</code>.</p>
 
+<h2>policy</h2>
+<p>Sets the ceiling the daemon never goes beyond, whatever contract the Hub sends. It is stored in <code>~/.mailroom/policy.json</code>. Every subcommand saves the file and prints its path.</p>
+<table>
+<thead><tr><th>Run</th><th>Does</th></tr></thead>
+<tbody>
+<tr><td><code>mailroom policy show</code></td><td>Lists the folders, tasks, commands, <code>claude</code> tools and <code>claude</code> turns the policy allows. Tools and turns say "(default)" when unset: Read, Glob, Grep and 10 turns.</td></tr>
+<tr><td><code>mailroom policy allow-folder &lt;path&gt;</code></td><td>Lets contracts use this folder or anything inside it.</td></tr>
+<tr><td><code>mailroom policy allow-task &lt;task&gt;</code></td><td>Lets contracts use this task.</td></tr>
+<tr><td><code>mailroom policy allow-command &lt;name&gt;</code></td><td>Lets contracts name this command for the <code>run</code> task. The name is letters, numbers, dots and dashes, up to 60.</td></tr>
+<tr><td><code>mailroom policy allow-claude-tool &lt;tool&gt;</code></td><td>Lets contracts grant this tool to the <code>claude</code> task, like <code>'Bash(git log:*)'</code>.</td></tr>
+<tr><td><code>mailroom policy claude-max-turns &lt;n&gt;</code></td><td>Sets the most turns a contract may grant a <code>claude</code> job (1 to 50).</td></tr>
+</tbody>
+</table>
+<p>When the daemon refuses a job because of the policy, the reason names the exact folder, task, command or tool and the line to run, for example <code>contract commands deploy-notes are not allowed by the laptop policy. To allow: mailroom policy allow-command deploy-notes</code>.</p>
+
 <h2>service install, uninstall, status</h2>
 <p>macOS only. They manage a launchd user agent (the system's own way to keep a program running) that starts <code>mailroom run</code> at login and restarts it if it stops.</p>
 <ul>

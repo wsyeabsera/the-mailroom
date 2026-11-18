@@ -30,6 +30,7 @@ export function render(view, _p, ctx) {
         h("div", { class: "kv", style: "margin-bottom:16px" }, h("span", { class: "mono" }, hint), h("span", { class: "f" }, l.rotated_at ? `rotated ${dayMonth(l.rotated_at)}` : "never rotated")),
         h("button", { class: "btn", type: "button", onclick: () => confirmRotate() }, "Rotate credential…")));
     body.append(h("div", { class: "row" }, status, cred));
+    body.append(h("p", { class: "m", style: "max-width:640px" }, "A parcel the laptop refuses because of its own policy says which folder, task, command or tool to allow, and the command to run on the laptop, like ", h("code", null, "mailroom policy allow-command deploy-notes"), "."));
     if (l.queue.length || !l.connected) {
       body.append(h("div", { class: "card", style: "max-width:640px" }, h("div", { class: "ch" }, h("h2", null, "In the queue"), tag(plural(l.queue.length, "parcel"))),
         l.queue.length ? h("table", null, l.queue.map((j) => h("tr", null, h("td", null, h("a", { class: "mono", href: "#/parcels/" + enc(j.id) }, j.id)), h("td", null, j.task), h("td", { class: "f" }, labels.get(j.key_id) || j.key_id))))
