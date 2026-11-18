@@ -6,6 +6,8 @@ import { loadPolicy, savePolicy, policyPath, policyClaude } from "./policy.ts";
 import { COMMAND_RE, PROMPT_RE, CLAUDE_TOOL_RE } from "../shared/contract.ts";
 import * as service from "./service.ts";
 import { purgeLogs, readLog } from "./logs.ts";
+import { doctor, explain, fetchFromHub } from "./doctor.ts";
+import fs from "node:fs";
 import { SCOPES, runPlugin, setupNote } from "./plugin.ts";
 import type { Scope } from "./plugin.ts";
 import { fileURLToPath } from "node:url";
@@ -17,6 +19,8 @@ const HELP = `mailroom <command>
   policy show|allow-folder <path>|allow-task <task>|allow-command <name>|allow-prompt <name>|allow-claude-tool <tool>|claude-max-turns <n>|logs on|off   the laptop ceiling the daemon never goes beyond (~/.mailroom/policy.json)
   plugin install|uninstall [--scope user|project|local]   add the Claude Code plugin to the project in the current folder (default scope: project)
   plugin install|uninstall [--scope user|project|local]   add the Claude Code plugin to the project in this folder (default: project)
+  doctor [--contracts file.json] [--token mra_...]   check commands.json, prompts.json, policy.json and mcp.json (and the Hub's contracts) and print each problem with its fix
+  explain <key label> '<job json>' [--contract file.json] [--token mra_...]   say which rule would refuse a job, without running it
   logs <job id>                              print the owner-only debug log of a claude or ask job (reply and turns; kept 7 days; never sent to the Hub)
   logout                                   delete the saved config
   service install|uninstall|restart|status   keep the daemon running in the background (macOS launchd, starts at login)`;
@@ -171,6 +175,49 @@ async function main() {
         return 0;
       }
       return fail("Usage: mailroom policy show|allow-folder <path>|allow-task <task>|allow-command <name>|allow-prompt <name>|allow-claude-tool <tool>|claude-max-turns <n>|logs on|off");
+    }
+    case "doctor": {
+      let contracts: any[] | null = null;
+      const file = flag(args, "contracts");
+      const token = flag(args, "token") ?? process.env.MAILROOM_ADMIN_TOKEN;
+      try {
+        if (file) { const j = JSON.parse(fs.readFileSync(file, "utf8")); contracts = Array.isArray(j) ? j : [j]; }
+        else if (token) {
+          const cfg = loadConfig();
+          if (!cfg) return fail("Not logged in, so the Hub URL is unknown. Run `mailroom login` first, or pass --contracts <file>.");
+          contracts = (await fetchFromHub(cfg.url, token)).contracts;
+        }
+      } catch (e) { return fail(`Could not read the contracts: ${(e as Error).message}`); }
+      const found = doctor({ contracts });
+      for (const f of found) console.log(`${f.level === "error" ? "ERROR" : f.level === "warn" ? "warn " : "info "} ${f.message}${f.fix ? `\n      fix: ${f.fix}` : ""}`);
+      const errors = found.filter(f => f.level === "error").length;
+      console.log(errors ? `${errors} problem${errors === 1 ? "" : "s"} found.` : "No problems found.");
+      return errors ? 1 : 0;
+    }
+    case "explain": {
+      const [label, jobText] = [args[0], args[1]];
+      if (!label || !jobText) return fail("Usage: mailroom explain <key label> '<job json, like {\"task\":\"run\",\"args\":{...}}>' [--contract file.json] [--token mra_...]");
+      let job: any;
+      try { job = JSON.parse(jobText); } catch { return fail("The job is not valid JSON."); }
+      if (!job || typeof job.task !== "string") return fail('The job needs a "task", like {"task":"echo","args":{"text":"hi"}}.');
+      let contract: any;
+      try {
+        const file = flag(args, "contract");
+        const token = flag(args, "token") ?? process.env.MAILROOM_ADMIN_TOKEN;
+        if (file) contract = JSON.parse(fs.readFileSync(file, "utf8"));
+        else if (token) {
+          const cfg = loadConfig();
+          if (!cfg) return fail("Not logged in, so the Hub URL is unknown. Run `mailroom login` first, or pass --contract <file>.");
+          const hub = await fetchFromHub(cfg.url, token);
+          const keys = hub.keys.filter(k => k.label === label && !k.revoked_at);
+          if (keys.length !== 1) return fail(keys.length ? `${keys.length} keys are labelled “${label}”.` : `No live key is labelled “${label}”.`);
+          contract = hub.contracts.find(c => c.id === keys[0].contract.id);
+          if (!contract) return fail("That key's contract was not found.");
+        } else return fail("explain needs the key's contract: pass --token mra_... (a read-scope admin token, or env MAILROOM_ADMIN_TOKEN) or --contract <file.json>.");
+      } catch (e) { return fail(`Could not get the contract: ${(e as Error).message}`); }
+      const r = explain(contract, { task: job.task, args: job.args ?? {} });
+      for (const l of r.lines) console.log(l);
+      return r.refused ? 1 : 0;
     }
     case "logs": {
       if (!args[0]) return fail("Usage: mailroom logs <job id>");

@@ -96,10 +96,24 @@
 }</code></pre>
 <p><code>project</code> is the id of a Hub project (<code>pr_1000</code>, shown on the Projects page and in <code>GET /admin/projects</code>). It is only a tag: it decides which project's Commands tab lists the command and nothing else. It does not allow, deny or limit anything, and a wrong or missing tag never stops a job. When the daemon connects it reports each command's name, tag, arg specs and timeout to the Hub (never the script path or folder). See <a href="/docs/projects">Projects</a>.</p>
 
+<h2>doctor</h2>
+<p><code>mailroom doctor [--contracts file.json] [--token mra_...]</code> checks this laptop's setup and prints each problem with the command that fixes it. It runs nothing. Exit code 1 if it found an error, otherwise 0.</p>
+<ul>
+  <li>File modes: <code>commands.json</code>, <code>prompts.json</code>, <code>mcp.json</code>, <code>policy.json</code>, <code>config.json</code> must not be readable by others (<code>chmod 600 ...</code>).</li>
+  <li>Each command: the script exists, is executable, has a <code>#!</code> line whose interpreter (often <code>node</code>) is found on the PATH the background service uses (a Mac service gets a short PATH, so a script that works in your shell can fail there), and its folder exists and is inside the policy.</li>
+  <li>Each prompt: its folder, its tools against the policy (<code>mailroom policy allow-claude-tool ...</code>), and that <code>claude</code> is on the service PATH.</li>
+  <li>With contracts (a file exported from the Hub, or a read-scope admin token that lets doctor ask the Hub): contract folders, tasks, commands, prompts and tools against the policy; commands and prompts a contract names that are not registered; registry entries no contract uses.</li>
+</ul>
+<h2>explain</h2>
+<p><code>mailroom explain &lt;key label&gt; '&lt;job json&gt;' [--token mra_...] [--contract file.json]</code> runs the two checks a real job meets without running anything: the Hub's contract check, then the laptop's own (contract, policy, registry). It says which one refuses and why, with the same words a real refusal has. For example <code>mailroom explain "tv app" '{"task":"run","args":{"command":"scan","args":{}}}'</code>. It does not check the daily limit or Claude budget, or whether the script itself succeeds.</p>
+<h2>logs</h2>
+<p><code>mailroom logs &lt;job id&gt;</code> prints what Claude said in a <code>claude</code> or <code>ask</code> job: the turns and the raw reply. The Hub only ever gets a character count; this file stays on the laptop (<code>~/.mailroom/logs/</code>, mode 0600, deleted after 7 days). <code>mailroom policy logs off</code> stops writing it.</p>
+
 <h2>service install, uninstall, status</h2>
 <p>macOS only. They manage a launchd user agent (the system's own way to keep a program running) that starts <code>mailroom run</code> at login and restarts it if it stops.</p>
 <ul>
   <li><code>install</code> needs you to be logged in. It writes the definition, loads it and waits a couple of seconds to see if the daemon is running. Running it again replaces the running copy. It prints where the log is. Exit 0 if it is running, 1 if not.</li>
+  <li><code>restart</code> replaces the running copy with a fresh one, so it runs the code on disk. Use it when the Laptop page says the daemon is older than the Hub.</li>
   <li><code>uninstall</code> stops it and deletes the definition: "Service removed." or "No service was installed.".</li>
   <li><code>status</code> prints one line, then asks the Hub the same question as <code>mailroom status</code>. Exit 0 only if the service is running.</li>
 </ul>
