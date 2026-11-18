@@ -7,10 +7,11 @@ import { check, normalizePath } from "../shared/contract.ts";
 import type { Contract } from "../shared/contract.ts";
 import { buildArgv, loadCommand } from "./commands.ts";
 import { loadPolicy, exceeds } from "./policy.ts";
+import { MAX_RESULT_BYTES, MAX_WRITE_BYTES } from "../shared/limits.ts";
 
 export type JobMsg = { id: string; task: string; args: Record<string, unknown>; contract: Contract };
 
-export const MAX_BYTES = 200 * 1024;
+export { MAX_RESULT_BYTES, MAX_WRITE_BYTES };
 const claudeTimeout = () => Number(process.env.MAILROOM_CLAUDE_TIMEOUT_MS) || 5 * 60 * 1000;
 
 /** Expand ~, normalize, then realpath the deepest existing ancestor so symlinks cannot hide an escape. */
@@ -69,13 +70,13 @@ export async function runTask(job: JobMsg, resolved: string | null, signal: Abor
     case "read_file": {
       const st = fs.statSync(resolved!);
       if (!st.isFile()) throw new Error("not a file");
-      if (st.size > MAX_BYTES) throw new Error(`file is bigger than ${MAX_BYTES / 1024} KB`);
+      if (st.size > MAX_RESULT_BYTES) throw new Error(`file is bigger than ${MAX_RESULT_BYTES / 1024 / 1024} MB`);
       return { content: fs.readFileSync(resolved!, "utf8") };
     }
     case "write_file": {
       if (typeof a.content !== "string") throw new Error("write_file needs content");
       const bytes = Buffer.byteLength(a.content);
-      if (bytes > MAX_BYTES) throw new Error(`content is bigger than ${MAX_BYTES / 1024} KB`);
+      if (bytes > MAX_WRITE_BYTES) throw new Error(`content is bigger than ${MAX_WRITE_BYTES / 1024} KB`);
       fs.mkdirSync(path.dirname(resolved!), { recursive: true }); // inside the allowed folder: recheck proved it
       const tmp = `${resolved}.${process.pid}.${Date.now()}.tmp`;
       try {
@@ -136,7 +137,7 @@ function runClaude(prompt: string, cwd: string, signal: AbortSignal, args: Recor
       killTree(child);
     }, claudeTimeout());
     child.stdout!.on("data", (d: Buffer) => {
-      if (out.length < MAX_BYTES) out = Buffer.concat([out, d]).subarray(0, MAX_BYTES);
+      if (out.length < MAX_RESULT_BYTES) out = Buffer.concat([out, d]).subarray(0, MAX_RESULT_BYTES);
     });
     child.stderr!.on("data", (d: Buffer) => {
       err = (err + d).slice(-2000);
@@ -179,7 +180,7 @@ function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal
       killTree(child);
     }, c.command.timeoutMs);
     child.stdout!.on("data", (d: Buffer) => {
-      if (out.length < MAX_BYTES) out = Buffer.concat([out, d]).subarray(0, MAX_BYTES);
+      if (out.length < MAX_RESULT_BYTES) out = Buffer.concat([out, d]).subarray(0, MAX_RESULT_BYTES);
     });
     let pending = ""; // stderr arrives in chunks; a progress line may be split across them
     child.stderr!.on("data", (d: Buffer) => {

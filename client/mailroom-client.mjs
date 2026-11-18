@@ -33,16 +33,16 @@ export function createClient({ url, key, fetch: f = globalThis.fetch } = {}) {
   };
   const fail = ({ res, data }) => new MailroomError(data?.reason || data?.message || data?.error || `HTTP ${res.status}`, { status: res.status, code: data?.error, body: data });
 
-  // Send a parcel. A refused parcel (403) resolves with state "refused" and a reason rather than throwing.
-  async function submit(task, args = {}, { idempotency } = {}) {
-    const r = await call("POST", "/api/jobs", { task, args }, idempotency ? { "idempotency-key": idempotency } : {});
+  // Send a parcel. `label` (1-60 chars, optional) tags it, e.g. "test". `idempotency` makes a repeat within 24 h return the same parcel. A refused parcel (403) resolves with state "refused" and a reason rather than throwing.
+  async function submit(task, args = {}, { idempotency, label } = {}) {
+    const r = await call("POST", "/api/jobs", { task, args, ...(label !== undefined ? { label } : {}) }, idempotency ? { "idempotency-key": idempotency } : {});
     if (r.res.ok || (r.res.status === 403 && r.data?.state === "refused")) return r.data;
     throw fail(r);
   }
   async function get(jobId) {
     const r = await call("GET", `/api/jobs/${encodeURIComponent(jobId)}`);
     if (!r.res.ok) throw fail(r);
-    return r.data; // {id, state, reason?, result?, progress?: {text, pct?}, created_at, updated_at}
+    return r.data; // {id, state, label?, reason?, result?, progress?: {text, pct?}, created_at, updated_at}
   }
   // Poll until a finished state. Rejects on timeout (the parcel keeps going; cancel it if you must).
   /** @param {string} jobId @param {{ onProgress?: (p: { text: string, pct?: number }) => void, intervalMs?: number, timeoutMs?: number }} [o] */

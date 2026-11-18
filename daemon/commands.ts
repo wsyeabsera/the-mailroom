@@ -6,7 +6,7 @@ import path from "node:path";
 import { COMMAND_RE } from "../shared/contract.ts";
 
 export type ArgSpec = { type: "string" | "number" | "boolean" | "enum"; required?: boolean; maxLength?: number; values?: string[] };
-export type Command = { script: string; args: Record<string, ArgSpec>; timeoutMs: number; cwd: string };
+export type Command = { script: string; args: Record<string, ArgSpec>; timeoutMs: number; cwd: string; rerunSafe: boolean };
 
 export const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const STRING_MAX = 1000;
@@ -34,7 +34,8 @@ export function loadCommand(name: unknown, home = os.homedir()): { command: Comm
     args[k] = { type: s.type, required: s.required === true, maxLength: typeof s.maxLength === "number" ? s.maxLength : undefined, values: s.values };
   }
   const timeoutMs = typeof c.timeoutMs === "number" && c.timeoutMs > 0 ? c.timeoutMs : DEFAULT_TIMEOUT_MS;
-  return { command: { script: c.script, args, timeoutMs, cwd: c.cwd } };
+  // rerunSafe (default false): running it twice does no harm, so the Hub may requeue it if the laptop drops mid-run.
+  return { command: { script: c.script, args, timeoutMs, cwd: c.cwd, rerunSafe: c.rerunSafe === true } };
 }
 
 /** Checks the job's args against the command's schema and builds the argv: `--name value` pairs, a boolean is a bare `--name` when true. */
@@ -64,4 +65,15 @@ export function buildArgv(cmd: Command, given: unknown): { argv: string[] } | { 
     }
   }
   return { argv };
+}
+
+/** Names of the registered commands flagged `rerunSafe: true`. Sent to the Hub in the hello, read when the daemon connects. */
+export function rerunSafeCommands(home = os.homedir()): string[] {
+  let names: string[];
+  try {
+    names = Object.keys(JSON.parse(fs.readFileSync(path.join(home, ".mailroom", "commands.json"), "utf8")));
+  } catch {
+    return [];
+  }
+  return names.filter(n => { const c = loadCommand(n, home); return "command" in c && c.command.rerunSafe; });
 }

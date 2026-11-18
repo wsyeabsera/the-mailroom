@@ -54,8 +54,8 @@
 <table>
 <thead><tr><th>Method</th><th>Path</th><th>What it does</th><th>Success</th><th>Errors</th></tr></thead>
 <tbody>
-<tr><td>POST</td><td><code>/api/jobs</code></td><td>Send a parcel. Body <code>{"task":"echo|read_file|write_file|claude|run","args":{...}}</code>. The Hub checks it against the key's contract.</td><td>202 <code>queued</code> or <code>waiting_approval</code></td><td>403 refused (the body says why), 401, 413, 422 <code>invalid</code>, 429</td></tr>
-<tr><td>GET</td><td><code>/api/jobs/:id</code></td><td>Status and result of one of this key's own parcels.</td><td>200</td><td>401, 404 <code>not_found</code> (also for another key's parcel), 429</td></tr>
+<tr><td>POST</td><td><code>/api/jobs</code></td><td>Send a parcel. Body <code>{"task":"echo|read_file|write_file|claude|run","args":{...},"label":"test"}</code> (<code>label</code> optional, 1 to 60 characters). The Hub checks it against the key's contract. Header <code>Idempotency-Key</code> (optional): a repeat within 24 hours returns the original parcel with 200.</td><td>202 <code>queued</code> or <code>waiting_approval</code>; 200 for an idempotent repeat</td><td>403 refused (the body says why), 401, 409 <code>idempotency_conflict</code>, 413, 422 <code>invalid</code>, 429</td></tr>
+<tr><td>GET</td><td><code>/api/jobs/:id</code></td><td>Status, label and result of one of this key's own parcels. A result over 200 KB (up to 2 MB) is returned in full; the Hub keeps it 7 days, then it reads as <code>{"expired":true}</code>.</td><td>200</td><td>401, 404 <code>not_found</code> (also for another key's parcel), 429</td></tr>
 </tbody>
 </table>
 <p>The arguments each task needs: <code>echo</code> takes <code>text</code>; <code>read_file</code> takes <code>path</code>; <code>write_file</code> takes <code>path</code> and <code>content</code>; <code>claude</code> takes <code>prompt</code> and <code>cwd</code> (the folder to work in); <code>run</code> takes <code>command</code> (a name the contract lists) and <code>args</code> (an object the laptop checks against its own schema).</p>
@@ -137,7 +137,7 @@ HTTP 200
 <tr><td>POST</td><td><code>/admin/contracts</code></td><td>Make a contract: <code>name, folders, tasks, dailyLimit, expires, approval</code>.</td><td>201</td><td>422 <code>invalid</code> with a message per field</td></tr>
 <tr><td>GET</td><td><code>/admin/contracts/:id</code></td><td>One contract.</td><td>200</td><td>404</td></tr>
 <tr><td>PUT</td><td><code>/admin/contracts/:id</code></td><td>Replace a contract. The version goes up. It applies to the next parcel and re-checks queued ones.</td><td>200</td><td>404, 422</td></tr>
-<tr><td>GET</td><td><code>/admin/jobs</code></td><td>Parcels, newest first. <code>?state=</code> and <code>?limit=</code> (default 50, at most 500).</td><td>200</td><td></td></tr>
+<tr><td>GET</td><td><code>/admin/jobs</code></td><td>Parcels, newest first. <code>?state=</code>, <code>?label=</code> (exact) and <code>?limit=</code> (default 50, at most 500). <code>/admin/parcels</code> is the same route. Big results show as <code>{"$stored":{"bytes":N}}</code> in the list.</td><td>200</td><td></td></tr>
 <tr><td>GET</td><td><code>/admin/jobs/:id</code></td><td>One parcel with its timeline, a fresh contract check and its key.</td><td>200</td><td>404</td></tr>
 <tr><td>POST</td><td><code>/admin/jobs/:id/approve</code></td><td>Release a waiting parcel. It is checked again first; if it now breaks the contract it becomes <code>refused</code> instead.</td><td>200 (the parcel)</td><td>404, 409 <code>conflict</code> if not waiting</td></tr>
 <tr><td>POST</td><td><code>/admin/jobs/:id/decline</code></td><td>Turn a waiting parcel away (reason "declined by owner").</td><td>200 (the parcel)</td><td>404, 409 <code>conflict</code></td></tr>

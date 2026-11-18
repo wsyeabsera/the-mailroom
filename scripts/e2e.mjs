@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createClient } from "../client/mailroom-client.mjs";
 
-const PORT = 8801;
+const PORT = Number(process.env.E2E_PORT) || 8801; // E2E_PORT lets two runs coexist
 const BASE = `http://localhost:${PORT}`;
 const root = new URL("..", import.meta.url).pathname;
 const pass = readFileSync(join(root, ".dev.vars"), "utf8").match(/^OWNER_PASSWORD=(.*)$/m)[1];
@@ -44,7 +44,7 @@ async function until(fn, ms = 15000) { const t = Date.now(); while (Date.now() -
 const startDaemon = () => { const d = spawn("node", [join(root, "daemon/cli.ts"), "run"], { env: { ...process.env, HOME: home }, stdio: "ignore", detached: true }); procs.push(d); return d; };
 
 console.log("starting wrangler dev ...");
-const w = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--inspector-port", "9351", "--persist-to", join(tmp, "state")], { cwd: root, stdio: "ignore", detached: true });
+const w = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--inspector-port", String(PORT + 550), "--persist-to", join(tmp, "state")], { cwd: root, stdio: "ignore", detached: true });
 procs.push(w);
 if (!(await until(async () => { try { return (await fetch(BASE + "/admin/state")).status === 401; } catch { return false; } }, 60000))) { console.log("FAIL wrangler did not start"); process.exit(1); }
 
@@ -246,6 +246,130 @@ ok(seqs.every((s, i) => i === 0 || s > seqs[i - 1]), "events are in order");
   ok(first.events.map(e => e.seq).join() === "1,2,3", "without tail, limit=3 gives the first three events (replay)");
   ok(tail.events.length === 3 && tail.events.at(-1).seq === tail.last_seq && tail.events[0].seq === tail.last_seq - 2 && tail.events.every((e, i, a) => i === 0 || e.seq > a[i - 1].seq), "with tail=1, limit=3 gives the latest three, oldest first");
 }
+
+// ---- daily limit, idempotency, labels, big results, re-run safety ----
+console.log("cancelled parcels do not count toward the daily limit");
+r = await owner("POST", "/admin/contracts", { name: "Limit 2", folders: [allowed], tasks: ["write_file"], dailyLimit: 2, expires: null, approval: ["write_file"] });
+r = await owner("POST", "/admin/keys", { label: "limit key", contract_id: r.json.id });
+const limKey = r.json.key;
+const wf = () => client(limKey, "POST", "/api/jobs", { task: "write_file", args: { path: join(allowed, "never.txt"), content: "x" } });
+const w1 = await wf();
+const w2 = await wf();
+ok(w1.json.state === "waiting_approval" && w2.json.state === "waiting_approval", "two parcels use the limit of 2");
+r = await wf();
+ok(r.status === 403 && /daily limit/.test(r.json.reason), "a third is refused by the limit");
+r = await client(limKey, "POST", `/api/jobs/${w1.json.id}/cancel`);
+ok(r.json.state === "cancelled", "one parcel is cancelled");
+r = await wf();
+ok(r.status === 202 && r.json.state === "waiting_approval", "after the cancel there is room again (cancelled parcels do not count)");
+
+console.log("idempotency key");
+r = await owner("POST", "/admin/contracts", { name: "V05", folders: [allowed], tasks: ["echo", "read_file", "run"], commands: ["slow", "slowsafe"], dailyLimit: 500, expires: null, approval: [] });
+const v5Contract = r.json.id;
+r = await owner("POST", "/admin/keys", { label: "v05 key", contract_id: v5Contract });
+const v5 = r.json.key;
+writeFileSync(join(home, ".mailroom/policy.json"), JSON.stringify({ folders: [allowed], tasks: ["echo", "read_file", "write_file", "run"], commands: ["greet", "slow", "slowsafe"] }), { mode: 0o600 }); // the laptop ceiling now also lists slowsafe
+const post = async (k, body, headers = {}) => {
+  const rr = await fetch(BASE + "/api/jobs", { method: "POST", headers: { authorization: `Bearer ${k}`, "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
+  return { status: rr.status, json: await rr.json() };
+};
+const i1 = await post(v5, { task: "echo", args: { text: "once" } }, { "idempotency-key": "same-1" });
+ok(i1.status === 202 && !!i1.json.id, "first submit with an Idempotency-Key is accepted");
+const i2 = await post(v5, { task: "echo", args: { text: "once" } }, { "idempotency-key": "same-1" });
+ok((i2.status === 200 || i2.status === 202) && i2.json.id === i1.json.id, `a repeat returns the same job (${i2.status}, ${i2.json.id})`);
+const i3 = await post(v5, { args: { text: "once" }, task: "echo" }, { "idempotency-key": "same-1" });
+ok(i3.json.id === i1.json.id, "key order in the body does not matter");
+const i4 = await post(v5, { task: "echo", args: { text: "different" } }, { "idempotency-key": "same-1" });
+ok(i4.status === 409 && i4.json.error === "idempotency_conflict", "different args under the same key is 409");
+const i5 = await post(v5, { task: "echo", args: { text: "once" } }, { "idempotency-key": "same-2" });
+ok(i5.json.id && i5.json.id !== i1.json.id, "another key makes a new job");
+const i6 = await post(v5, { task: "echo", args: { text: "once" } });
+ok(i6.json.id && i6.json.id !== i1.json.id && i6.json.id !== i5.json.id, "no key: always a new job");
+const i7 = await post(v5, { task: "echo", args: { text: "once" } }, { "idempotency-key": "bad key with spaces" });
+ok(i7.status === 422 && !!i7.json.errors?.idempotency_key, "an invalid key is 422");
+const mrv5 = createClient({ url: BASE, key: v5 });
+const c1 = await mrv5.submit("echo", { text: "via client" }, { idempotency: "client-1" });
+const c2 = await mrv5.submit("echo", { text: "via client" }, { idempotency: "client-1" });
+ok(c1.id === c2.id, "the client helper's {idempotency} option works");
+j = await mrv5.wait(i1.json.id, { intervalMs: 1000, timeoutMs: 20000 });
+ok(j.state === "done", "and the job ran once");
+r = await owner("GET", "/admin/events?after=0&limit=1000");
+ok(r.json.events.filter(e => e.kind === "job.done" && e.payload.job_id === i1.json.id).length === 1, "exactly one job.done event for it");
+
+console.log("labels");
+const l1 = await mrv5.submit("echo", { text: "labelled" }, { label: "abilities test" });
+ok(!!l1.id, "a labelled parcel is accepted");
+const lj = await mrv5.wait(l1.id, { intervalMs: 1000, timeoutMs: 20000 });
+ok(lj.label === "abilities test", "GET /api/jobs/:id returns the label");
+const mk = await mrv5.submit("echo", { text: "markup" }, { label: "<img src=x onerror=alert(1)>" });
+ok(mk.id, "markup in a label is stored as text");
+r = await post(v5, { task: "echo", args: { text: "x" }, label: "x".repeat(61) });
+ok(r.status === 422 && !!r.json.errors?.label, "a label over 60 characters is 422");
+r = await post(v5, { task: "echo", args: { text: "x" }, label: "" });
+ok(r.status === 422, "an empty label is 422");
+r = await owner("GET", "/admin/parcels?label=" + encodeURIComponent("abilities test"));
+ok(r.status === 200 && r.json.length === 1 && r.json[0].id === l1.id && r.json[0].label === "abilities test", "GET /admin/parcels?label= filters by label");
+r = await owner("GET", "/admin/jobs?label=" + encodeURIComponent("abilities test") + "&state=done");
+ok(r.json.length === 1, "/admin/jobs takes the same filter, combined with state");
+r = await owner("GET", `/admin/jobs/${mk.id}`);
+ok(r.json.label === "<img src=x onerror=alert(1)>", "the admin job view returns the label verbatim (the UI shows it as text)");
+r = await owner("GET", "/admin/jobs?limit=500");
+ok(r.json.find(x => x.id === i1.json.id)?.label === undefined, "an unlabelled parcel has no label");
+
+console.log("big results");
+const big1 = "y".repeat(1024 * 1024);
+writeFileSync(join(allowed, "big1m.txt"), big1);
+writeFileSync(join(allowed, "big3m.txt"), "z".repeat(3 * 1024 * 1024));
+r = await mrv5.submit("read_file", { path: join(allowed, "big1m.txt") });
+j = await mrv5.wait(r.id, { intervalMs: 1000, timeoutMs: 30000 });
+ok(j.state === "done" && j.result?.content === big1, "a 1 MB file comes back whole through GET /api/jobs/:id");
+r = await owner("GET", `/admin/jobs/${r.id}`);
+ok(r.json.result?.content === big1, "the admin job view has the full result");
+r = await owner("GET", "/admin/jobs?limit=50");
+const bigRow = r.json.find(x => x.result?.$stored);
+ok(bigRow && bigRow.result.$stored.bytes > 1024 * 1024 && !JSON.stringify(bigRow).includes("yyyy"), "lists show a small stored-result marker, not the megabyte");
+r = await mrv5.submit("read_file", { path: join(allowed, "big3m.txt") });
+j = await mrv5.wait(r.id, { intervalMs: 1000, timeoutMs: 30000 });
+ok(j.state === "failed" && /bigger than 2 MB/.test(j.reason || ""), `over the 2 MB cap fails in words: ${j.reason}`);
+
+console.log("re-run safety");
+{
+  const reg = JSON.parse(readFileSync(join(home, ".mailroom/commands.json"), "utf8"));
+  reg.slowsafe = { ...reg.slow, rerunSafe: true };
+  writeFileSync(join(home, ".mailroom/commands.json"), JSON.stringify(reg), { mode: 0o600 });
+}
+r = await owner("POST", "/admin/keys", { label: "rerun key", contract_id: v5Contract }); // its own key: the rate limit is 60 a minute
+const mrr = createClient({ url: BASE, key: r.json.key });
+const reap = () => { for (const f of ["self", "grandchild"]) { try { process.kill(Number(readFileSync(`${pids}.${f}`, "utf8").trim()), "SIGKILL"); } catch {} } };
+const dropLaptop = async () => {
+  killGroup(d);
+  reap();
+  return until(async () => !(await owner("GET", "/admin/laptop")).json.connected, 90000);
+};
+const untilRunning = async id => until(async () => { await sleep(1500); const g = await mrr.get(id); return g.state === "running" && g.progress ? g : null; }, 30000);
+await dropLaptop();
+d = startDaemon(); // its hello now lists slowsafe as rerunSafe
+ok(await until(async () => (await owner("GET", "/admin/laptop")).json.connected), "daemon reconnected, reporting rerunSafe in its hello");
+const unsafe = await mrr.submit("run", { command: "slow", args: { mode: "hang" } });
+ok(!!(await untilRunning(unsafe.id)), "a non-re-run-safe command is running");
+ok(await dropLaptop(), "the laptop drops mid-run");
+j = await mrr.get(unsafe.id);
+ok(j.state === "failed" && j.reason === "laptop dropped mid-run; not re-run-safe", `it is not run again: ${j.state} (${j.reason})`);
+d = startDaemon();
+ok(await until(async () => (await owner("GET", "/admin/laptop")).json.connected), "daemon back");
+await sleep(2000);
+j = await mrr.get(unsafe.id);
+ok(j.state === "failed", "and it stays failed after the laptop returns");
+const safe = await mrr.submit("run", { command: "slowsafe", args: { mode: "hang" } });
+ok(!!(await untilRunning(safe.id)), "a re-run-safe command is running");
+ok(await dropLaptop(), "the laptop drops again");
+j = await mrr.get(safe.id);
+ok(j.state === "queued", `a re-run-safe job goes back to the queue: ${j.state}`);
+d = startDaemon();
+ok(!!(await untilRunning(safe.id)), "and it runs again when the laptop returns");
+await mrr.cancel(safe.id);
+ok(await until(async () => (await mrr.get(safe.id)).state === "cancelled"), "cancelled to clean up");
+reap();
 
 console.log(failed ? `\nE2E FAILED (${failed})` : "\nE2E PASSED");
 process.exit(failed ? 1 : 0);

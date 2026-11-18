@@ -5,6 +5,10 @@ import { cancelAction } from "../shared/cancel.ts";
 import { bearer, credentialHint, displayPrefix, generateAdminToken, generateDaemonCredential, generateKey, hashToken, makeId, safeEqual, safeEqualSecret, tokenKind, validateTokenInput } from "./keys.ts";
 import { formatFieldErrors, handleMcpText, ToolError, type McpApi } from "./mcp.ts";
 import { checkLogin, clearFailures, LOGIN_TABLE, recordFailure, type Sql } from "./login-limit.ts";
+import { fingerprint, idempotencyFresh, parseIdempotencyKey } from "./idempotency.ts";
+import { isRerunSafe, NOT_RERUN_SAFE_REASON, parseLabel, parseRerunSafe, REQUEUE_REASON, UNCOUNTED_SQL } from "./job-rules.ts";
+import { markerBytes, planResult, resultCutoff, resultExpired } from "./results.ts";
+import { MAX_RESULT_BYTES } from "../shared/limits.ts";
 import { SESSION_SECONDS, sessionCookie, signSession } from "./session.ts";
 
 export interface Env {
@@ -60,12 +64,18 @@ export class Hub extends DurableObject<Env> {
       "CREATE TABLE IF NOT EXISTS daemon (id INTEGER PRIMARY KEY CHECK (id = 1), hash TEXT NOT NULL, hint TEXT, rotated_at INTEGER NOT NULL, last_seen INTEGER, connected INTEGER NOT NULL DEFAULT 0)",
       "CREATE TABLE IF NOT EXISTS admin_tokens (id TEXT PRIMARY KEY, label TEXT NOT NULL, prefix TEXT NOT NULL, hash TEXT NOT NULL, scopes TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER, last_used_at INTEGER)",
       "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS job_results (job_id TEXT PRIMARY KEY, body TEXT NOT NULL, bytes INTEGER NOT NULL, stored_at INTEGER NOT NULL)", // results over 200 KB, kept 7 days
+      "CREATE INDEX IF NOT EXISTS job_results_at ON job_results (stored_at)",
+      "CREATE TABLE IF NOT EXISTS idempotency (key_id TEXT NOT NULL, idem_key TEXT NOT NULL, job_id TEXT NOT NULL, fp TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (key_id, idem_key))",
+      "CREATE TABLE IF NOT EXISTS daemon_rerun (name TEXT PRIMARY KEY)", // commands the laptop flagged re-run-safe in its last hello
       LOGIN_TABLE,
     ])
       this.sql.run(q);
+    try { this.sql.run("ALTER TABLE jobs ADD COLUMN label TEXT"); } catch { /* already there */ }
+    this.sweepResults();
     // A fresh instance has no socket: nothing can still be running.
     this.sql.run("UPDATE daemon SET connected = 0");
-    for (const j of this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'running'")) this.setState(j, "queued", "laptop disconnected");
+    for (const j of this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'running'")) this.requeueOrFail(j);
   }
 
   // ---- small helpers ----
@@ -95,17 +105,46 @@ export class Hub extends DurableObject<Env> {
 
   private jobOut = (r: Row) => ({
     id: r.id, key_id: r.key_id, contract_id: r.contract_id, contract_version: r.contract_version, task: r.task, args: parse(r.args), state: r.state,
-    reason: r.reason ?? undefined, result: parse(r.result), progress: this.progressOf(r.id), created_at: r.created_at, updated_at: r.updated_at,
+    label: r.label ?? undefined, reason: r.reason ?? undefined, result: parse(r.result), progress: this.progressOf(r.id), created_at: r.created_at, updated_at: r.updated_at,
   });
   private progressOf(id: string) {
     const p = this.one("SELECT text, pct, at FROM job_progress WHERE job_id = ?", id);
     return p ? { text: p.text as string, ...(p.pct === null ? {} : { pct: p.pct as number }), at: p.at as number } : undefined;
   }
 
+  /** The job's result in full: a big one is read from job_results (or reported as expired once it has been swept). */
+  private resultOf(r: Row): unknown {
+    const bytes = markerBytes(r.result);
+    if (bytes === null) return parse(r.result);
+    const big = this.one("SELECT body, stored_at FROM job_results WHERE job_id = ?", r.id);
+    if (!big || resultExpired(big.stored_at, Date.now())) return { expired: true, bytes };
+    return parse(big.body);
+  }
+  /** Removes big results older than 7 days. Runs when the Hub wakes, when a big result is stored and when one is read. */
+  private sweepResults() { this.sql.run("DELETE FROM job_results WHERE stored_at < ?", resultCutoff(Date.now())); }
+
+  /** A job that was running when the laptop dropped: queued again if re-running it is safe, otherwise failed. */
+  private requeueOrFail(j: Row) {
+    const safe = this.sql.all<Row>("SELECT name FROM daemon_rerun").map((r) => r.name as string);
+    if (isRerunSafe(j.task, parse(j.args), safe)) this.setState(j, "queued", REQUEUE_REASON);
+    else this.setState(j, "failed", NOT_RERUN_SAFE_REASON);
+  }
+
   /** Moves a job to a new state, appends the event. `kind` defaults to job.<state>. */
   private setState(job: Row, state: string, reason?: string | null, result?: unknown, kind?: string) {
     const now = Date.now();
-    this.sql.run("UPDATE jobs SET state = ?, reason = ?, result = ?, updated_at = ?, contract_version = ? WHERE id = ?", state, reason ?? null, result === undefined ? job.result ?? null : JSON.stringify(result), now, job.contract_version, job.id);
+    let stored: string | null = job.result ?? null;
+    if (result !== undefined) {
+      const plan = planResult(JSON.stringify(result) ?? "null");
+      if (plan.kind === "inline") stored = plan.json;
+      else if (plan.kind === "stored") {
+        this.sql.run("INSERT OR REPLACE INTO job_results (job_id, body, bytes, stored_at) VALUES (?, ?, ?, ?)", job.id, plan.body, plan.bytes, now);
+        this.sweepResults();
+        stored = plan.marker;
+      } else stored = null; // callers check size first; never keep an oversized result
+    }
+    this.sql.run("UPDATE jobs SET state = ?, reason = ?, result = ?, updated_at = ?, contract_version = ? WHERE id = ?", state, reason ?? null, stored, now, job.contract_version, job.id);
+    job.result = stored;
     job.state = state;
     if (state === "queued") this.sql.run("DELETE FROM job_progress WHERE job_id = ?", job.id); // a requeued job starts over
     const p: Record<string, unknown> = { job_id: job.id, key_id: job.key_id, task: job.task };
@@ -117,7 +156,7 @@ export class Hub extends DurableObject<Env> {
   private contractOut(r: Row) { return { id: r.id, ...(parse(r.body) as Contract), version: r.version, used_by: this.one("SELECT COUNT(*) AS n FROM keys WHERE contract_id = ? AND revoked_at IS NULL", r.id)!.n }; }
 
   private usedToday(keyId: string, now: number, excludeId?: string): number {
-    return this.one("SELECT COUNT(*) AS n FROM jobs WHERE key_id = ? AND created_at >= ? AND state != 'refused' AND id != ?", keyId, utcMidnight(now), excludeId ?? "")!.n;
+    return this.one(`SELECT COUNT(*) AS n FROM jobs WHERE key_id = ? AND created_at >= ? AND state NOT IN (${UNCOUNTED_SQL}) AND id != ?`, keyId, utcMidnight(now), excludeId ?? "")!.n;
   }
 
   private async readJson(req: Request): Promise<{ ok: true; body: any } | { ok: false; res: Response }> {
@@ -203,7 +242,8 @@ export class Hub extends DurableObject<Env> {
     const j = this.one("SELECT * FROM jobs WHERE id = ? AND key_id = ?", rest, k.id);
     if (!j) return err(404, "not_found");
     const o = this.jobOut(j);
-    return json({ id: o.id, state: o.state, reason: o.reason, result: o.result, progress: o.progress, created_at: o.created_at, updated_at: o.updated_at });
+    this.sweepResults();
+    return json({ id: o.id, state: o.state, label: o.label, reason: o.reason, result: this.resultOf(j), progress: o.progress, created_at: o.created_at, updated_at: o.updated_at });
   }
 
   private async submit(req: Request, k: Row): Promise<Response> {
@@ -211,6 +251,10 @@ export class Hub extends DurableObject<Env> {
     if (!r.ok) return r.res;
     const { task, args = {} } = r.body;
     const errors: Record<string, string> = {};
+    const lab = parseLabel(r.body.label);
+    if (!lab.ok) errors.label = lab.error;
+    const idem = parseIdempotencyKey(req.headers.get("Idempotency-Key"));
+    if (idem === "invalid") errors.idempotency_key = "Idempotency-Key must be 1 to 200 printable characters.";
     if (typeof task !== "string" || task.length === 0 || task.length > 40) errors.task = "task must be a string.";
     if (args === null || typeof args !== "object" || Array.isArray(args)) errors.args = "args must be an object.";
     else if (typeof task === "string") {
@@ -226,11 +270,23 @@ export class Hub extends DurableObject<Env> {
 
     const c = this.contractRow(k.contract_id)!;
     const now = Date.now();
+    // A repeat of the same Idempotency-Key within 24 h returns the original job instead of making a second one.
+    const fp = fingerprint(task, args);
+    if (typeof idem === "string") {
+      const prev = this.one("SELECT * FROM idempotency WHERE key_id = ? AND idem_key = ?", k.id, idem);
+      if (prev && idempotencyFresh(prev.created_at, now)) {
+        if (prev.fp !== fp) return err(409, "idempotency_conflict", { message: "This Idempotency-Key was already used with a different task or args." });
+        const pj = this.one("SELECT * FROM jobs WHERE id = ?", prev.job_id);
+        if (pj) return pj.state === "refused" ? json({ id: pj.id, state: pj.state, reason: pj.reason, idempotent_replay: true }, 403) : json({ id: pj.id, state: pj.state, idempotent_replay: true }, 200);
+      }
+      this.sql.run("DELETE FROM idempotency WHERE created_at < ?", now - 24 * 3600_000);
+    }
     const verdict = check(parse(c.body), { task, args }, { now, usedToday: this.usedToday(k.id, now) });
     const id = makeId("p_", this.next("job"));
     const state = verdict.verdict === "refuse" ? "refused" : verdict.verdict === "approve" ? "waiting_approval" : "queued";
-    this.sql.run("INSERT INTO jobs (id, key_id, contract_id, contract_version, task, args, state, reason, result, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
-      id, k.id, c.id, c.version, task, JSON.stringify(args), state, verdict.verdict === "refuse" ? verdict.reason : null, now, now);
+    this.sql.run("INSERT INTO jobs (id, key_id, contract_id, contract_version, task, args, state, reason, result, created_at, updated_at, label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)",
+      id, k.id, c.id, c.version, task, JSON.stringify(args), state, verdict.verdict === "refuse" ? verdict.reason : null, now, now, lab.ok ? lab.label : null);
+    if (typeof idem === "string") this.sql.run("INSERT OR REPLACE INTO idempotency (key_id, idem_key, job_id, fp, created_at) VALUES (?, ?, ?, ?, ?)", k.id, idem, id, fp, now);
     const job = this.one("SELECT * FROM jobs WHERE id = ?", id)!;
     this.event(`job.${state}`, { job_id: id, key_id: k.id, task, ...(verdict.verdict === "refuse" ? { reason: verdict.reason } : {}) });
     if (verdict.verdict === "refuse") return json({ id, state, reason: verdict.reason }, 403);
@@ -297,11 +353,11 @@ export class Hub extends DurableObject<Env> {
       return err(404, "not_found");
     }
 
-    if (route === "jobs") {
+    if (route === "jobs" || route === "parcels") { // "parcels" is an alias of "jobs"
       if (seg.length === 2) {
         if (m !== "GET") return err(405, "method_not_allowed");
         const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") ?? "50", 10) || 50, 1), 500);
-        return json(this.jobList(url.searchParams.get("state"), limit));
+        return json(this.jobList(url.searchParams.get("state"), limit, url.searchParams.get("label")));
       }
       const j = this.one("SELECT * FROM jobs WHERE id = ?", seg[2]);
       if (!j) return err(404, "not_found");
@@ -353,8 +409,9 @@ export class Hub extends DurableObject<Env> {
     return { connected: !!this.daemon?.hello, last_seen: d?.last_seen ?? null, last_seq: this.lastSeq, rotated_at: d?.rotated_at ?? null, hint: d?.hint ?? null };
   }
 
-  private jobList(state: string | null | undefined, limit: number) {
-    const rows = state ? this.sql.all<Row>("SELECT * FROM jobs WHERE state = ? ORDER BY created_at DESC, id DESC LIMIT ?", state, limit) : this.sql.all<Row>("SELECT * FROM jobs ORDER BY created_at DESC, id DESC LIMIT ?", limit);
+  private jobList(state: string | null | undefined, limit: number, label?: string | null) {
+    const where = [state ? "state = ?" : "", label ? "label = ?" : ""].filter(Boolean).join(" AND ");
+    const rows = this.sql.all<Row>(`SELECT * FROM jobs${where ? ` WHERE ${where}` : ""} ORDER BY created_at DESC, id DESC LIMIT ?`, ...[state, label].filter(Boolean), limit);
     return rows.map(this.jobOut);
   }
   // `tail` returns the LAST `limit` events after `after` (still oldest first): what a page wants on first load. Without it
@@ -453,7 +510,8 @@ export class Hub extends DurableObject<Env> {
     const v = check(parse(c.body), { task: j.task, args: parse(j.args) }, { now, usedToday: this.usedToday(j.key_id, now, j.id) });
     const k = this.one("SELECT id, label FROM keys WHERE id = ?", j.key_id);
     const timeline = this.sql.all<Row>("SELECT * FROM events WHERE json_extract(payload, '$.job_id') = ? ORDER BY seq", j.id).map(this.evOut);
-    return { ...this.jobOut(j), timeline, contract_check: v.verdict === "refuse" ? { verdict: v.verdict, reason: v.reason } : { verdict: v.verdict }, key: k ?? { id: j.key_id, label: "" } };
+    this.sweepResults();
+    return { ...this.jobOut(j), result: this.resultOf(j), timeline, contract_check: v.verdict === "refuse" ? { verdict: v.verdict, reason: v.reason } : { verdict: v.verdict }, key: k ?? { id: j.key_id, label: "" } };
   }
 
   /** Re-check a job against its contract's current text. Returns a refusal reason or null. */
@@ -555,7 +613,7 @@ export class Hub extends DurableObject<Env> {
     const fields = (errors: Record<string, string>) => new ToolError(`Nothing was saved. ${formatFieldErrors(errors)}`, errors);
     return {
       status: async () => this.stateObj(),
-      listParcels: async ({ state, limit }) => this.jobList(state, limit),
+      listParcels: async ({ state, limit, label }) => this.jobList(state, limit, label),
       getParcel: async (id) => this.jobDetailObj(need(this.one("SELECT * FROM jobs WHERE id = ?", id), `Parcel ${id}`)),
       listKeys: async () => this.sql.all<Row>("SELECT * FROM keys ORDER BY created_at DESC, id DESC").map((k) => this.keyOut(k)),
       getKey: async (id) => this.keyDetail(need(this.one("SELECT * FROM keys WHERE id = ?", id), `Key ${id}`)),
@@ -695,7 +753,7 @@ export class Hub extends DurableObject<Env> {
   }
 
   private onDaemonMessage(dm: Daemon, data: unknown) {
-    if (this.daemon !== dm || typeof data !== "string" || data.length > 4 * MAX_BODY) return;
+    if (this.daemon !== dm || typeof data !== "string" || data.length > 2 * MAX_RESULT_BYTES + MAX_BODY) return;
     let m: any;
     try { m = JSON.parse(data); } catch { return; }
     if (!m || typeof m.type !== "string") return;
@@ -708,6 +766,9 @@ export class Hub extends DurableObject<Env> {
       if (dm.hello) return;
       dm.hello = true;
       this.lastSeq = Number.isInteger(m.last_seq) ? m.last_seq : 0;
+      // Which commands the laptop says are safe to run twice (see isRerunSafe). A daemon that sends none has none.
+      this.sql.run("DELETE FROM daemon_rerun");
+      for (const n of parseRerunSafe(m.rerunSafe)) this.sql.run("INSERT OR IGNORE INTO daemon_rerun (name) VALUES (?)", n);
       this.sql.run("UPDATE daemon SET connected = 1 WHERE id = 1");
       this.event("daemon.connected", {});
       this.send({ type: "welcome", server_seq: this.lastEventSeq() });
@@ -724,7 +785,11 @@ export class Hub extends DurableObject<Env> {
       return;
     }
     if (m.type === "result") {
-      if (m.ok === true) this.setState(j, "done", null, m.result ?? null);
+      if (m.ok === true) {
+        const plan = planResult(JSON.stringify(m.result ?? null) ?? "null");
+        if (plan.kind === "too_large") this.setState(j, "failed", `result is bigger than ${MAX_RESULT_BYTES / 1024 / 1024} MB`);
+        else this.setState(j, "done", null, m.result ?? null);
+      }
       else this.setState(j, "failed", typeof m.error === "string" ? m.error.slice(0, 2000) : "failed");
     } else if (m.type === "refuse") this.setState(j, "refused", typeof m.reason === "string" ? m.reason.slice(0, 2000) : "refused by laptop");
     else return;
@@ -742,7 +807,7 @@ export class Hub extends DurableObject<Env> {
     this.inflight = null;
     this.sql.run("UPDATE daemon SET connected = 0 WHERE id = 1");
     if (dm.hello) this.event("daemon.disconnected", {});
-    for (const j of this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'running' ORDER BY created_at, id")) this.setState(j, "queued", "laptop disconnected");
+    for (const j of this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'running' ORDER BY created_at, id")) this.requeueOrFail(j);
   }
 
   /** Pushes the oldest queued job when the daemon is idle, re-checking its contract first. One job at a time. */

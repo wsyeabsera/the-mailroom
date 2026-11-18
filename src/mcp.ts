@@ -23,7 +23,7 @@ export class ToolError extends Error {
 /** "name: Give it a short name. folders: Allow at least one folder." for the contract editor's field messages. */
 export const formatFieldErrors = (errors: Record<string, string>): string => Object.entries(errors).map(([k, v]) => `${k}: ${v}`).join(" ");
 
-export type ParcelFilter = { state?: string; limit: number };
+export type ParcelFilter = { state?: string; label?: string; limit: number };
 export type McpApi = {
   status(): Promise<unknown>;
   listParcels(a: ParcelFilter): Promise<unknown>;
@@ -133,8 +133,8 @@ export const TOOLS: Tool[] = [
   {
     name: "mailroom_list_parcels", scope: "read",
     description: "List parcels (jobs that clients submitted), newest first. Optionally filter by state. Returns an array of parcels, each with id, key_id, task, args, state, reason, result and timestamps. Use mailroom_get_parcel for one parcel's full story.",
-    inputSchema: { type: "object", properties: { state: { type: "string", enum: ["queued", "waiting_approval", "running", "done", "failed", "refused", "expired", "cancelled"], description: "Only parcels in this state." }, limit: { type: "integer", minimum: 1, maximum: 200, description: "How many to return, 1 to 200 (default 50)." } }, additionalProperties: false },
-    run: (a, api) => api.listParcels({ state: a.state, limit: a.limit ?? 50 }),
+    inputSchema: { type: "object", properties: { state: { type: "string", enum: ["queued", "waiting_approval", "running", "done", "failed", "refused", "expired", "cancelled"], description: "Only parcels in this state." }, label: { type: "string", maxLength: 60, description: "Only parcels the client labelled exactly this (for example \"test\")." }, limit: { type: "integer", minimum: 1, maximum: 200, description: "How many to return, 1 to 200 (default 50)." } }, additionalProperties: false },
+    run: (a, api) => api.listParcels({ state: a.state, ...(a.label ? { label: a.label } : {}), limit: a.limit ?? 50 }),
   },
   {
     name: "mailroom_get_parcel", scope: "read", inputSchema: idArg("parcel", "p_1001"),

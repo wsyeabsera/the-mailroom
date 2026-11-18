@@ -148,7 +148,7 @@ export MAILROOM_TOKEN="mra_..."</code></pre>
 <thead><tr><th>Tool</th><th>Scope</th><th>What it does</th></tr></thead>
 <tbody>
 <tr><td><code>mailroom_status</code></td><td>read</td><td>The overview: laptop, counts, what needs you, latest events.</td></tr>
-<tr><td><code>mailroom_list_parcels</code></td><td>read</td><td>Parcels, newest first. Optional state and limit (1 to 200, default 50).</td></tr>
+<tr><td><code>mailroom_list_parcels</code></td><td>read</td><td>Parcels, newest first. Optional state, label (exact match, for example <code>test</code>) and limit (1 to 200, default 50). Each parcel shows its <code>label</code> if it has one.</td></tr>
 <tr><td><code>mailroom_get_parcel</code></td><td>read</td><td>One parcel with its timeline, contract check and key.</td></tr>
 <tr><td><code>mailroom_list_keys</code></td><td>read</td><td>Keys and their contracts. Never the secret.</td></tr>
 <tr><td><code>mailroom_get_key</code></td><td>read</td><td>One key, its contract and recent parcels.</td></tr>

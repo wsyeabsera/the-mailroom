@@ -92,7 +92,7 @@
 <tr><td>Session cookie flags</td><td>HttpOnly (scripts cannot read it), SameSite=Strict (not sent from other sites) and Secure (HTTPS only; the one exception is localhost for development).</td></tr>
 <tr><td>Login limiter</td><td>5 wrong passwords per 15 minutes per IP address. After that, sign-in answers 429 with the seconds to wait.</td></tr>
 <tr><td>Sign-in gate</td><td>The Worker answers every request before any file is served (<code>run_worker_first</code>). Without a session you get only the sign-in page and its own files. This includes these docs.</td></tr>
-<tr><td>Size and rate limits</td><td>Client API: body up to 256 KB, 60 requests a minute per key. MCP: body up to 64 KB, 120 requests a minute per token. Files the laptop reads or writes: up to 200 KB. A <code>claude</code> task has a 5 minute timeout and its output is cut at 200 KB.</td></tr>
+<tr><td>Size and rate limits</td><td>Client API: body up to 256 KB, 60 requests a minute per key. MCP: body up to 64 KB, 120 requests a minute per token. Files the laptop reads: up to 2 MB; files it writes: up to 200 KB. Results over 200 KB are kept 7 days. A <code>claude</code> task has a 5 minute timeout and its output is cut at 2 MB.</td></tr>
 <tr><td>Daily limit</td><td>Each contract caps parcels per key per UTC day: two keys on one contract each get the full limit. Cancelled parcels count; refused ones do not. The Hub counts them, not the client.</td></tr>
 <tr><td>No inbound connection</td><td>The daemon only dials out. It runs no server, so there is nothing to attack from the internet.</td></tr>
 </tbody>
