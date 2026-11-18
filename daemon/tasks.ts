@@ -13,6 +13,7 @@ import { parseAnswer } from "../shared/json-schema.ts";
 import { fillTemplate, loadPrompt, type Prompt } from "./prompts.ts";
 import { loadPolicy, exceeds } from "./policy.ts";
 import { writeLog } from "./logs.ts";
+import { mcpConfigArgs, mcpRefusal, mcpServerOf } from "./mcp.ts";
 import { MAX_RESULT_BYTES, MAX_WRITE_BYTES } from "../shared/limits.ts";
 
 export type JobMsg = { id: string; task: string; args: Record<string, unknown>; contract: Contract; budget?: { turns: number; ms: number } /* what is left of the key's claude day; from the Hub */ };
@@ -63,7 +64,18 @@ export function recheck(job: JobMsg, now = Date.now(), home = os.homedir()): { r
     if ("error" in p) return { reason: p.error };
     const f = fillTemplate(p.prompt, job.args.vars);
     if ("error" in f) return { reason: f.error };
+    // MCP tools: a prompt that names one needs the contract to allow exactly it and the laptop to have declared its server (mcp.json).
+    const mcpTools = p.prompt.tools.filter(t => mcpServerOf(t) !== null);
+    const ceilTools = claudeCeiling(job.contract).tools;
+    const missing = mcpTools.filter(t => !ceilTools.includes(t));
+    if (missing.length) return { reason: `prompt “${name}” needs the MCP tool ${missing.join(", ")}, which the contract does not allow (add it to the contract's claudeTools)` };
+    const undeclared = mcpRefusal(mcpTools, home);
+    if (undeclared) return { reason: `prompt “${name}”: ${undeclared}` };
     raw = p.prompt.cwd; // the laptop's registered cwd, not an arg
+  }
+  if (job.task === "claude" && Array.isArray(job.args.allowedTools)) {
+    const undeclared = mcpRefusal(job.args.allowedTools.filter((t: unknown): t is string => typeof t === "string"), home);
+    if (undeclared) return { reason: undeclared };
   }
   if (job.task === "run") {
     const c = loadCommand(job.args.command, home);
@@ -119,12 +131,14 @@ export async function runTask(job: JobMsg, resolved: string | null, signal: Abor
 
 function claudeOptions(a: Record<string, unknown>, ceil: { tools: string[]; maxTurns: number }): { argv: string[]; json: boolean; scratch: boolean } {
   const argv: string[] = [];
+  let toolsUsed: string[] = [];
   // Re-checked here so the daemon holds even if recheck were skipped; no option = the contract's defaults, never the CLI's.
   if (a.allowedTools === undefined) {
     // scratch default is read-only tools, clipped by the ceiling so a scratch job never gets more than the contract allows
     const def = a.scratch === true ? READ_ONLY_TOOLS.filter(x => ceil.tools.includes(x)) : ceil.tools;
     if (!def.length) throw new Error("scratch needs a read-only tool (Read, Grep or Glob) in the contract's claudeTools");
     argv.push("--allowedTools", ...def);
+    toolsUsed = def;
   }
   else {
     const t = a.allowedTools;
@@ -133,6 +147,7 @@ function claudeOptions(a: Record<string, unknown>, ceil: { tools: string[]; maxT
     const over = (t as string[]).filter(x => !ceil.tools.includes(x));
     if (over.length) throw new Error(`allowedTools ${over.join(", ")} not allowed by the contract`);
     argv.push("--allowedTools", ...(t as string[]));
+    toolsUsed = t as string[];
   }
   if (a.maxTurns === undefined) argv.push("--max-turns", String(ceil.maxTurns));
   else {
@@ -146,6 +161,9 @@ function claudeOptions(a: Record<string, unknown>, ceil: { tools: string[]; maxT
   }
   if (a.json !== undefined && typeof a.json !== "boolean") throw new Error("json must be true or false");
   if (a.scratch !== undefined && typeof a.scratch !== "boolean") throw new Error("scratch must be true or false");
+  const mcp = mcpConfigArgs(toolsUsed);
+  if ("error" in mcp) throw new Error(mcp.error);
+  argv.push(...mcp.argv);
   // --output-format is added by runClaude (always stream-json internally; json:true returns the final result object)
   return { argv, json: a.json === true, scratch: a.scratch === true };
 }
@@ -190,11 +208,16 @@ async function runAsk(job: JobMsg, cwd: string, signal: AbortSignal, report: (te
 }
 
 /** Builds claude's options from a registered prompt, clipped by the contract ceiling. Throws when nothing is left to run with. */
-export function askOptions(p: Prompt, ceil: { tools: string[]; maxTurns: number }): { argv: string[]; scratch: boolean } {
+export function askOptions(p: Prompt, ceil: { tools: string[]; maxTurns: number }, home = os.homedir()): { argv: string[]; scratch: boolean } {
   const tools = p.tools.filter(t => ceil.tools.includes(t));
   if (!tools.length) throw new Error(`none of the prompt's tools (${p.tools.join(", ")}) are allowed by the contract (it allows: ${ceil.tools.join(", ")})`);
+  const lost = p.tools.filter(t => mcpServerOf(t) !== null && !tools.includes(t)); // an MCP tool the prompt relies on is never silently dropped
+  if (lost.length) throw new Error(`the prompt needs the MCP tool ${lost.join(", ")}, which the contract does not allow`);
+  const mcp = mcpConfigArgs(tools, home);
+  if ("error" in mcp) throw new Error(mcp.error);
   const argv = ["--allowedTools", ...tools, "--max-turns", String(Math.min(p.maxTurns, ceil.maxTurns))];
   if (p.model) argv.push("--model", p.model);
+  argv.push(...mcp.argv);
   return { argv, scratch: p.scratch };
 }
 

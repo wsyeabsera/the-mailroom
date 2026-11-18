@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolvePathFor } from "./paths.ts";
-import { claudeCeiling, DEFAULT_CLAUDE_MAX_TURNS, DEFAULT_CLAUDE_TOOLS } from "../shared/contract.ts";
+import { claudeCeiling, DEFAULT_CLAUDE_MAX_TURNS, DEFAULT_CLAUDE_TOOLS, toolNameOk } from "../shared/contract.ts";
 
 export type Policy = { folders: string[]; tasks: string[]; commands?: string[]; prompts?: string[]; claudeTools?: string[]; claudeMaxTurns?: number; logs?: boolean };
 export type PolicyLoad = { policy: Policy | null } | { error: string };
@@ -34,7 +34,7 @@ export function loadPolicy(home = os.homedir()): PolicyLoad {
   }
   try {
     const p = JSON.parse(text);
-    if (!p || typeof p !== "object" || !strs(p.folders) || !strs(p.tasks) || (p.commands !== undefined && !strs(p.commands)) || (p.prompts !== undefined && !strs(p.prompts)) || (p.claudeTools !== undefined && !strs(p.claudeTools)) || (p.claudeMaxTurns !== undefined && !(Number.isInteger(p.claudeMaxTurns) && p.claudeMaxTurns >= 1)) || (p.logs !== undefined && typeof p.logs !== "boolean"))
+    if (!p || typeof p !== "object" || !strs(p.folders) || !strs(p.tasks) || (p.commands !== undefined && !strs(p.commands)) || (p.prompts !== undefined && !strs(p.prompts)) || (p.claudeTools !== undefined && !(strs(p.claudeTools) && p.claudeTools.every(toolNameOk))) || (p.claudeMaxTurns !== undefined && !(Number.isInteger(p.claudeMaxTurns) && p.claudeMaxTurns >= 1)) || (p.logs !== undefined && typeof p.logs !== "boolean"))
       return { error: `${policyPath(home)} must look like {"folders":[],"tasks":[],"commands":[],"claudeTools":[],"claudeMaxTurns":10}` };
     return { policy: { folders: p.folders, tasks: p.tasks, ...(p.commands ? { commands: p.commands } : {}), ...(p.prompts ? { prompts: p.prompts } : {}), ...(p.claudeTools ? { claudeTools: p.claudeTools } : {}), ...(p.claudeMaxTurns !== undefined ? { claudeMaxTurns: p.claudeMaxTurns } : {}), ...(p.logs !== undefined ? { logs: p.logs } : {}) } };
   } catch {

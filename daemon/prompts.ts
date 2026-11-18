@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CLAUDE_TOOL_RE, DEFAULT_CLAUDE_MAX_TURNS, MAX_CLAUDE_TURNS, PROMPT_RE } from "../shared/contract.ts";
+import { toolNameOk, DEFAULT_CLAUDE_MAX_TURNS, MAX_CLAUDE_TURNS, PROMPT_RE } from "../shared/contract.ts";
 import { sanitizePromptReport, type ReportedPrompt } from "../shared/projects.ts";
 import type { ArgSpec } from "./commands.ts";
 
@@ -62,7 +62,7 @@ export function loadPrompt(name: unknown, home = os.homedir()): { prompt: Prompt
   }
   for (const v of templateVars(c.template)) if (!Object.hasOwn(vars, v)) return bad(`uses {${v}} but does not declare it in vars`);
   const tools = c.tools === undefined ? ["Read", "Glob", "Grep"] : c.tools;
-  if (!Array.isArray(tools) || tools.length < 1 || tools.length > 20 || tools.some((t: unknown) => typeof t !== "string" || !CLAUDE_TOOL_RE.test(t))) return bad("has bad tools");
+  if (!Array.isArray(tools) || tools.length < 1 || tools.length > 20 || tools.some((t: unknown) => !toolNameOk(t))) return bad("has bad tools (an MCP tool is named mcp__<server>__<tool>, one at a time, no wildcards)");
   const maxTurns = c.maxTurns === undefined ? DEFAULT_CLAUDE_MAX_TURNS : c.maxTurns;
   if (!Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > MAX_CLAUDE_TURNS) return bad(`has a bad maxTurns (1 to ${MAX_CLAUDE_TURNS})`);
   if (c.model !== undefined && (typeof c.model !== "string" || !/^[\w.\-\[\]]{1,60}$/.test(c.model))) return bad("has a bad model");

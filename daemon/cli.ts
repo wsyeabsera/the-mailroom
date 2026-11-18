@@ -3,7 +3,7 @@ import readline from "node:readline";
 import { deleteConfig, configPath, loadConfig, saveConfig } from "./config.ts";
 import { probe, run } from "./client.ts";
 import { loadPolicy, savePolicy, policyPath, policyClaude } from "./policy.ts";
-import { COMMAND_RE, PROMPT_RE, CLAUDE_TOOL_RE } from "../shared/contract.ts";
+import { COMMAND_RE, PROMPT_RE, toolNameOk } from "../shared/contract.ts";
 import * as service from "./service.ts";
 import { purgeLogs, readLog } from "./logs.ts";
 import { doctor, explain, fetchFromHub } from "./doctor.ts";
@@ -146,7 +146,7 @@ async function main() {
         return 0;
       }
       if (sub === "allow-claude-tool" && args[1]) {
-        if (!CLAUDE_TOOL_RE.test(args[1])) return fail(`“${args[1]}” is not a tool name.`);
+        if (!toolNameOk(args[1])) return fail(`“${args[1]}” is not a tool name (an MCP tool is mcp__<server>__<tool>, one at a time, no wildcards).`);
         p.claudeTools = p.claudeTools ?? policyClaude(p).tools;
         if (!p.claudeTools.includes(args[1])) p.claudeTools.push(args[1]);
         savePolicy(p);

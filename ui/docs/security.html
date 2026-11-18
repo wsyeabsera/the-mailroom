@@ -114,6 +114,7 @@
 <li><strong>No third-party audit.</strong> The code has its own tests, but nobody outside has reviewed it.</li>
 <li><strong>The interface was tested with simulated users only.</strong> They were small Claude models, two runs per task. Treat that as a signal, not proof.</li>
 <li><strong>Without a laptop policy, the laptop trusts the Hub for what a contract says.</strong> The Hub sends the contract, so a compromised Hub could send a wider one. Set a ceiling with <code>mailroom policy allow-folder</code>, <code>allow-task</code>, <code>allow-command</code>, <code>allow-claude-tool</code> and <code>claude-max-turns</code>; the daemon then refuses anything beyond it. The policy does not yet cap file size.</li>
+<li><strong>A browser tool reads untrusted pages.</strong> If you allow an MCP tool such as a headless browser (<code>mcp__browser__page_text</code>) in a prompt, Claude reads whatever the page says, and a page can try to steer it. Treat what such a job returns as data, not as fact: the caller must verify it before acting on it. Allow one named tool at a time (no wildcards), declare its server in <code>~/.mailroom/mcp.json</code>, and add the tool to the contract and the laptop policy.</li>
 <li><strong>Your laptop is in the loop.</strong> The second check does not protect you from someone who already controls the laptop itself.</li>
 </ul>
 <p>To report or fix a problem, start with <a href="/docs/troubleshooting">Troubleshooting</a>. For the exact routes and error codes, see the <a href="/docs/api">HTTP API</a>.</p>

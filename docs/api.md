@@ -176,6 +176,14 @@ When the Hub gets only a character count for a failed `ask` or `claude` job, the
 
 `mailroom explain <key label> '<job json>' [--token mra_... | --contract file.json]` finds the key's contract and runs the gateway's `check()` and then the daemon's `recheck()` (contract, policy, registry, resume, arguments) without running the job, printing which stage refuses and the same reason a real job gets; exit 1 when refused. It does not check the daily limit, the Claude budget or the Hub's run-argument pre-check.
 
+### One named MCP tool in a prompt (#2810)
+
+A prompt's `tools` (and a contract's or policy's `claudeTools`) may name an MCP tool as `mcp__<server>__<tool>` (server: letters, digits, dashes; tool: letters, digits, `_`, `-`), one tool at a time: `mcp__browser__*` and `mcp__browser` (the whole server) are not valid anywhere (contract validation, prompt loading, policy, `mailroom policy allow-claude-tool`). The laptop declares which servers it will start in `~/.mailroom/mcp.json` (mode 0600, read per job): `{"browser": {"command": "/path/to/server", "args": ["--headless"]}}`. Only `command` and `args` are accepted; an entry with `env` or any other key is a problem and declares nothing, so no secret lives in that file. The daemon starts, for each job, only the declared servers its allowed tools name, with `--mcp-config <json> --strict-mcp-config`, so no other MCP configuration of the laptop is reachable; `--allowedTools` still lists just that one tool.
+
+Refusals (all before anything runs, the reason names the fix): the server is not in `mcp.json`; the contract's `claudeTools` lacks the tool (the job is refused rather than run without it); the policy's `claudeTools` lacks it (`mailroom policy allow-claude-tool '<tool>'`). A `claude` job may also list the tool in `allowedTools` under the same rules. `mailroom doctor` reports an undeclared server, a server command not found on the service PATH, and an `mcp.json` entry with extra keys.
+
+Warning: a browser tool reads untrusted pages, which can try to steer Claude. What such a job returns is data and must be verified by the caller before it is acted on. Give the prompt a schema, and keep its other tools read-only.
+
 ### Daemon version (#2804)
 
 The daemon's hello carries `version` (from `shared/version.ts`, the same constant the Hub uses; bump it with `package.json`) and `commit` (the short git commit of the checkout it runs from, omitted when there is none). The Hub keeps only a plain `x.y.z` and a hex commit (untrusted input). `GET /admin/laptop` and the `mailroom_laptop` tool add `hub_version`, `daemon_version`, `daemon_commit` and `daemon_notice`: a sentence telling the owner to restart when the connected daemon is older than the Hub, or reported no version (an older daemon), else null. The Laptop page shows the version and a warning banner. `mailroom service restart` replaces the running background service with a fresh process, so it runs the code on disk.
