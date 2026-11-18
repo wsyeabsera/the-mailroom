@@ -21,6 +21,8 @@ before(async () => {
   fs.mkdirSync(bin);
   fs.writeFileSync(path.join(bin, "claude"), `#!/bin/sh
 case "$2" in sleep*) echo $$ > "${home}/claude.pid"; exec sleep 30;; esac
+for a in "$@"; do last="$a"; done
+case "$last" in jsonout*) echo '{"result":"ok","n":1}'; exit 0;; badjson*) echo 'not json'; exit 0;; esac
 for a in "$@"; do echo "ARG:$a"; done
 echo "CWD:$(pwd -P)"
 `, { mode: 0o755 });
@@ -138,4 +140,30 @@ test("cancel of a running job kills it and sends nothing", async () => {
   const m = await run("k2", "echo", { text: "after" });
   assert.equal(m.ok, true);
   assert.ok(!hub.messages.slice(before).some(x => x.id === "k1"));
+});
+
+test("claude options become argv entries before -p", async () => {
+  const m = await run("p_o1", "claude", { prompt: "hello", cwd: "~/allowed", allowedTools: ["Read", "Bash(git log:*)"], maxTurns: 3, model: "claude-opus-4[1m]" });
+  assert.equal(m.ok, true);
+  const o = m.result.output as string;
+  assert.match(o, /ARG:--allowedTools\nARG:Read\nARG:Bash\(git log:\*\)\nARG:--max-turns\nARG:3\nARG:--model\nARG:claude-opus-4\[1m\]\nARG:-p\nARG:hello\n/);
+});
+
+test("claude json option returns parsed JSON", async () => {
+  const m = await run("p_o2", "claude", { prompt: "jsonout", cwd: "~/allowed", json: true });
+  assert.deepEqual(m.result, { output: { result: "ok", n: 1 } });
+  const bad = await run("p_o3", "claude", { prompt: "badjson", cwd: "~/allowed", json: true });
+  assert.equal(bad.ok, false);
+});
+
+test("claude rejects invalid options", async () => {
+  const bads: Record<string, unknown>[] = [
+    { allowedTools: "Read" }, { allowedTools: [] }, { allowedTools: ["a;b"] }, { allowedTools: Array(21).fill("Read") },
+    { maxTurns: 0 }, { maxTurns: 51 }, { maxTurns: 1.5 }, { maxTurns: "3" },
+    { model: "a b" }, { model: "x".repeat(61) }, { json: "yes" },
+  ];
+  for (const [i, b] of bads.entries()) {
+    const m = await run(`p_ob${i}`, "claude", { prompt: "x", cwd: "~/allowed", ...b });
+    assert.equal(m.ok, false, JSON.stringify(b));
+  }
 });

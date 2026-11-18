@@ -93,6 +93,7 @@
 <li>Check three things: is this the key you expect, is the path where you expect, and is the content what you would write yourself?</li>
 <li>Press <strong>Approve</strong> to send it on, or <strong>Decline</strong> to refuse it.</li>
 </ol>
+<p>A <code>claude</code> task may also carry optional settings: <code>allowedTools</code> (up to 20 tool names), <code>maxTurns</code> (1 to 50), <code>model</code>, and <code>json</code> (return Claude's JSON output instead of plain text). Invalid values make the job fail.</p>
 <div class="warn"><p>Approving a <code>claude</code> task lets Claude Code act in that folder with whatever permissions <code>claude -p</code> has on your laptop. The contract limits the folder, not what Claude does inside it. Read the prompt.</p></div>
 <ul>
 <li><strong>Approve</strong> moves the parcel to <code>queued</code>. The Hub checks the contract once more first, so a parcel that no longer fits becomes <code>refused</code> instead.</li>
