@@ -221,7 +221,7 @@ export async function runWorkflow(job: JobMsg, signal: AbortSignal, report: (tex
         const [kind, name] = step.target.split(":") as ["run" | "ask", string];
         const batchArgs = { [kind === "run" ? "command" : "prompt"]: name, items, ...(step.concurrency ? { concurrency: step.concurrency } : {}) };
         // The step is checked like a batch job of its own: the contract's batch targets and limits, and the laptop policy's.
-        const v = recheck({ id: `${job.id}-${++env.seq.n}`, task: "batch", args: batchArgs, contract: job.contract }, Date.now(), home, ["run", "ask"]);
+        const v = recheck({ id: `${job.id}-${++env.seq.n}`, task: "batch", args: batchArgs, contract: job.contract }, Date.now(), home, ["run", "ask", "batch"]);
         if ("reason" in v) fail(step.id, step.kind, Date.now() - t0, v.reason);
         const pol = loadPolicy(home);
         const conc = effectiveConcurrency(step.concurrency, batchLimits(job.contract).maxConcurrency, "policy" in pol ? pol.policy?.batchMaxConcurrency : undefined);

@@ -183,7 +183,7 @@ test("batch: cancel stops the running items and starts no more", async () => {
 
 test("workflow: run, batch of ask, run is one result and streams its partials", async () => {
   fs.rmSync(log, { force: true });
-  const r = await go("workflow", { name: "three", inputs: { topic: "t" } }, { budget: { turns: 100, ms: 600_000 } });
+  const r = await go("workflow", { name: "three", inputs: { topic: "t" } }, { budget: { turns: 100, ms: 600_000 }, contract: contract({ tasks: ["workflow"] }) }); // the contract needs only the workflow task: its steps are checked as the jobs they are
   assert.equal(r.error, undefined);
   assert.deepEqual(r.result.output, { seen: 4, ok: 4, first: "ANS a turns<=8" }); // 100 turns left / 3 workers is a slice of 33; the prompt's own 8 is lower
   assert.deepEqual(r.result.steps.map((s: any) => [s.id, s.status]), [["list", "done"], ["answers", "done"], ["checked", "done"]]);
