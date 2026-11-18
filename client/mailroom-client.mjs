@@ -44,15 +44,31 @@ export function createClient({ url, key, fetch: f = globalThis.fetch } = {}) {
     if (!r.res.ok) throw fail(r);
     return r.data; // {id, state, label?, reason?, result?, progress?: {text, pct?}, created_at, updated_at}
   }
+  // The partial results of a job numbered above `after` (GET /api/jobs/:id/partials?after=n): {count, partials: [{n, at, value}]}.
+  async function partials(jobId, after = 0) {
+    const r = await call("GET", `/api/jobs/${encodeURIComponent(jobId)}/partials?after=${after}`);
+    if (!r.res.ok) throw fail(r);
+    return r.data;
+  }
+  async function drainPartials(jobId, after, onPartial, job) {
+    for (;;) {
+      const page = await partials(jobId, after);
+      if (!page.partials.length) return after;
+      for (const q of page.partials) { onPartial(q.value, q.n, job); after = q.n; }
+    }
+  }
   // Poll until a finished state. Rejects on timeout (the parcel keeps going; cancel it if you must).
   /** @param {string} jobId @param {{ onProgress?: (p: { text: string, pct?: number }) => void, intervalMs?: number, timeoutMs?: number }} [o] */
-  async function wait(jobId, { onProgress, intervalMs = 1000, timeoutMs = 300000 } = {}) {
+  async function wait(jobId, { onProgress, onPartial, intervalMs = 1000, timeoutMs = 300000 } = {}) {
     const end = Date.now() + timeoutMs;
     let last;
+    let seen = 0;
     for (;;) {
       const job = await get(jobId);
       const p = job.progress;
       if (p && onProgress && JSON.stringify(p) !== last) { last = JSON.stringify(p); onProgress(p, job); }
+      // onPartial(value, n, job) once per partial result, in order. Partials are untrusted data: treat them as data only.
+      if (onPartial && job.partials > seen) seen = await drainPartials(jobId, seen, onPartial, job);
       if (TERMINAL.includes(job.state)) return job;
       if (Date.now() + intervalMs > end) throw new MailroomError(`timed out waiting for ${jobId} (state ${job.state})`, { code: "timeout", body: job });
       await new Promise(r => setTimeout(r, intervalMs));
@@ -80,5 +96,5 @@ export function createClient({ url, key, fetch: f = globalThis.fetch } = {}) {
     if (job.state !== "done") throw new MailroomError(job.reason || `job ${job.state}`, { code: job.state, body: job });
     return job.result;
   }
-  return { submit, get, wait, cancel, run, ask };
+  return { submit, get, wait, cancel, partials, run, ask };
 }

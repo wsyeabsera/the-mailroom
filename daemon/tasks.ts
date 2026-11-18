@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseProgressLine } from "./progress.ts";
+import { parsePartialLine } from "../shared/partials.ts";
 import { keepAwake, killTree, killTreeOnAbort, spawnTree, timeoutMessage } from "./proc.ts";
 import { READ_ONLY_TOOLS, StreamReader, makeScratch, removeScratch } from "./claude.ts";
 import { check, normalizePath, claudeCeiling } from "../shared/contract.ts";
@@ -80,7 +81,7 @@ export function recheck(job: JobMsg, now = Date.now(), home = os.homedir()): { r
   return { resolved: real };
 }
 
-export async function runTask(job: JobMsg, resolved: string | null, signal: AbortSignal, report: (text: string, pct?: number) => void = () => {}, onUsage: (u: Usage) => void = () => {}): Promise<unknown> {
+export async function runTask(job: JobMsg, resolved: string | null, signal: AbortSignal, report: (text: string, pct?: number) => void = () => {}, onUsage: (u: Usage) => void = () => {}, onPartial: (value: unknown) => void = () => {}): Promise<unknown> {
   const a = job.args;
   switch (job.task) {
     case "echo":
@@ -110,7 +111,7 @@ export async function runTask(job: JobMsg, resolved: string | null, signal: Abor
     case "ask":
       return runAsk(job, resolved!, signal, report, onUsage);
     case "run":
-      return runCommand(a, resolved!, signal, report);
+      return runCommand(a, resolved!, signal, report, onPartial);
     default:
       throw new Error(`unknown task ${job.task}`);
   }
@@ -278,7 +279,7 @@ function execClaude(prompt: string, cwd: string, signal: AbortSignal, opts: { ar
 }
 
 /** Starts a registered command: argv array, no shell, so metacharacters in args stay literal. */
-function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal, report: (text: string, pct?: number) => void): Promise<{ output: string; exitCode: number }> {
+function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal, report: (text: string, pct?: number) => void, onPartial: (value: unknown) => void = () => {}): Promise<{ output: string; exitCode: number }> {
   return new Promise((resolve, reject) => {
     const c = loadCommand(a.command);
     if ("error" in c) return reject(new Error(c.error));
@@ -305,6 +306,10 @@ function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal
       for (const l of lines) {
         const p = parseProgressLine(l);
         if (p) report(p.text, p.pct);
+        else {
+          const q = parsePartialLine(l);
+          if (q) onPartial(q.value);
+        }
       }
     });
     child.on("error", e => {

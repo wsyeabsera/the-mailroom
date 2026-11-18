@@ -11,6 +11,7 @@ import { storePromptReport } from "./prompt-report.ts";
 import { fingerprint, idempotencyFresh, parseIdempotencyKey } from "./idempotency.ts";
 import { isRerunSafe, NOT_RERUN_SAFE_REASON, parseLabel, parseRerunSafe, REQUEUE_REASON, resumeRefusal, UNCOUNTED_SQL } from "./job-rules.ts";
 import { addUsage, budgetFor, ensureClaudeUsageSchema, usageSummary } from "./claude-budget.ts";
+import { cleanPartial, oldestKept } from "../shared/partials.ts";
 import { clipMaxTurns, isClaudeTask, parseUsage } from "../shared/claude-budget.ts";
 import { claudeCeiling } from "../shared/contract.ts";
 import { markerBytes, planResult, resultCutoff, resultExpired } from "./results.ts";
@@ -69,6 +70,7 @@ export class Hub extends DurableObject<Env> {
       "CREATE TABLE IF NOT EXISTS keys (id TEXT PRIMARY KEY, label TEXT NOT NULL, prefix TEXT NOT NULL, hash TEXT NOT NULL, contract_id TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER, last_used_at INTEGER)",
       "CREATE TABLE IF NOT EXISTS contracts (id TEXT PRIMARY KEY, name TEXT NOT NULL, body TEXT NOT NULL, version INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
       "CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, key_id TEXT NOT NULL, contract_id TEXT NOT NULL, contract_version INTEGER NOT NULL, task TEXT NOT NULL, args TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, result TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS job_partials (job_id TEXT NOT NULL, n INTEGER NOT NULL, body TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (job_id, n))", // partial results, newest MAX_PARTIALS per job
       "CREATE TABLE IF NOT EXISTS job_progress (job_id TEXT PRIMARY KEY, text TEXT NOT NULL, pct REAL, at INTEGER NOT NULL)",
       "CREATE INDEX IF NOT EXISTS jobs_key ON jobs (key_id, created_at)",
       "CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL)",
@@ -123,8 +125,12 @@ export class Hub extends DurableObject<Env> {
 
   private jobOut = (r: Row) => ({
     id: r.id, key_id: r.key_id, contract_id: r.contract_id, contract_version: r.contract_version, task: r.task, args: parse(r.args), state: r.state,
-    label: r.label ?? undefined, reason: r.reason ?? undefined, result: parse(r.result), progress: this.progressOf(r.id), created_at: r.created_at, updated_at: r.updated_at,
+    label: r.label ?? undefined, reason: r.reason ?? undefined, result: parse(r.result), progress: this.progressOf(r.id), partials: this.partialCount(r.id), created_at: r.created_at, updated_at: r.updated_at,
   });
+  /** How many partial results the job has produced (numbers are never reused, so this is also the last number). */
+  private partialCount(id: string): number {
+    return (this.one("SELECT MAX(n) AS n FROM job_partials WHERE job_id = ?", id)?.n as number | null) ?? 0;
+  }
   private progressOf(id: string) {
     const p = this.one("SELECT text, pct, at FROM job_progress WHERE job_id = ?", id);
     return p ? { text: p.text as string, ...(p.pct === null ? {} : { pct: p.pct as number }), at: p.at as number } : undefined;
@@ -139,7 +145,10 @@ export class Hub extends DurableObject<Env> {
     return parse(big.body);
   }
   /** Removes big results older than 7 days. Runs when the Hub wakes, when a big result is stored and when one is read. */
-  private sweepResults() { this.sql.run("DELETE FROM job_results WHERE stored_at < ?", resultCutoff(Date.now())); }
+  private sweepResults() {
+    this.sql.run("DELETE FROM job_results WHERE stored_at < ?", resultCutoff(Date.now()));
+    this.sql.run("DELETE FROM job_partials WHERE at < ?", resultCutoff(Date.now())); // partials follow the big-result retention
+  }
 
   /** A job that was running when the laptop dropped: queued again if re-running it is safe, otherwise failed. */
   private requeueOrFail(j: Row) {
@@ -164,7 +173,7 @@ export class Hub extends DurableObject<Env> {
     this.sql.run("UPDATE jobs SET state = ?, reason = ?, result = ?, updated_at = ?, contract_version = ? WHERE id = ?", state, reason ?? null, stored, now, job.contract_version, job.id);
     job.result = stored;
     job.state = state;
-    if (state === "queued") this.sql.run("DELETE FROM job_progress WHERE job_id = ?", job.id); // a requeued job starts over
+    if (state === "queued") { this.sql.run("DELETE FROM job_progress WHERE job_id = ?", job.id); this.sql.run("DELETE FROM job_partials WHERE job_id = ?", job.id); } // a requeued job starts over
     const p: Record<string, unknown> = { job_id: job.id, key_id: job.key_id, task: job.task };
     if (reason) p.reason = reason;
     this.event(kind ?? `job.${state}`, p);
@@ -267,11 +276,19 @@ export class Hub extends DurableObject<Env> {
       return json({ id: cj.id, state: "cancelled" });
     }
     if (req.method !== "GET") return err(405, "method_not_allowed");
+    if (rest.endsWith("/partials")) {
+      // Partial results so far; ?after=<n> returns those numbered above n. Untrusted data from the laptop's script, served as stored.
+      const pj = this.one("SELECT id FROM jobs WHERE id = ? AND key_id = ?", rest.slice(0, -"/partials".length), k.id);
+      if (!pj) return err(404, "not_found");
+      const after = Number(new URL(req.url).searchParams.get("after") ?? 0);
+      const rows = this.sql.all<Row>("SELECT n, body, at FROM job_partials WHERE job_id = ? AND n > ? ORDER BY n LIMIT 200", pj.id, Number.isFinite(after) ? after : 0);
+      return json({ id: pj.id, count: this.partialCount(pj.id as string), partials: rows.map(r => ({ n: r.n, at: r.at, value: parse(r.body) })) });
+    }
     const j = this.one("SELECT * FROM jobs WHERE id = ? AND key_id = ?", rest, k.id);
     if (!j) return err(404, "not_found");
     const o = this.jobOut(j);
     this.sweepResults();
-    return json({ id: o.id, state: o.state, label: o.label, reason: o.reason, result: this.resultOf(j), progress: o.progress, created_at: o.created_at, updated_at: o.updated_at });
+    return json({ id: o.id, state: o.state, label: o.label, reason: o.reason, result: this.resultOf(j), progress: o.progress, partials: o.partials, created_at: o.created_at, updated_at: o.updated_at });
   }
 
   private async submit(req: Request, k: Row): Promise<Response> {
@@ -863,6 +880,14 @@ export class Hub extends DurableObject<Env> {
       if (typeof m.text !== "string" || !this.isInflight(j.id)) return;
       const pct = typeof m.pct === "number" && Number.isFinite(m.pct) ? Math.min(100, Math.max(0, m.pct)) : null;
       this.sql.run("INSERT OR REPLACE INTO job_progress (job_id, text, pct, at) VALUES (?, ?, ?, ?)", j.id, m.text.slice(0, 500), pct, Date.now());
+      return;
+    }
+    if (m.type === "partial") {
+      const body = cleanPartial(m.value);
+      if (body === null || !this.isInflight(j.id)) return;
+      const n = this.partialCount(j.id as string) + 1;
+      this.sql.run("INSERT INTO job_partials (job_id, n, body, at) VALUES (?, ?, ?, ?)", j.id, n, body, Date.now());
+      this.sql.run("DELETE FROM job_partials WHERE job_id = ? AND n < ?", j.id, oldestKept(n));
       return;
     }
     if (m.type === "result") {
