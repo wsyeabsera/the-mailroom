@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { parseProgressLine } from "./progress.ts";
 import { check, normalizePath } from "../shared/contract.ts";
 import type { Contract } from "../shared/contract.ts";
 import { buildArgv, loadCommand } from "./commands.ts";
@@ -51,7 +52,6 @@ export function recheck(job: JobMsg, now = Date.now(), home = os.homedir()): { r
 }
 
 export async function runTask(job: JobMsg, resolved: string | null, signal: AbortSignal, report: (text: string, pct?: number) => void = () => {}): Promise<unknown> {
-  void report; // `run` scripts report via parseProgressLine on stderr; the claude task reports nothing
   const a = job.args;
   switch (job.task) {
     case "echo":
@@ -79,7 +79,7 @@ export async function runTask(job: JobMsg, resolved: string | null, signal: Abor
     case "claude":
       return { output: await runClaude(String(a.prompt ?? ""), resolved!, signal, a) };
     case "run":
-      return runCommand(a, resolved!, signal);
+      return runCommand(a, resolved!, signal, report);
     default:
       throw new Error(`unknown task ${job.task}`);
   }
@@ -150,7 +150,7 @@ function runClaude(prompt: string, cwd: string, signal: AbortSignal, args: Recor
 }
 
 /** Starts a registered command: argv array, no shell, so metacharacters in args stay literal. */
-function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal): Promise<{ output: string; exitCode: number }> {
+function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal, report: (text: string, pct?: number) => void): Promise<{ output: string; exitCode: number }> {
   return new Promise((resolve, reject) => {
     const c = loadCommand(a.command);
     if ("error" in c) return reject(new Error(c.error));
@@ -167,8 +167,15 @@ function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal
     child.stdout.on("data", (d: Buffer) => {
       if (out.length < MAX_BYTES) out = Buffer.concat([out, d]).subarray(0, MAX_BYTES);
     });
+    let pending = ""; // stderr arrives in chunks; a progress line may be split across them
     child.stderr.on("data", (d: Buffer) => {
       err = (err + d).slice(-2000);
+      const lines = (pending + d).split("\n");
+      pending = lines.pop()!.slice(-1000);
+      for (const l of lines) {
+        const p = parseProgressLine(l);
+        if (p) report(p.text, p.pct);
+      }
     });
     child.on("error", e => {
       clearTimeout(timer);
