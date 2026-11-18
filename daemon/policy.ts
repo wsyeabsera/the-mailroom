@@ -5,8 +5,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolvePathFor } from "./paths.ts";
+import { claudeCeiling, DEFAULT_CLAUDE_MAX_TURNS, DEFAULT_CLAUDE_TOOLS } from "../shared/contract.ts";
 
-export type Policy = { folders: string[]; tasks: string[]; commands?: string[] };
+export type Policy = { folders: string[]; tasks: string[]; commands?: string[]; claudeTools?: string[]; claudeMaxTurns?: number };
 export type PolicyLoad = { policy: Policy | null } | { error: string };
 
 export const policyPath = (home = os.homedir()) => path.join(home, ".mailroom", "policy.json");
@@ -33,9 +34,9 @@ export function loadPolicy(home = os.homedir()): PolicyLoad {
   }
   try {
     const p = JSON.parse(text);
-    if (!p || typeof p !== "object" || !strs(p.folders) || !strs(p.tasks) || (p.commands !== undefined && !strs(p.commands)))
-      return { error: `${policyPath(home)} must look like {"folders":[],"tasks":[],"commands":[]}` };
-    return { policy: { folders: p.folders, tasks: p.tasks, ...(p.commands ? { commands: p.commands } : {}) } };
+    if (!p || typeof p !== "object" || !strs(p.folders) || !strs(p.tasks) || (p.commands !== undefined && !strs(p.commands)) || (p.claudeTools !== undefined && !strs(p.claudeTools)) || (p.claudeMaxTurns !== undefined && !(Number.isInteger(p.claudeMaxTurns) && p.claudeMaxTurns >= 1)))
+      return { error: `${policyPath(home)} must look like {"folders":[],"tasks":[],"commands":[],"claudeTools":[],"claudeMaxTurns":10}` };
+    return { policy: { folders: p.folders, tasks: p.tasks, ...(p.commands ? { commands: p.commands } : {}), ...(p.claudeTools ? { claudeTools: p.claudeTools } : {}), ...(p.claudeMaxTurns !== undefined ? { claudeMaxTurns: p.claudeMaxTurns } : {}) } };
   } catch {
     return { error: `${policyPath(home)} is not valid JSON` };
   }
@@ -51,25 +52,35 @@ export function savePolicy(p: Policy, home = os.homedir()) {
 
 const within = (real: string, f: string) => real === f || real.startsWith(f === "/" ? "/" : f + "/");
 
-/** Returns a refuse reason if the contract (or the resolved job path) goes beyond the policy, else null. */
+/** The claude ceilings a policy grants: the safe defaults when the policy does not set them. */
+export const policyClaude = (p: Policy) => ({ tools: p.claudeTools ?? [...DEFAULT_CLAUDE_TOOLS], maxTurns: p.claudeMaxTurns ?? DEFAULT_CLAUDE_MAX_TURNS });
+
+/** Returns a refuse reason if the contract (or the resolved job path) goes beyond the policy, else null. Each reason names the fix. */
 export function exceeds(
   policy: Policy,
-  contract: { folders: string[]; tasks: string[]; commands?: string[] },
+  contract: { folders: string[]; tasks: string[]; commands?: string[]; claudeTools?: string[]; claudeMaxTurns?: number },
   realPath: string | null,
   home: string,
 ): string | null {
   const pf = policy.folders.map(f => resolvePathFor(f, home));
   for (const f of contract.folders) {
     const r = resolvePathFor(f, home);
-    if (r === null || !pf.some(p => p !== null && within(r, p))) return `contract folder ${f} is outside the laptop policy folders`;
+    if (r === null || !pf.some(p => p !== null && within(r, p))) return `contract folder ${f} is outside the laptop policy folders. To allow it: mailroom policy allow-folder ${f}`;
   }
   const extra = contract.tasks.filter(t => !policy.tasks.includes(t));
-  if (extra.length) return `contract tasks ${extra.join(", ")} are not allowed by the laptop policy`;
+  if (extra.length) return `contract tasks ${extra.join(", ")} are not allowed by the laptop policy. To allow: ${extra.map(t => `mailroom policy allow-task ${t}`).join("; ")}`;
   if (Array.isArray(contract.commands)) {
     const allowed = policy.commands ?? [];
     const bad = contract.commands.filter(c => !allowed.includes(c));
-    if (bad.length) return `contract commands ${bad.join(", ")} are not allowed by the laptop policy`;
+    if (bad.length) return `contract commands ${bad.join(", ")} are not allowed by the laptop policy. To allow: ${bad.map(c => `mailroom policy allow-command ${c}`).join("; ")}`;
   }
-  if (realPath !== null && !pf.some(p => p !== null && within(realPath, p))) return `${realPath} is outside the laptop policy folders`;
+  if (contract.tasks.includes("claude")) {
+    const c = claudeCeiling(contract);
+    const pc = policyClaude(policy);
+    const badTools = c.tools.filter(t => !pc.tools.includes(t));
+    if (badTools.length) return `contract claude tools ${badTools.join(", ")} are not allowed by the laptop policy. To allow: ${badTools.map(t => `mailroom policy allow-claude-tool '${t}'`).join("; ")}`;
+    if (c.maxTurns > pc.maxTurns) return `contract claude maxTurns ${c.maxTurns} is more than the laptop policy allows (${pc.maxTurns}). To allow: mailroom policy claude-max-turns ${c.maxTurns}`;
+  }
+  if (realPath !== null && !pf.some(p => p !== null && within(realPath, p))) return `${realPath} is outside the laptop policy folders. To allow it: mailroom policy allow-folder ${realPath}`;
   return null;
 }

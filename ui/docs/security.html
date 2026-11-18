@@ -113,7 +113,7 @@
 <li><strong>One owner only.</strong> There are no users, roles or separate logins.</li>
 <li><strong>No third-party audit.</strong> The code has its own tests, but nobody outside has reviewed it.</li>
 <li><strong>The interface was tested with simulated users only.</strong> They were small Claude models, two runs per task. Treat that as a signal, not proof.</li>
-<li><strong>Without a laptop policy, the laptop trusts the Hub for what a contract says.</strong> The Hub sends the contract, so a compromised Hub could send a wider one. Set a ceiling with <code>mailroom policy allow-folder</code> and <code>allow-task</code>; the daemon then refuses anything beyond it. The policy does not yet cap file size or <code>claude</code> turns.</li>
+<li><strong>Without a laptop policy, the laptop trusts the Hub for what a contract says.</strong> The Hub sends the contract, so a compromised Hub could send a wider one. Set a ceiling with <code>mailroom policy allow-folder</code>, <code>allow-task</code>, <code>allow-command</code>, <code>allow-claude-tool</code> and <code>claude-max-turns</code>; the daemon then refuses anything beyond it. The policy does not yet cap file size.</li>
 <li><strong>Your laptop is in the loop.</strong> The second check does not protect you from someone who already controls the laptop itself.</li>
 </ul>
 <p>To report or fix a problem, start with <a href="/docs/troubleshooting">Troubleshooting</a>. For the exact routes and error codes, see the <a href="/docs/api">HTTP API</a>.</p>

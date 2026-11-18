@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createClient } from "../client/mailroom-client.mjs";
 
-const PORT = 8801;
+const PORT = Number(process.env.E2E_PORT) || 8801;
 const BASE = `http://localhost:${PORT}`;
 const root = new URL("..", import.meta.url).pathname;
 const pass = readFileSync(join(root, ".dev.vars"), "utf8").match(/^OWNER_PASSWORD=(.*)$/m)[1];
@@ -44,7 +44,7 @@ async function until(fn, ms = 15000) { const t = Date.now(); while (Date.now() -
 const startDaemon = () => { const d = spawn("node", [join(root, "daemon/cli.ts"), "run"], { env: { ...process.env, HOME: home }, stdio: "ignore", detached: true }); procs.push(d); return d; };
 
 console.log("starting wrangler dev ...");
-const w = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--inspector-port", "9351", "--persist-to", join(tmp, "state")], { cwd: root, stdio: "ignore", detached: true });
+const w = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--inspector-port", String(PORT + 550), "--persist-to", join(tmp, "state")], { cwd: root, stdio: "ignore", detached: true });
 procs.push(w);
 if (!(await until(async () => { try { return (await fetch(BASE + "/admin/state")).status === 401; } catch { return false; } }, 60000))) { console.log("FAIL wrangler did not start"); process.exit(1); }
 
@@ -211,6 +211,17 @@ ok(r.state === "queued" || r.state === "running" || r.state === "dispatched", `t
 j = await wide.wait(r.id, { intervalMs: 1000, timeoutMs: 20000 });
 ok(j?.state === "refused" && /rm-everything/.test(j.reason || "") && /policy/.test(j.reason || ""), `the daemon refuses: ${j?.reason}`);
 
+// A key whose contract allows only web tools and 6 turns cannot run a claude job asking for a shell tool or more turns.
+r = await owner("POST", "/admin/contracts", { name: "Web only", folders: [allowed], tasks: ["claude"], claudeTools: ["WebFetch", "WebSearch"], claudeMaxTurns: 6, dailyLimit: 50, expires: null, approval: [] });
+ok(r.status === 201 && r.json.claudeMaxTurns === 6 && r.json.claudeTools?.length === 2, "contract with claude ceilings created");
+const webContract = r.json.id;
+r = await owner("POST", "/admin/keys", { label: "web only", contract_id: webContract });
+const webKey = r.json.key;
+r = await client(webKey, "POST", "/api/jobs", { task: "claude", args: { prompt: "x", cwd: allowed, allowedTools: ["Bash"] } });
+ok(r.status === 403 && r.json.state === "refused" && /Bash/.test(r.json.reason || ""), `a shell tool is refused at the gateway: ${r.json.reason}`);
+r = await client(webKey, "POST", "/api/jobs", { task: "claude", args: { prompt: "x", cwd: allowed, maxTurns: 50 } });
+ok(r.status === 403 && r.json.state === "refused" && /maxTurns 50/.test(r.json.reason || ""), `50 turns is refused at the gateway: ${r.json.reason}`);
+
 console.log("offline queue");
 killGroup(d);
 ok(await until(async () => !(await owner("GET", "/admin/laptop")).json.connected, 90000), "laptop shows away after the daemon dies");
@@ -231,7 +242,7 @@ ok(r.status === 401, "a revoked key stops at once");
 
 console.log("overview counts");
 r = await owner("GET", "/admin/state");
-ok(r.json.counts.done === 8 && r.json.counts.refused === 5 && r.json.counts.queued === 0, `today's counts are true (done ${r.json.counts.done}, refused ${r.json.counts.refused}, queued ${r.json.counts.queued})`);
+ok(r.json.counts.done === 8 && r.json.counts.refused === 7 && r.json.counts.queued === 0, `today's counts are true (done ${r.json.counts.done}, refused ${r.json.counts.refused}, queued ${r.json.counts.queued})`);
 ok(r.json.daemon.connected === true, "overview says the laptop is connected");
 
 console.log("events");
