@@ -13,7 +13,7 @@ export function render(view, params, ctx) {
 const newBtn = () => h("a", { class: "btn", href: "#/tokens/new" }, "New token");
 
 // read and write plain, approve amber: the dangerous one stands out
-const SCOPE_KIND = { read: "", write: "", approve: "wa" };
+const SCOPE_KIND = { read: "", write: "", approve: "wa", propose: "" };
 const scopeChips = (scopes) => (scopes || []).map((s, i) => [i ? " " : null, tag(s, SCOPE_KIND[s] || "")]);
 
 function list(body, ctx) {
@@ -61,7 +61,7 @@ function newToken(body, ctx) {
     if (!name) return showErr("Every token needs a label, or you will not remember what it is.");
     showErr(""); showScopeErr(""); create.disabled = true;
     try {
-      const t = await api("/admin/tokens", { method: "POST", body: { label: name, scopes: ["read", ...["write", "approve"].filter((s) => chosen.has(s))] } });
+      const t = await api("/admin/tokens", { method: "POST", body: { label: name, scopes: ["read", ...["write", "approve", "propose"].filter((s) => chosen.has(s))] } });
       ctx.refresh();
       slip(body, t, ctx);
     } catch (e2) {
@@ -78,7 +78,8 @@ function newToken(body, ctx) {
       h("div", { role: "group", "aria-labelledby": "sc" },
         opt("read", "look at parcels, keys, contracts and events", "always on", true),
         opt("write", "create and revoke keys, create and edit contracts"),
-        opt("approve", "approve or decline waiting parcels")),
+        opt("approve", "approve or decline waiting parcels"),
+        opt("propose", "ask for a contract change; nothing changes until you apply it in Approvals")),
       h("div", { class: "bn warn", style: "margin:12px 0 4px" }, h("b", null, "About approve. "), "Whoever holds this token can release a risky step without you reading it, including a Claude session that is itself asking for it."),
       serr,
       h("div", { class: "btns", style: "margin-top:20px" }, create, h("a", { class: "btn", href: "#/tokens" }, "Cancel"))));

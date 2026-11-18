@@ -1,10 +1,12 @@
 // The MCP admin channel: JSON-RPC 2.0 dispatch and tool definitions. Pure: no Worker imports, no I/O of its own.
 // The Hub supplies `api` (the same internals the owner routes use) and `audit`; this module only decides who may call what.
 
+import { PROPOSABLE_FIELDS } from "../shared/proposal.ts";
+
 export const SERVER_NAME = "the-mailroom";
 export const SERVER_VERSION = "0.3.0";
 export const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
-export const SCOPES = ["read", "write", "approve"] as const;
+export const SCOPES = ["read", "write", "approve", "propose"] as const;
 export type Scope = (typeof SCOPES)[number];
 
 export const INSTRUCTIONS =
@@ -40,6 +42,8 @@ export type McpApi = {
   getProject(id: string): Promise<unknown>;
   createProject(body: Record<string, unknown>): Promise<unknown>;
   updateProject(id: string, body: Record<string, unknown>): Promise<unknown>;
+  listProposals(state?: string): Promise<unknown>;
+  proposeContract(a: { contract_id: string; changes: Record<string, unknown>; note?: string }): Promise<unknown>;
   createKey(a: { label: string; contract_id: string; project_id?: string | null }): Promise<unknown>;
   revokeKey(id: string): Promise<unknown>;
   approveParcel(id: string): Promise<unknown>;
@@ -228,6 +232,19 @@ export const TOOLS: Tool[] = [
     run: (a, api) => { const { id, ...body } = a; return api.updateContract(id, body); },
   },
   {
+    name: "mailroom_list_proposals", scope: "read",
+    description: "List contract change proposals (newest first), optionally only those in one state: pending, applied, declined or stale. Each has the plain-words changes and whether it widens the contract. Returns [{id, contract_id, state, widening, changes:[{field,text,widening}], note, ...}].",
+    inputSchema: { type: "object", properties: { state: { type: "string", enum: ["pending", "applied", "declined", "stale"], description: "Only proposals in this state." } }, additionalProperties: false },
+    run: (a, api) => api.listProposals(a.state),
+  },
+  {
+    name: "mailroom_propose_contract", scope: "propose",
+    description: "Ask the owner to change a contract. Send only the fields to change in `changes` (for example {tasks:[\"echo\",\"ask\"], prompts:[\"summarise\"]}; a list field replaces the whole list, so include the entries you keep). It is stored as a proposal and NOTHING changes until the owner applies it in Approvals; you cannot apply it. The owner sees the plain-words diff, and widening changes (new folders outside the old ones, the write_file or claude task, higher limits or budgets, fewer approvals) are flagged. Ask for the least that you need and say why in `note`. Returns the proposal {id, state:\"pending\", widening, changes}, or what to fix field by field.",
+    inputSchema: { type: "object", properties: { contract_id: { type: "string", minLength: 1, maxLength: 40, description: "The contract id, like c_1000." }, changes: { type: "object", description: `The contract fields to change (${PROPOSABLE_FIELDS.join(", ")}); same shapes as mailroom_update_contract.` }, note: { type: "string", maxLength: 500, description: "Why, in plain words, for the owner." } }, required: ["contract_id", "changes"], additionalProperties: false },
+    target: (_a, r) => r?.id,
+    run: (a, api) => api.proposeContract({ contract_id: a.contract_id, changes: a.changes, ...(a.note !== undefined ? { note: a.note } : {}) }),
+  },
+  {
     name: "mailroom_create_key", scope: "write",
     description: "Create a client key under an existing contract. Returns {id, label, key}. IMPORTANT: the key (starting mr_live_) is shown only once, in this result; The Mailroom keeps only a hash and cannot show it again. Hand it to the owner in your reply to them and never store it, write it to a file, log it, or repeat it anywhere else. If it is lost, revoke the key and make a new one.",
     inputSchema: { type: "object", properties: { label: { type: "string", minLength: 1, maxLength: 60, description: "Who or what will use this key, 1 to 60 characters." }, contract_id: { type: "string", minLength: 1, maxLength: 40, description: "The contract the key works under, like c_1000." }, project_id: { type: ["string", "null"], description: "Optional project the key belongs to, like pr_1000 (default: unassigned). Archived or unknown projects are refused." } }, required: ["label", "contract_id"], additionalProperties: false },
@@ -256,7 +273,7 @@ export const TOOLS: Tool[] = [
 ];
 
 /** Does a token with these scopes hold `need`? write and approve each include read. */
-export const hasScope = (scopes: readonly string[], need: Scope): boolean => scopes.includes(need) || (need === "read" && (scopes.includes("write") || scopes.includes("approve")));
+export const hasScope = (scopes: readonly string[], need: Scope): boolean => scopes.includes(need) || (need === "read" && (scopes.includes("write") || scopes.includes("approve") || scopes.includes("propose")));
 
 export const toolsFor = (scopes: readonly string[]) => TOOLS.filter((t) => hasScope(scopes, t.scope));
 

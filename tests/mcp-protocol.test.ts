@@ -36,13 +36,14 @@ test("tools/list shows only what the scopes allow", async () => {
   const read = await names(["read"]);
   const write = await names(["read", "write"]);
   const approve = await names(["read", "approve"]);
-  const all = await names(["read", "write", "approve"]);
+  const all = await names(["read", "write", "approve", "propose"]);
   assert.equal(read.length, TOOLS.filter((t) => t.scope === "read").length);
   assert.ok(read.every((n: string) => n.startsWith("mailroom_")));
   assert.ok(!read.includes("mailroom_create_key") && !read.includes("mailroom_approve_parcel"));
   assert.ok(write.includes("mailroom_create_key") && write.includes("mailroom_revoke_key") && !write.includes("mailroom_approve_parcel"));
   assert.ok(approve.includes("mailroom_approve_parcel") && approve.includes("mailroom_decline_parcel") && !approve.includes("mailroom_create_key"));
   assert.equal(all.length, TOOLS.length);
+  assert.ok((await names(["read", "propose"])).includes("mailroom_propose_contract") && !write.includes("mailroom_propose_contract"));
   // write alone still implies read
   assert.ok((await names(["write"])).includes("mailroom_status"));
 });

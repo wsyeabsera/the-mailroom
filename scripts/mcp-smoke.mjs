@@ -58,7 +58,7 @@ ok(r.data.error.code === -32600, "batch is -32600");
 r = await rpc(T_read.token, "nope/nope");
 ok(r.data.error.code === -32601, "unknown method is -32601");
 const nRead = await toolNames(T_read.token), nWrite = await toolNames(T_write.token), nAppr = await toolNames(T_approve.token);
-ok(nRead.length === 11 && nWrite.length === 17 && nAppr.length === 13, `tools/list differs per scope (${nRead.length}/${nWrite.length}/${nAppr.length})`);
+ok(nRead.length === 12 && nWrite.length === 18 && nAppr.length === 14, `tools/list differs per scope (${nRead.length}/${nWrite.length}/${nAppr.length})`);
 ok(!nRead.includes("mailroom_create_key") && nWrite.includes("mailroom_create_key") && !nWrite.includes("mailroom_approve_parcel") && nAppr.includes("mailroom_approve_parcel"), "the right tools per scope");
 
 // setup through the owner API so the read token has something to see
@@ -175,6 +175,52 @@ r = await call("DELETE", "/mcp", { bearer: T_read.token, auth: false });
 ok(r.status === 405, "DELETE /mcp is 405");
 r = await call("POST", "/mcp", { bearer: T_read.token, auth: false, raw: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping", pad: "x".repeat(70 * 1024) }) });
 ok(r.status === 413, "a body over 64 KB is 413");
+
+// contract change proposals: stored, flagged, never applied until the owner says so
+{
+  const T_prop = await mk("proposer", ["propose"]);
+  ok(T_prop.scopes.join() === "read,propose", "a propose token also reads");
+  const names = await toolNames(T_prop.token);
+  ok(names.includes("mailroom_propose_contract") && !names.includes("mailroom_update_contract"), "propose lists the propose tool, not the contract editor");
+  r = await call("POST", "/admin/contracts", { body: { name: "Proposals smoke", folders: ["~/p"], tasks: ["echo"], dailyLimit: 5, approval: [] } });
+  const cid = r.data.id;
+  let res = await tool(T_prop.token, "mailroom_propose_contract", { contract_id: cid, changes: { tasks: ["echo", "ask"], prompts: ["summarise"] }, note: "need ask" });
+  const p1 = res.structuredContent;
+  ok(!res.isError && p1.state === "pending" && p1.widening === false && p1.changes.length === 2, "a proposal is stored, plain-words changes, not widening");
+  r = await call("GET", `/admin/contracts/${cid}`);
+  ok(r.data.version === 1 && !r.data.tasks.includes("ask"), "the contract is unchanged by a proposal");
+  res = await tool(T_prop.token, "mailroom_propose_contract", { contract_id: cid, changes: { tasks: ["echo", "write_file"] } });
+  const p2 = res.structuredContent;
+  ok(p2.widening === true, "adding write_file is flagged as widening");
+  res = await tool(T_prop.token, "mailroom_propose_contract", { contract_id: cid, changes: { folders: ["~/"] } });
+  ok(res.isError && /Nothing was saved/.test(res.content[0].text), "an invalid proposal is refused field by field");
+  res = await tool(T_prop.token, "mailroom_update_contract", { id: cid, name: "x", folders: ["~/p"], tasks: ["echo"], dailyLimit: 5, approval: [] });
+  ok(res.isError && /needs the write scope/.test(res.content[0].text), "a propose token cannot edit the contract");
+  r = await call("GET", "/admin/state");
+  ok(r.data.proposals.length === 2 && r.data.proposals[0].id === p1.id, "pending proposals show in /admin/state");
+  r = await call("POST", `/admin/proposals/${p1.id}/apply`, { body: {} });
+  ok(r.status === 200 && r.data.state === "applied", "the owner applies a proposal");
+  r = await call("GET", `/admin/contracts/${cid}`);
+  ok(r.data.version === 2 && r.data.tasks.includes("ask") && r.data.prompts.includes("summarise"), "applying changed the contract");
+  r = await call("POST", `/admin/proposals/${p1.id}/apply`, { body: {} });
+  ok(r.status === 409, "a proposal applies once");
+  r = await call("POST", `/admin/proposals/${p2.id}/apply`, { body: {} });
+  ok(r.status === 409, "a proposal written against an older version is stale (409)");
+  r = await call("GET", `/admin/proposals/${p2.id}`);
+  ok(r.data.state === "stale", "and is marked stale");
+  res = await tool(T_prop.token, "mailroom_propose_contract", { contract_id: cid, changes: { dailyLimit: 50 } });
+  r = await call("POST", `/admin/proposals/${res.structuredContent.id}/decline`, { body: {} });
+  ok(r.status === 200 && r.data.state === "declined", "the owner declines a proposal");
+  r = await call("GET", `/admin/contracts/${cid}`);
+  ok(r.data.dailyLimit === 5, "declining leaves the contract alone");
+  r = await call("POST", `/admin/proposals/${p1.id}/decline`, { body: {} });
+  ok(r.status === 409, "a decided proposal cannot be declined");
+  r = await call("GET", "/admin/events?after=0&limit=1000");
+  const kinds = r.data.events.map((e) => e.kind);
+  ok(["proposal.created", "proposal.applied", "proposal.declined", "contract.saved"].every((k) => kinds.includes(k)), "proposal events are appended");
+  r = await call("GET", "/admin/proposals?state=pending");
+  ok(Array.isArray(r.data) && r.data.length === 0, "nothing is left pending");
+}
 
 // revoke a token: next request fails
 r = await call("POST", `/admin/tokens/${T_read.id}/revoke`, { body: {} });

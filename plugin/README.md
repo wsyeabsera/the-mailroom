@@ -8,7 +8,7 @@ In the project's folder run `mailroom plugin install` (add `--scope user` for ev
 
 ## Set up
 
-1. In the Mailroom UI open Access, Tokens, New token. Keep it read only unless you need more. `write` lets Claude create and revoke keys and edit contracts. `approve` lets it release waiting parcels: see the security notes. The token (`mra_...`) is shown once.
+1. In the Mailroom UI open Access, Tokens, New token. Keep it read only unless you need more. `write` lets Claude create and revoke keys and edit contracts. `approve` lets it release waiting parcels: see the security notes. `propose` lets it ask for a contract change that only you can apply in Approvals. The token (`mra_...`) is shown once.
 2. Put two variables in your shell profile (`~/.zshrc`):
    ```sh
    export MAILROOM_URL="https://your-hub.example"   # the Hub origin, no trailing slash
