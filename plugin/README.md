@@ -2,9 +2,13 @@
 
 Lets a Claude Code session look at your Mailroom (parcels, keys, contracts, the laptop) and handle approvals, through the Hub's MCP endpoint. It adds a skill with safety rules and two commands, `/the-mailroom:status` and `/the-mailroom:approvals` (Claude Code prefixes commands with the plugin name).
 
+## Install in a project
+
+In the project's folder run `mailroom plugin install` (add `--scope user` for every project, or `local` for just you). It adds this repo as a marketplace and installs the plugin with Claude Code's own commands; `mailroom plugin uninstall` removes it. Then do the set-up below.
+
 ## Set up
 
-1. In the Mailroom UI open Access, Tokens, New token. Keep it read only unless you need more. `write` lets Claude create and revoke keys and edit contracts. `approve` lets it release waiting parcels: see the security notes. The token (`mra_...`) is shown once.
+1. In the Mailroom UI open Access, Tokens, New token. Keep it read only unless you need more. `write` lets Claude create and revoke keys and edit contracts. `approve` lets it release waiting parcels: see the security notes. `propose` lets it ask for a contract change that only you can apply in Approvals. The token (`mra_...`) is shown once.
 2. Put two variables in your shell profile (`~/.zshrc`):
    ```sh
    export MAILROOM_URL="https://your-hub.example"   # the Hub origin, no trailing slash

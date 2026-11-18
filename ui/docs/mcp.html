@@ -13,7 +13,7 @@
 <h1>Claude and other apps (MCP)</h1>
 <p class="lede">A separate, limited door that lets Claude (or any MCP app) look at your Mailroom and, if you allow it, manage it.</p>
 
-<div class="note"><p>You create an <strong>admin token</strong> in the web app and choose what it may do: <strong>read</strong>, <strong>write</strong> or <strong>approve</strong>. You give the token to Claude. Claude then calls 15 small tools on the Hub at <code>/mcp</code>. Every change it makes is written to the event log. Keep the token <strong>read</strong> only unless you have a reason.</p></div>
+<div class="note"><p>You create an <strong>admin token</strong> in the web app and choose what it may do: <strong>read</strong>, <strong>write</strong> or <strong>approve</strong>. You give the token to Claude. Claude then calls small tools on the Hub at <code>/mcp</code>. Every change it makes is written to the event log. Keep the token <strong>read</strong> only unless you have a reason.</p></div>
 
 <h2>What MCP is</h2>
 <p><strong>MCP</strong> (Model Context Protocol) is a standard way for an AI app to call tools on another service. The Mailroom speaks MCP at one address, <code>https://&lt;your-hub&gt;/mcp</code>, so Claude can ask things like "what is waiting for me?" without you opening the web app.</p>
@@ -81,6 +81,7 @@
 <tr><td><code>read</code></td><td>Look at status, parcels, keys, contracts, events and the laptop.</td><td>Change anything. A key's secret is never shown.</td></tr>
 <tr><td><code>write</code></td><td>Everything in read, plus create and revoke keys, and create and edit contracts.</td><td>Approve or decline a parcel.</td></tr>
 <tr><td><code>approve</code></td><td>Everything in read, plus approve or decline waiting parcels.</td><td>Create keys or edit contracts.</td></tr>
+<tr><td><code>propose</code></td><td>Everything in read, plus ask for a contract change. It waits in Approvals with a plain-words list of what changes.</td><td>Change a contract itself, approve anything, or create keys.</td></tr>
 </tbody>
 </table>
 <p>No scope can create or revoke tokens, rotate the laptop credential, sign in as the owner or send parcels. Only you can make a token, in the web app.</p>
@@ -148,7 +149,7 @@ export MAILROOM_TOKEN="mra_..."</code></pre>
 <thead><tr><th>Tool</th><th>Scope</th><th>What it does</th></tr></thead>
 <tbody>
 <tr><td><code>mailroom_status</code></td><td>read</td><td>The overview: laptop, counts, what needs you, latest events.</td></tr>
-<tr><td><code>mailroom_list_parcels</code></td><td>read</td><td>Parcels, newest first. Optional state and limit (1 to 200, default 50).</td></tr>
+<tr><td><code>mailroom_list_parcels</code></td><td>read</td><td>Parcels, newest first. Optional state, label (exact match, for example <code>test</code>) and limit (1 to 200, default 50). Each parcel shows its <code>label</code> if it has one.</td></tr>
 <tr><td><code>mailroom_get_parcel</code></td><td>read</td><td>One parcel with its timeline, contract check and key.</td></tr>
 <tr><td><code>mailroom_list_keys</code></td><td>read</td><td>Keys and their contracts. Never the secret.</td></tr>
 <tr><td><code>mailroom_get_key</code></td><td>read</td><td>One key, its contract and recent parcels.</td></tr>
@@ -156,6 +157,8 @@ export MAILROOM_TOKEN="mra_..."</code></pre>
 <tr><td><code>mailroom_get_contract</code></td><td>read</td><td>One contract.</td></tr>
 <tr><td><code>mailroom_events</code></td><td>read</td><td>Events after a given number (<code>after</code>), up to 500.</td></tr>
 <tr><td><code>mailroom_laptop</code></td><td>read</td><td>Is the laptop connected, when last seen, what is queued.</td></tr>
+<tr><td><code>mailroom_list_proposals</code></td><td>read</td><td>Contract change proposals, with what each would change and whether it widens the contract.</td></tr>
+<tr><td><code>mailroom_propose_contract</code></td><td>propose</td><td>Ask for a change to a contract (only the fields to change, and a note why). Stored only: nothing changes until you press Apply in Approvals. Changes that add folders, the write_file or claude task, or raise limits and budgets are marked as widening.</td></tr>
 <tr><td><code>mailroom_create_contract</code></td><td>write</td><td>Make a contract: name, folders, tasks, daily limit, expiry, approval list.</td></tr>
 <tr><td><code>mailroom_update_contract</code></td><td>write</td><td>Replace a contract's rules. Queued parcels are checked again just before the Hub sends them; waiting ones when you approve. Running parcels are not stopped.</td></tr>
 <tr><td><code>mailroom_create_key</code></td><td>write</td><td>Make a client key for a contract. The key is returned once.</td></tr>

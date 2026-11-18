@@ -1,8 +1,12 @@
 // The contract rules, shared by the gateway (Worker) and the daemon. Pure: no I/O, no clock, no globals.
 // A contract says what a key may do. The gateway checks it, and the daemon runs the same check again on the contract the Hub
-// sends with each job (with real paths and the laptop's home and clock). The daemon keeps no copy of its own.
+// sends with each job (with real paths and the laptop's home and clock). The laptop ceiling (daemon/policy.ts) is applied by the daemon on top.
 
-export const TASKS = ["echo", "read_file", "write_file", "claude"] as const;
+import { DEFAULT_CLAUDE_DAILY_MINUTES, DEFAULT_CLAUDE_DAILY_TURNS, MAX_CLAUDE_DAILY_MINUTES, MAX_CLAUDE_DAILY_TURNS } from "./claude-budget.ts";
+import { BATCH_MAX_CONCURRENCY, BATCH_MAX_ITEMS, TARGET_RE, batchLimits, checkBatch, checkWorkflow } from "./pipeline.ts";
+import { validateCallbackPrefixes, type UrlOpts } from "./callback.ts";
+
+export const TASKS = ["echo", "read_file", "write_file", "claude", "run", "ask", "batch", "workflow"] as const;
 export type TaskName = (typeof TASKS)[number];
 
 export type Contract = {
@@ -12,7 +16,33 @@ export type Contract = {
   dailyLimit: number; // whole parcels per UTC day, 1..100000
   expires: string | null; // ISO date or datetime; null = never
   approval: string[]; // tasks that wait for the owner before they run
+  commands?: string[]; // names the "run" task may use (registered on the laptop); missing in older contracts = none
+  prompts?: string[]; // names the "ask" task may use (registered on the laptop in prompts.json); missing in older contracts = none
+  claudeTools?: string[]; // ceiling on a claude job's allowedTools, and what a job with no allowedTools gets; missing = DEFAULT_CLAUDE_TOOLS
+  claudeMaxTurns?: number; // ceiling on a claude job's maxTurns, and what a job with no maxTurns gets; missing = DEFAULT_CLAUDE_MAX_TURNS
+  claudeDailyTurns?: number; // budget for claude (and ask) jobs per key per UTC day, in turns; missing = 100 (shared/claude-budget.ts)
+  claudeDailyMinutes?: number; // the same in wall-clock minutes; missing = 60
+  batches?: string[]; // targets the "batch" task may run, as "run:<command>" or "ask:<prompt>" (each must also be in commands / prompts); missing = none
+  batchMaxItems?: number; // most items in one batch; missing = 100 (shared/pipeline.ts)
+  batchMaxConcurrency?: number; // most items a batch runs at once; missing = 3, at most 6
+  workflows?: string[]; // names the "workflow" task may run (registered on the laptop in workflows.json); missing = none
+  callbackUrls?: string[]; // https prefixes (ending in /) a job's callback_url must start with; missing = none (shared/callback.ts)
 };
+
+/** Safe defaults for contracts stored before the claude ceilings existed: read-only tools, a short run. */
+export const DEFAULT_CLAUDE_TOOLS: readonly string[] = ["Read", "Glob", "Grep"];
+export const DEFAULT_CLAUDE_MAX_TURNS = 10;
+export const MAX_CLAUDE_TURNS = 50;
+export const CLAUDE_TOOL_RE = /^[\w:*() .\-]{1,100}$/;
+/** An MCP tool is named `mcp__<server>__<tool>`, one tool at a time: no wildcard and no server-wide name. Anything starting with `mcp__` must match this. */
+export const MCP_TOOL_RE = /^mcp__([A-Za-z0-9-]{1,40})__([A-Za-z0-9_-]{1,60})$/;
+/** Is this a usable tool name? A plain tool name, or a well-formed MCP tool name. */
+export const toolNameOk = (t: unknown): t is string => typeof t === "string" && CLAUDE_TOOL_RE.test(t) && (!t.startsWith("mcp__") || MCP_TOOL_RE.test(t));
+/** The claude ceilings a contract grants (the defaults when the fields are missing). */
+export const claudeCeiling = (c: { claudeTools?: string[]; claudeMaxTurns?: number }) => ({
+  tools: Array.isArray(c.claudeTools) ? c.claudeTools : [...DEFAULT_CLAUDE_TOOLS],
+  maxTurns: typeof c.claudeMaxTurns === "number" ? c.claudeMaxTurns : DEFAULT_CLAUDE_MAX_TURNS,
+});
 
 export type Job = { task: string; args: Record<string, unknown> };
 
@@ -30,6 +60,12 @@ export type CheckContext = {
 export type ValidationResult = { ok: true; contract: Contract } | { ok: false; errors: Record<string, string> };
 
 const NAME_RE = /^[\w .()-]{1,60}$/;
+export const COMMAND_RE = /^[\w.-]{1,60}$/;
+export const PROMPT_RE = COMMAND_RE;
+/** The only args an `ask` job may carry: the prompt's name, its variables and an earlier job to resume. Never a prompt text, tools or turns. */
+export const ASK_ARG_KEYS = ["prompt", "vars", "resume"] as const;
+/** A job id the Hub made (p_...): what `resume` may name. */
+export const JOB_ID_RE = /^[\w-]{1,80}$/;
 
 /** "~/a/../b" -> "~/b", "/a//b/" -> "/a/b". Returns null for a relative path or one that climbs out of its root. */
 export function normalizePath(p: string, home?: string): string | null {
@@ -63,7 +99,7 @@ export function inside(path: string, folder: string): boolean {
 }
 
 /** Validates an editor or API payload. The messages are the copy the contract editor shows. */
-export function validateContract(raw: unknown): ValidationResult {
+export function validateContract(raw: unknown, urlOpts: UrlOpts = {}): ValidationResult {
   const errors: Record<string, string> = {};
   const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
 
@@ -115,14 +151,96 @@ export function validateContract(raw: unknown): ValidationResult {
     if (!approval.includes(a)) approval.push(a);
   }
 
+  const cmdIn = Array.isArray(o.commands) ? o.commands : o.commands === undefined || o.commands === null ? [] : null;
+  const commands: string[] = [];
+  if (cmdIn === null) errors.commands = "Commands must be a list of names.";
+  else
+    for (const c of cmdIn) {
+      if (typeof c !== "string" || !COMMAND_RE.test(c.trim())) {
+        errors.commands = `“${String(c)}” is not a command name (letters, numbers, dots, dashes, up to 60).`;
+        break;
+      }
+      if (!commands.includes(c.trim())) commands.push(c.trim());
+    }
+  if (!errors.commands && tasks.includes("run") && commands.length === 0) errors.commands = "Name at least one command for the run task.";
+
+  const prIn = Array.isArray(o.prompts) ? o.prompts : o.prompts === undefined || o.prompts === null ? [] : null;
+  const prompts: string[] = [];
+  if (prIn === null) errors.prompts = "Prompts must be a list of names.";
+  else
+    for (const c of prIn) {
+      if (typeof c !== "string" || !PROMPT_RE.test(c.trim())) {
+        errors.prompts = `“${String(c)}” is not a prompt name (letters, numbers, dots, dashes, up to 60).`;
+        break;
+      }
+      if (!prompts.includes(c.trim())) prompts.push(c.trim());
+    }
+  if (!errors.prompts && tasks.includes("ask") && prompts.length === 0) errors.prompts = "Name at least one prompt for the ask task.";
+
+  const btIn = Array.isArray(o.batches) ? o.batches : o.batches === undefined || o.batches === null ? [] : null;
+  const batches: string[] = [];
+  if (btIn === null) errors.batches = "Batch targets must be a list like run:scan or ask:summarise.";
+  else
+    for (const c of btIn) {
+      if (typeof c !== "string" || !TARGET_RE.test(c.trim())) {
+        errors.batches = `“${String(c)}” is not a batch target (use run:<command> or ask:<prompt>).`;
+        break;
+      }
+      if (!batches.includes(c.trim())) batches.push(c.trim());
+    }
+  if (!errors.batches && tasks.includes("batch") && batches.length === 0) errors.batches = "Name at least one target for the batch task.";
+  const bmi = o.batchMaxItems === undefined || o.batchMaxItems === null ? batchLimits({}).maxItems : o.batchMaxItems;
+  if (typeof bmi !== "number" || !Number.isInteger(bmi) || bmi < 1 || bmi > BATCH_MAX_ITEMS) errors.batchMaxItems = `Use a whole number from 1 to ${BATCH_MAX_ITEMS}.`;
+  const bmc = o.batchMaxConcurrency === undefined || o.batchMaxConcurrency === null ? batchLimits({}).maxConcurrency : o.batchMaxConcurrency;
+  if (typeof bmc !== "number" || !Number.isInteger(bmc) || bmc < 1 || bmc > BATCH_MAX_CONCURRENCY) errors.batchMaxConcurrency = `Use a whole number from 1 to ${BATCH_MAX_CONCURRENCY}.`;
+
+  const wfIn = Array.isArray(o.workflows) ? o.workflows : o.workflows === undefined || o.workflows === null ? [] : null;
+  const workflows: string[] = [];
+  if (wfIn === null) errors.workflows = "Workflows must be a list of names.";
+  else
+    for (const c of wfIn) {
+      if (typeof c !== "string" || !COMMAND_RE.test(c.trim())) {
+        errors.workflows = `“${String(c)}” is not a workflow name (letters, numbers, dots, dashes, up to 60).`;
+        break;
+      }
+      if (!workflows.includes(c.trim())) workflows.push(c.trim());
+    }
+  if (!errors.workflows && tasks.includes("workflow") && workflows.length === 0) errors.workflows = "Name at least one workflow for the workflow task.";
+
+  const ctIn = o.claudeTools === undefined || o.claudeTools === null ? [...DEFAULT_CLAUDE_TOOLS] : o.claudeTools;
+  const claudeTools: string[] = [];
+  if (!Array.isArray(ctIn) || ctIn.length === 0 || ctIn.length > 20) errors.claudeTools = "List 1 to 20 tool names, like Read or Bash(git log:*).";
+  else
+    for (const t of ctIn) {
+      if (typeof t !== "string" || !CLAUDE_TOOL_RE.test(t.trim())) {
+        errors.claudeTools = `“${String(t)}” is not a tool name (letters, numbers, spaces and : * ( ) . - only).`;
+        break;
+      }
+      if (!toolNameOk(t.trim())) {
+        errors.claudeTools = `“${t}” is not allowed: an MCP tool is named mcp__<server>__<tool>, one tool at a time (no wildcards).`;
+        break;
+      }
+      if (!claudeTools.includes(t.trim())) claudeTools.push(t.trim());
+    }
+  const cm = o.claudeMaxTurns === undefined || o.claudeMaxTurns === null ? DEFAULT_CLAUDE_MAX_TURNS : o.claudeMaxTurns;
+  if (typeof cm !== "number" || !Number.isInteger(cm) || cm < 1 || cm > MAX_CLAUDE_TURNS) errors.claudeMaxTurns = `Use a whole number from 1 to ${MAX_CLAUDE_TURNS}.`;
+
+  const cdt = o.claudeDailyTurns === undefined || o.claudeDailyTurns === null ? DEFAULT_CLAUDE_DAILY_TURNS : o.claudeDailyTurns;
+  if (typeof cdt !== "number" || !Number.isInteger(cdt) || cdt < 1 || cdt > MAX_CLAUDE_DAILY_TURNS) errors.claudeDailyTurns = `Use a whole number from 1 to ${MAX_CLAUDE_DAILY_TURNS}, like 100.`;
+  const cdm = o.claudeDailyMinutes === undefined || o.claudeDailyMinutes === null ? DEFAULT_CLAUDE_DAILY_MINUTES : o.claudeDailyMinutes;
+  if (typeof cdm !== "number" || !Number.isInteger(cdm) || cdm < 1 || cdm > MAX_CLAUDE_DAILY_MINUTES) errors.claudeDailyMinutes = `Use a whole number of minutes from 1 to ${MAX_CLAUDE_DAILY_MINUTES}, like 60.`;
+
+  const cb = validateCallbackPrefixes(o.callbackUrls, urlOpts);
+  if (!cb.ok) errors.callbackUrls = cb.error;
+
   if (Object.keys(errors).length) return { ok: false, errors };
-  return { ok: true, contract: { name, folders, tasks, dailyLimit: dl as number, expires, approval } };
+  return { ok: true, contract: { name, folders, tasks, dailyLimit: dl as number, expires, approval, commands, prompts, claudeTools, claudeMaxTurns: cm as number, claudeDailyTurns: cdt as number, claudeDailyMinutes: cdm as number, batches, batchMaxItems: bmi as number, batchMaxConcurrency: bmc as number, workflows, ...(cb.ok && cb.prefixes.length ? { callbackUrls: cb.prefixes } : {}) } };
 }
 
 /** The paths a job touches. echo touches none. */
 export function jobPaths(job: Job): string[] | { error: string } {
   const a = job.args ?? {};
-  if (job.task === "echo") return [];
+  if (job.task === "echo" || job.task === "run" || job.task === "ask" || job.task === "batch" || job.task === "workflow") return []; // run and ask: the daemon checks the registered cwd itself; batch and workflow check each item or step the same way
   const key = job.task === "claude" ? "cwd" : "path";
   const v = a[key];
   if (typeof v !== "string") return { error: `${job.task} needs a ${key}` };
@@ -134,6 +252,42 @@ export function check(contract: Contract, job: Job, ctx: CheckContext): Verdict 
   if (contract.expires && ctx.now >= Date.parse(contract.expires)) return { verdict: "refuse", reason: "contract expired" };
   if (typeof job?.task !== "string" || !contract.tasks.includes(job.task)) return { verdict: "refuse", reason: `task “${String(job?.task)}” is not in the contract` };
   if (ctx.usedToday >= contract.dailyLimit) return { verdict: "refuse", reason: `daily limit of ${contract.dailyLimit} reached` };
+
+  if (job.task === "run") {
+    const cmd = job.args?.command;
+    if (typeof cmd !== "string" || !(contract.commands ?? []).includes(cmd)) return { verdict: "refuse", reason: `command “${String(cmd)}” is not in the contract` };
+  }
+
+  if (job.task === "batch") {
+    const why = checkBatch(contract, job.args);
+    if (why) return { verdict: "refuse", reason: why };
+  }
+  if (job.task === "workflow") {
+    const why = checkWorkflow(contract, job.args);
+    if (why) return { verdict: "refuse", reason: why };
+  }
+
+  if (job.task === "ask") {
+    const a = job.args ?? {};
+    const p = a.prompt;
+    if (typeof p !== "string" || !(contract.prompts ?? []).includes(p)) return { verdict: "refuse", reason: `prompt “${String(p)}” is not in the contract` };
+    const extra = Object.keys(a).filter(k => !(ASK_ARG_KEYS as readonly string[]).includes(k));
+    if (extra.length) return { verdict: "refuse", reason: `ask takes only prompt, vars and resume (not ${extra.join(", ")}); the laptop decides tools, turns and model` };
+    if (a.vars !== undefined && (a.vars === null || typeof a.vars !== "object" || Array.isArray(a.vars))) return { verdict: "refuse", reason: "ask vars must be an object" };
+  }
+  if ((job.task === "ask" || job.task === "claude") && job.args?.resume !== undefined && (typeof job.args.resume !== "string" || !JOB_ID_RE.test(job.args.resume)))
+    return { verdict: "refuse", reason: "resume must be the id of an earlier job" };
+
+  if (job.task === "claude") {
+    const ceil = claudeCeiling(contract);
+    const t = job.args?.allowedTools;
+    if (t !== undefined) {
+      const bad = Array.isArray(t) ? t.filter(x => typeof x !== "string" || !ceil.tools.includes(x)) : [t];
+      if (bad.length) return { verdict: "refuse", reason: `claude tools ${bad.map(x => JSON.stringify(x)).join(", ")} are not in the contract (it allows: ${ceil.tools.join(", ")})` };
+    }
+    const m = job.args?.maxTurns;
+    if (typeof m === "number" && m > ceil.maxTurns) return { verdict: "refuse", reason: `claude maxTurns ${m} is more than the contract allows (${ceil.maxTurns})` };
+  }
 
   const paths = jobPaths(job);
   if (!Array.isArray(paths)) return { verdict: "refuse", reason: paths.error };

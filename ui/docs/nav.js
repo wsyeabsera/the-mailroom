@@ -9,17 +9,20 @@ export const NAV = [
   { group: "How it works", pages: [
     { slug: "how-it-works", title: "How a parcel travels", summary: "The parts, and one parcel's journey end to end." },
     { slug: "keys-contracts", title: "Keys and contracts", summary: "Who may send what, and how a parcel is checked." },
+    { slug: "projects", title: "Projects", summary: "Group keys by app, see commands, and what a project never does." },
     { slug: "parcels", title: "Parcels and approvals", summary: "The life of a parcel, and when it waits for you." },
     { slug: "laptop", title: "The laptop and the daemon", summary: "How your Mac does the work, and stays safe." },
   ] },
   { group: "Using it", pages: [
     { slug: "admin-ui", title: "The admin app", summary: "A tour of every page." },
     { slug: "extension", title: "The browser extension", summary: "See what needs you, from your toolbar." },
+    { slug: "pipelines", title: "Batches and workflows", summary: "Partial results, a list one at a time or three at a time, and multi-step pipelines." },
     { slug: "mcp", title: "Claude and other apps (MCP)", summary: "Tokens, scopes and the plugin." },
   ] },
   { group: "Reference", pages: [
     { slug: "security", title: "Security model", summary: "What protects what, and the honest limits." },
     { slug: "cli", title: "The mailroom command", summary: "Every command and what it does." },
+    { slug: "client", title: "Use it from another project", summary: "The mailroom-client helper: submit, progress, cancel." },
     { slug: "api", title: "HTTP API", summary: "Routes for clients, the owner and the daemon." },
     { slug: "events", title: "Events", summary: "The log of everything that happens." },
     { slug: "troubleshooting", title: "Troubleshooting", summary: "When something looks wrong." },

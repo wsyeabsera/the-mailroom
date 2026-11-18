@@ -64,7 +64,7 @@ export function bearer(header: string | null | undefined): string | null {
 /** Counter-based id: prefix + base36 counter, at least 4 chars (counter starts at 36^3). */
 export const makeId = (prefix: string, counter: number): string => `${prefix}${(46656 + counter).toString(36)}`;
 
-export const TOKEN_SCOPES = ["read", "write", "approve"] as const;
+export const TOKEN_SCOPES = ["read", "write", "approve", "propose"] as const;
 
 /** Validates the body of POST /admin/tokens. `read` is added when write or approve is chosen; scopes come back in a fixed order. */
 export function validateTokenInput(raw: unknown): { ok: true; label: string; scopes: string[] } | { ok: false; errors: Record<string, string> } {
@@ -73,11 +73,11 @@ export function validateTokenInput(raw: unknown): { ok: true; label: string; sco
   const label = typeof o.label === "string" ? o.label.trim() : "";
   if (label.length < 1 || label.length > 60) errors.label = "Label must be 1 to 60 characters.";
   let scopes: string[] = [];
-  if (!Array.isArray(o.scopes) || o.scopes.length === 0) errors.scopes = "Pick at least one scope: read, write or approve.";
-  else if (o.scopes.some((s) => typeof s !== "string" || !(TOKEN_SCOPES as readonly string[]).includes(s))) errors.scopes = "Scopes can only be read, write or approve.";
+  if (!Array.isArray(o.scopes) || o.scopes.length === 0) errors.scopes = "Pick at least one scope: read, write, approve or propose.";
+  else if (o.scopes.some((s) => typeof s !== "string" || !(TOKEN_SCOPES as readonly string[]).includes(s))) errors.scopes = "Scopes can only be read, write, approve or propose.";
   else {
     const set = new Set(o.scopes as string[]);
-    if (set.has("write") || set.has("approve")) set.add("read");
+    if (set.has("write") || set.has("approve") || set.has("propose")) set.add("read");
     scopes = TOKEN_SCOPES.filter((s) => set.has(s));
   }
   return Object.keys(errors).length ? { ok: false, errors } : { ok: true, label, scopes };

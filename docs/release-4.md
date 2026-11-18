@@ -24,4 +24,4 @@ Earlier docs and release notes said the daemon enforces the contract on its own 
 ## Not done
 
 - **The live Worker is still v0.3.0.** The docs, the `status` fix and the Events fix take effect once it is redeployed.
-- Known, documented, not changed: a parcel that was running when the laptop dropped can run a second time; cancelled parcels still count toward the daily limit.
+- Known at v0.4.0, since fixed: a parcel that was running when the laptop dropped could run a second time (now only if re-run-safe), and cancelled parcels counted toward the daily limit (they no longer do).

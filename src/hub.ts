@@ -1,12 +1,28 @@
 // The Hub: the one Durable Object and the only writer. SQLite state, append-only events, SSE replay, the daemon WebSocket.
 import { DurableObject } from "cloudflare:workers";
 import { check, validateContract, type Contract } from "../shared/contract.ts";
+import { cancelAction } from "../shared/cancel.ts";
 import { bearer, credentialHint, displayPrefix, generateAdminToken, generateDaemonCredential, generateKey, hashToken, makeId, safeEqual, safeEqualSecret, tokenKind, validateTokenInput } from "./keys.ts";
 import { formatFieldErrors, handleMcpText, ToolError, type McpApi } from "./mcp.ts";
 import { checkLogin, clearFailures, LOGIN_TABLE, recordFailure, type Sql } from "./login-limit.ts";
+import { laneKey, laneOf, parseHello, pickNext, type LaneHints } from "../shared/lanes.ts";
+import { ensureProjectSchema, loadReport, Projects, storeReport } from "./projects.ts";
+import { storePromptReport } from "./prompt-report.ts";
+import { Proposals, PROPOSAL_TABLE } from "./proposals.ts";
+import { loadWorkflowReport, storeWorkflowReport } from "./workflow-report.ts";
+import { fingerprint, idempotencyFresh, parseIdempotencyKey } from "./idempotency.ts";
+import { isRerunSafe, NOT_RERUN_SAFE_REASON, parseLabel, parseRerunSafe, REQUEUE_REASON, resumeRefusal, UNCOUNTED_SQL } from "./job-rules.ts";
+import { addUsage, budgetFor, ensureClaudeUsageSchema, usageSummary } from "./claude-budget.ts";
+import { cleanPartial, oldestKept } from "../shared/partials.ts";
+import { clipMaxTurns, refusedWhenOver, usesBudget, parseUsage } from "../shared/claude-budget.ts";
+import { claudeCeiling } from "../shared/contract.ts";
+import { markerBytes, planResult, resultCutoff, resultExpired } from "./results.ts";
+import { MAX_RESULT_BYTES } from "../shared/limits.ts";
+import { VERSION as HUB_VERSION, cleanCommit, cleanVersion, daemonNotice } from "../shared/version.ts";
+import { Notifier, type NotifyEnv } from "./notify.ts";
 import { SESSION_SECONDS, sessionCookie, signSession } from "./session.ts";
 
-export interface Env {
+export interface Env extends NotifyEnv {
   HUB: DurableObjectNamespace;
   ASSETS: Fetcher;
   OWNER_PASSWORD?: string;
@@ -25,7 +41,7 @@ const STATES = ["queued", "waiting_approval", "running", "done", "refused", "fai
 
 type Row = Record<string, any>;
 type Ev = { seq: number; ts: number; kind: string; payload: any };
-type Daemon = { ws: WebSocket; hello: boolean; lastPong: number; timer: ReturnType<typeof setInterval> | null };
+type Daemon = { ws: WebSocket; hello: boolean; lastPong: number; timer: ReturnType<typeof setInterval> | null; pings: Map<string, () => void> };
 
 const json = (body: unknown, status = 200, headers?: Record<string, string>) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store", ...headers } });
@@ -36,14 +52,19 @@ const utcMidnight = (now: number) => now - (now % 86_400_000);
 
 export class Hub extends DurableObject<Env> {
   private sql: Sql;
+  private notify: Notifier;
   private daemon: Daemon | null = null;
-  private inflight: string | null = null;
+  private inflight = new Map<string, string>(); // lane key -> running job id (see shared/lanes.ts)
+  private laneMode: { hints: LaneHints } | null = null; // null = old daemon: one lane
   private lastSeq = 0; // last seq the daemon said it saw
   private subs = new Set<ReadableStreamDefaultController<Uint8Array>>();
   private sseTimer: ReturnType<typeof setInterval> | null = null;
   private rate = new Map<string, { start: number; n: number }>();
   private mcpRate = new Map<string, { start: number; n: number }>();
   private enc = new TextEncoder();
+  private projects: Projects;
+  private proposals: Proposals;
+  private usageSeen = new Set<string>(); // cancelled jobs whose usage is already counted (a repeat message must not count twice)
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -53,17 +74,39 @@ export class Hub extends DurableObject<Env> {
       "CREATE TABLE IF NOT EXISTS keys (id TEXT PRIMARY KEY, label TEXT NOT NULL, prefix TEXT NOT NULL, hash TEXT NOT NULL, contract_id TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER, last_used_at INTEGER)",
       "CREATE TABLE IF NOT EXISTS contracts (id TEXT PRIMARY KEY, name TEXT NOT NULL, body TEXT NOT NULL, version INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
       "CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, key_id TEXT NOT NULL, contract_id TEXT NOT NULL, contract_version INTEGER NOT NULL, task TEXT NOT NULL, args TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, result TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS job_partials (job_id TEXT NOT NULL, n INTEGER NOT NULL, body TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (job_id, n))", // partial results, newest MAX_PARTIALS per job
+      "CREATE TABLE IF NOT EXISTS job_progress (job_id TEXT PRIMARY KEY, text TEXT NOT NULL, pct REAL, at INTEGER NOT NULL)",
       "CREATE INDEX IF NOT EXISTS jobs_key ON jobs (key_id, created_at)",
       "CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL)",
       "CREATE TABLE IF NOT EXISTS daemon (id INTEGER PRIMARY KEY CHECK (id = 1), hash TEXT NOT NULL, hint TEXT, rotated_at INTEGER NOT NULL, last_seen INTEGER, connected INTEGER NOT NULL DEFAULT 0)",
       "CREATE TABLE IF NOT EXISTS admin_tokens (id TEXT PRIMARY KEY, label TEXT NOT NULL, prefix TEXT NOT NULL, hash TEXT NOT NULL, scopes TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER, last_used_at INTEGER)",
       "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS job_results (job_id TEXT PRIMARY KEY, body TEXT NOT NULL, bytes INTEGER NOT NULL, stored_at INTEGER NOT NULL)", // results over 200 KB, kept 7 days
+      "CREATE INDEX IF NOT EXISTS job_results_at ON job_results (stored_at)",
+      "CREATE TABLE IF NOT EXISTS idempotency (key_id TEXT NOT NULL, idem_key TEXT NOT NULL, job_id TEXT NOT NULL, fp TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (key_id, idem_key))",
+      "CREATE TABLE IF NOT EXISTS daemon_rerun (name TEXT PRIMARY KEY)", // commands the laptop flagged re-run-safe in its last hello
+      PROPOSAL_TABLE,
       LOGIN_TABLE,
     ])
       this.sql.run(q);
+    ensureProjectSchema(this.sql);
+    ensureClaudeUsageSchema(this.sql);
+    this.projects = new Projects({
+      sql: this.sql, next: (n) => this.next(n), event: (k, p) => this.event(k, p), keyOut: (k) => this.keyOut(k), jobOut: (j) => this.jobOut(j),
+      progress: (id) => this.progressOf(id), contractBody: (id) => { const c = this.contractRow(id); return c ? (parse(c.body) as Contract) : undefined; }, readJson: (r) => this.readJson(r),
+    });
+    this.proposals = new Proposals({
+      sql: this.sql, next: (n) => this.next(n), event: (k, p) => this.event(k, p), allowLocalUrls: this.env.MAILROOM_ALLOW_LOCAL_URLS === "1",
+      contract: (id) => { const c = this.contractRow(id); return c ? { body: parse(c.body) as Contract, version: c.version as number } : undefined; },
+      saveContract: (id, body) => { const o = this.saveContractCore(body, this.contractRow(id)!); return "errors" in o ? o : { version: o.out.version }; },
+    });
+    try { this.sql.run("ALTER TABLE jobs ADD COLUMN label TEXT"); } catch { /* already there */ }
+    for (const col of ["daemon_version", "daemon_commit"]) try { this.sql.run(`ALTER TABLE daemon ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
+    this.sweepResults();
+    this.notify = new Notifier(this.sql, this.env, (k, p) => this.event(k, p), (p) => this.ctx.waitUntil(p)); // callbacks + phone push (src/notify.ts)
     // A fresh instance has no socket: nothing can still be running.
     this.sql.run("UPDATE daemon SET connected = 0");
-    for (const j of this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'running'")) this.setState(j, "queued", "laptop disconnected");
+    for (const j of this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'running'")) this.requeueOrFail(j);
   }
 
   // ---- small helpers ----
@@ -93,24 +136,66 @@ export class Hub extends DurableObject<Env> {
 
   private jobOut = (r: Row) => ({
     id: r.id, key_id: r.key_id, contract_id: r.contract_id, contract_version: r.contract_version, task: r.task, args: parse(r.args), state: r.state,
-    reason: r.reason ?? undefined, result: parse(r.result), created_at: r.created_at, updated_at: r.updated_at,
+    label: r.label ?? undefined, reason: r.reason ?? undefined, result: parse(r.result), progress: this.progressOf(r.id), partials: this.partialCount(r.id), created_at: r.created_at, updated_at: r.updated_at,
   });
+  /** How many partial results the job has produced (numbers are never reused, so this is also the last number). */
+  private partialCount(id: string): number {
+    return (this.one("SELECT MAX(n) AS n FROM job_partials WHERE job_id = ?", id)?.n as number | null) ?? 0;
+  }
+  private progressOf(id: string) {
+    const p = this.one("SELECT text, pct, at FROM job_progress WHERE job_id = ?", id);
+    return p ? { text: p.text as string, ...(p.pct === null ? {} : { pct: p.pct as number }), at: p.at as number } : undefined;
+  }
+
+  /** The job's result in full: a big one is read from job_results (or reported as expired once it has been swept). */
+  private resultOf(r: Row): unknown {
+    const bytes = markerBytes(r.result);
+    if (bytes === null) return parse(r.result);
+    const big = this.one("SELECT body, stored_at FROM job_results WHERE job_id = ?", r.id);
+    if (!big || resultExpired(big.stored_at, Date.now())) return { expired: true, bytes };
+    return parse(big.body);
+  }
+  /** Removes big results older than 7 days. Runs when the Hub wakes, when a big result is stored and when one is read. */
+  private sweepResults() {
+    this.sql.run("DELETE FROM job_results WHERE stored_at < ?", resultCutoff(Date.now()));
+    this.sql.run("DELETE FROM job_partials WHERE at < ?", resultCutoff(Date.now())); // partials follow the big-result retention
+  }
+
+  /** A job that was running when the laptop dropped: queued again if re-running it is safe, otherwise failed. */
+  private requeueOrFail(j: Row) {
+    const safe = this.sql.all<Row>("SELECT name FROM daemon_rerun").map((r) => r.name as string);
+    if (isRerunSafe(j.task, parse(j.args), safe)) this.setState(j, "queued", REQUEUE_REASON);
+    else this.setState(j, "failed", NOT_RERUN_SAFE_REASON);
+  }
 
   /** Moves a job to a new state, appends the event. `kind` defaults to job.<state>. */
   private setState(job: Row, state: string, reason?: string | null, result?: unknown, kind?: string) {
     const now = Date.now();
-    this.sql.run("UPDATE jobs SET state = ?, reason = ?, result = ?, updated_at = ?, contract_version = ? WHERE id = ?", state, reason ?? null, result === undefined ? job.result ?? null : JSON.stringify(result), now, job.contract_version, job.id);
+    let stored: string | null = job.result ?? null;
+    if (result !== undefined) {
+      const plan = planResult(JSON.stringify(result) ?? "null");
+      if (plan.kind === "inline") stored = plan.json;
+      else if (plan.kind === "stored") {
+        this.sql.run("INSERT OR REPLACE INTO job_results (job_id, body, bytes, stored_at) VALUES (?, ?, ?, ?)", job.id, plan.body, plan.bytes, now);
+        this.sweepResults();
+        stored = plan.marker;
+      } else stored = null; // callers check size first; never keep an oversized result
+    }
+    this.sql.run("UPDATE jobs SET state = ?, reason = ?, result = ?, updated_at = ?, contract_version = ? WHERE id = ?", state, reason ?? null, stored, now, job.contract_version, job.id);
+    job.result = stored;
     job.state = state;
+    if (state === "queued") { this.sql.run("DELETE FROM job_progress WHERE job_id = ?", job.id); this.sql.run("DELETE FROM job_partials WHERE job_id = ?", job.id); } // a requeued job starts over
     const p: Record<string, unknown> = { job_id: job.id, key_id: job.key_id, task: job.task };
     if (reason) p.reason = reason;
     this.event(kind ?? `job.${state}`, p);
+    this.notify.jobEnded(job, state); // job-done callback, if the job asked for one
   }
 
   private contractRow(id: string): Row | undefined { return this.one("SELECT * FROM contracts WHERE id = ?", id); }
   private contractOut(r: Row) { return { id: r.id, ...(parse(r.body) as Contract), version: r.version, used_by: this.one("SELECT COUNT(*) AS n FROM keys WHERE contract_id = ? AND revoked_at IS NULL", r.id)!.n }; }
 
   private usedToday(keyId: string, now: number, excludeId?: string): number {
-    return this.one("SELECT COUNT(*) AS n FROM jobs WHERE key_id = ? AND created_at >= ? AND state != 'refused' AND id != ?", keyId, utcMidnight(now), excludeId ?? "")!.n;
+    return this.one(`SELECT COUNT(*) AS n FROM jobs WHERE key_id = ? AND created_at >= ? AND state NOT IN (${UNCOUNTED_SQL}) AND id != ?`, keyId, utcMidnight(now), excludeId ?? "")!.n;
   }
 
   private async readJson(req: Request): Promise<{ ok: true; body: any } | { ok: false; res: Response }> {
@@ -134,6 +219,7 @@ export class Hub extends DurableObject<Env> {
     try {
       if (path === "/daemon") return await this.daemonUpgrade(req);
       if (path === "/api/jobs" || path.startsWith("/api/jobs/")) return await this.clientRoute(req, path);
+      if (path === "/api/commands" || path === "/api/prompts" || path === "/api/workflows") return await this.commandsRoute(req, path);
       if (path === "/mcp") return await this.mcp(req);
       if (path === "/admin/login") return await this.login(req);
       if (path.startsWith("/admin/")) return await this.admin(req, url);
@@ -169,6 +255,18 @@ export class Hub extends DurableObject<Env> {
     return ++r.n > limit;
   }
 
+  private async commandsRoute(req: Request, path = "/api/commands"): Promise<Response> {
+    const k = await this.clientAuth(req);
+    if (!k) return err(401, "bad_key");
+    if (this.rateLimited(k.id)) return err(429, "rate_limited", { retry_after: 60 });
+    if (req.method !== "GET") return err(405, "method_not_allowed");
+    const c = parse(this.contractRow(k.contract_id)!.body) as Contract;
+    const bs = budgetFor(this.sql, k.id, c); // what is left of the key's Claude budget today, to say whether an estimate fits
+    if (path === "/api/prompts") return json(this.projects.promptsFor(c.prompts ?? [], bs));
+    if (path === "/api/workflows") return json(this.projects.workflowsFor(c.workflows ?? [], bs));
+    return json(this.projects.commandsFor(c.commands ?? [], bs));
+  }
+
   private async clientRoute(req: Request, path: string): Promise<Response> {
     const k = await this.clientAuth(req);
     if (!k) return err(401, "bad_key");
@@ -177,11 +275,35 @@ export class Hub extends DurableObject<Env> {
       if (req.method !== "POST") return err(405, "method_not_allowed");
       return this.submit(req, k);
     }
+    const rest = path.slice("/api/jobs/".length);
+    if (rest.endsWith("/cancel")) {
+      if (req.method !== "POST") return err(405, "method_not_allowed");
+      const cj = this.one("SELECT * FROM jobs WHERE id = ? AND key_id = ?", rest.slice(0, -"/cancel".length), k.id);
+      if (!cj) return err(404, "not_found");
+      const action = cancelAction(cj.state);
+      if (action === "conflict") return err(409, "not_cancellable", { state: cj.state });
+      this.setState(cj, "cancelled", "cancelled by client"); // appends job.cancelled
+      if (action === "stop") {
+        this.clearInflight(cj.id);
+        this.send({ type: "cancel", id: cj.id });
+      }
+      this.pushNext();
+      return json({ id: cj.id, state: "cancelled" });
+    }
     if (req.method !== "GET") return err(405, "method_not_allowed");
-    const j = this.one("SELECT * FROM jobs WHERE id = ? AND key_id = ?", path.slice("/api/jobs/".length), k.id);
+    if (rest.endsWith("/partials")) {
+      // Partial results so far; ?after=<n> returns those numbered above n. Untrusted data from the laptop's script, served as stored.
+      const pj = this.one("SELECT id FROM jobs WHERE id = ? AND key_id = ?", rest.slice(0, -"/partials".length), k.id);
+      if (!pj) return err(404, "not_found");
+      const after = Number(new URL(req.url).searchParams.get("after") ?? 0);
+      const rows = this.sql.all<Row>("SELECT n, body, at FROM job_partials WHERE job_id = ? AND n > ? ORDER BY n LIMIT 200", pj.id, Number.isFinite(after) ? after : 0);
+      return json({ id: pj.id, count: this.partialCount(pj.id as string), partials: rows.map(r => ({ n: r.n, at: r.at, value: parse(r.body) })) });
+    }
+    const j = this.one("SELECT * FROM jobs WHERE id = ? AND key_id = ?", rest, k.id);
     if (!j) return err(404, "not_found");
     const o = this.jobOut(j);
-    return json({ id: o.id, state: o.state, reason: o.reason, result: o.result, created_at: o.created_at, updated_at: o.updated_at });
+    this.sweepResults();
+    return json({ id: o.id, state: o.state, label: o.label, reason: o.reason, result: this.resultOf(j), progress: o.progress, partials: o.partials, created_at: o.created_at, updated_at: o.updated_at });
   }
 
   private async submit(req: Request, k: Row): Promise<Response> {
@@ -189,27 +311,64 @@ export class Hub extends DurableObject<Env> {
     if (!r.ok) return r.res;
     const { task, args = {} } = r.body;
     const errors: Record<string, string> = {};
+    const lab = parseLabel(r.body.label);
+    if (!lab.ok) errors.label = lab.error;
+    const idem = parseIdempotencyKey(req.headers.get("Idempotency-Key"));
+    if (idem === "invalid") errors.idempotency_key = "Idempotency-Key must be 1 to 200 printable characters.";
     if (typeof task !== "string" || task.length === 0 || task.length > 40) errors.task = "task must be a string.";
     if (args === null || typeof args !== "object" || Array.isArray(args)) errors.args = "args must be an object.";
     else if (typeof task === "string") {
       if (task === "echo" && typeof args.text !== "string") errors.args = "echo needs a text string.";
       if (task === "write_file" && typeof args.content !== "string") errors.args = "write_file needs a content string.";
       if (task === "claude" && typeof args.prompt !== "string") errors.args = "claude needs a prompt string.";
+      if (task === "ask" && typeof args.prompt !== "string") errors.args = "ask needs a prompt name string.";
+      if (task === "ask" && args.vars !== undefined && (args.vars === null || typeof args.vars !== "object" || Array.isArray(args.vars))) errors.args = "ask vars must be an object.";
+      if (task === "run" && typeof args.command !== "string") errors.args = "run needs a command name string.";
+      if (task === "run" && args.args !== undefined && (args.args === null || typeof args.args !== "object" || Array.isArray(args.args))) errors.args = "run args must be an object.";
       if ((task === "read_file" || task === "write_file") && args.path !== undefined && typeof args.path !== "string") errors.args = `${task} needs a path string.`;
       if (task === "claude" && args.cwd !== undefined && typeof args.cwd !== "string") errors.args = "claude needs a cwd string.";
     }
+    const c = this.contractRow(k.contract_id)!;
+    const cb = this.notify.check(r.body.callback_url, parse(c.body));
+    if ("error" in cb) errors.callback_url = cb.error;
     if (Object.keys(errors).length) return invalid(errors);
 
-    const c = this.contractRow(k.contract_id)!;
     const now = Date.now();
-    const verdict = check(parse(c.body), { task, args }, { now, usedToday: this.usedToday(k.id, now) });
+    // A repeat of the same Idempotency-Key within 24 h returns the original job instead of making a second one.
+    const fp = fingerprint(task, args);
+    if (typeof idem === "string") {
+      const prev = this.one("SELECT * FROM idempotency WHERE key_id = ? AND idem_key = ?", k.id, idem);
+      if (prev && idempotencyFresh(prev.created_at, now)) {
+        if (prev.fp !== fp) return err(409, "idempotency_conflict", { message: "This Idempotency-Key was already used with a different task or args." });
+        const pj = this.one("SELECT * FROM jobs WHERE id = ?", prev.job_id);
+        if (pj) return pj.state === "refused" ? json({ id: pj.id, state: pj.state, reason: pj.reason, idempotent_replay: true }, 403) : json({ id: pj.id, state: pj.state, idempotent_replay: true }, 200);
+      }
+      this.sql.run("DELETE FROM idempotency WHERE created_at < ?", now - 24 * 3600_000);
+    }
+    let verdict = check(parse(c.body), { task, args }, { now, usedToday: this.usedToday(k.id, now) });
+    // A command the laptop reported with its arg specs is checked here too (same rules as the daemon); unreported = the laptop decides.
+    if (verdict.verdict !== "refuse" && task === "run") {
+      const bad = this.projects.argError(args.command, args.args);
+      if (bad) verdict = { verdict: "refuse", reason: bad };
+    }
+    if (verdict.verdict !== "refuse" && refusedWhenOver(task, args)) {
+      const bs = budgetFor(this.sql, k.id, parse(c.body), now); // the key's claude budget for today (src/claude-budget.ts)
+      if (bs.over) verdict = { verdict: "refuse", reason: bs.reason! };
+    }
+    if (verdict.verdict !== "refuse" && (task === "ask" || task === "claude") && typeof args.resume === "string") {
+      const why = resumeRefusal(this.one("SELECT key_id, task FROM jobs WHERE id = ?", args.resume), k.id); // resume: only this key's own earlier ask/claude job
+      if (why) verdict = { verdict: "refuse", reason: why };
+    }
     const id = makeId("p_", this.next("job"));
     const state = verdict.verdict === "refuse" ? "refused" : verdict.verdict === "approve" ? "waiting_approval" : "queued";
-    this.sql.run("INSERT INTO jobs (id, key_id, contract_id, contract_version, task, args, state, reason, result, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
-      id, k.id, c.id, c.version, task, JSON.stringify(args), state, verdict.verdict === "refuse" ? verdict.reason : null, now, now);
+    this.sql.run("INSERT INTO jobs (id, key_id, contract_id, contract_version, task, args, state, reason, result, created_at, updated_at, label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)",
+      id, k.id, c.id, c.version, task, JSON.stringify(args), state, verdict.verdict === "refuse" ? verdict.reason : null, now, now, lab.ok ? lab.label : null);
+    if (typeof idem === "string") this.sql.run("INSERT OR REPLACE INTO idempotency (key_id, idem_key, job_id, fp, created_at) VALUES (?, ?, ?, ?, ?)", k.id, idem, id, fp, now);
     const job = this.one("SELECT * FROM jobs WHERE id = ?", id)!;
     this.event(`job.${state}`, { job_id: id, key_id: k.id, task, ...(verdict.verdict === "refuse" ? { reason: verdict.reason } : {}) });
     if (verdict.verdict === "refuse") return json({ id, state, reason: verdict.reason }, 403);
+    this.notify.attach(id, "url" in cb ? cb.url : null,new URL(req.url).origin);
+    if (state === "waiting_approval") this.notify.needsApproval(job, k.label ?? null, new URL(req.url).origin); // phone push
     if (state === "queued") this.pushNext();
     return json({ id, state }, 202);
   }
@@ -254,9 +413,12 @@ export class Hub extends DurableObject<Env> {
       const k = this.one("SELECT * FROM keys WHERE id = ?", seg[2]);
       if (!k) return err(404, "not_found");
       if (seg.length === 3 && m === "GET") return json(this.keyDetail(k));
+      if (seg.length === 3 && m === "PATCH") return this.projects.moveKey(req, k);
       if (seg.length === 4 && seg[3] === "revoke") return m === "POST" ? this.revoke(k) : err(405, "method_not_allowed");
       return err(404, "not_found");
     }
+
+    if (route === "projects") return this.projects.route(req, seg);
 
     if (route === "contracts") {
       if (seg.length === 2) {
@@ -273,11 +435,11 @@ export class Hub extends DurableObject<Env> {
       return err(404, "not_found");
     }
 
-    if (route === "jobs") {
+    if (route === "jobs" || route === "parcels") { // "parcels" is an alias of "jobs"
       if (seg.length === 2) {
         if (m !== "GET") return err(405, "method_not_allowed");
         const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") ?? "50", 10) || 50, 1), 500);
-        return json(this.jobList(url.searchParams.get("state"), limit));
+        return json(this.jobList(url.searchParams.get("state"), limit, url.searchParams.get("label")));
       }
       const j = this.one("SELECT * FROM jobs WHERE id = ?", seg[2]);
       if (!j) return err(404, "not_found");
@@ -286,6 +448,8 @@ export class Hub extends DurableObject<Env> {
       if (seg.length === 4 && seg[3] === "decline") return m === "POST" ? this.decline(j) : err(405, "method_not_allowed");
       return err(404, "not_found");
     }
+
+    if (route === "proposals") return this.proposalRoute(req, seg);
 
     if (route === "tokens") {
       if (seg.length === 2) {
@@ -312,6 +476,7 @@ export class Hub extends DurableObject<Env> {
 
     if (route === "laptop") {
       if (seg.length === 2 && m === "GET") return json(this.laptop());
+      if (seg.length === 3 && seg[2] === "test") return m === "POST" ? json(await this.testLaptop()) : err(405, "method_not_allowed");
       if (seg.length === 3 && seg[2] === "rotate") return m === "POST" ? this.rotate() : err(405, "method_not_allowed");
       return err(404, "not_found");
     }
@@ -320,7 +485,7 @@ export class Hub extends DurableObject<Env> {
 
   private keyOut(k: Row) {
     const c = this.contractRow(k.contract_id);
-    return { id: k.id, label: k.label, prefix: k.prefix, contract: { id: k.contract_id, name: c?.name ?? "" }, created_at: k.created_at, last_used_at: k.last_used_at, revoked_at: k.revoked_at };
+    return { id: k.id, label: k.label, prefix: k.prefix, contract: { id: k.contract_id, name: c?.name ?? "" }, project_id: k.project_id ?? null, created_at: k.created_at, last_used_at: k.last_used_at, revoked_at: k.revoked_at, claude_usage: c ? usageSummary(this.sql, k.id, parse(c.body)) : null };
   }
 
   private daemonInfo() {
@@ -328,8 +493,9 @@ export class Hub extends DurableObject<Env> {
     return { connected: !!this.daemon?.hello, last_seen: d?.last_seen ?? null, last_seq: this.lastSeq, rotated_at: d?.rotated_at ?? null, hint: d?.hint ?? null };
   }
 
-  private jobList(state: string | null | undefined, limit: number) {
-    const rows = state ? this.sql.all<Row>("SELECT * FROM jobs WHERE state = ? ORDER BY created_at DESC, id DESC LIMIT ?", state, limit) : this.sql.all<Row>("SELECT * FROM jobs ORDER BY created_at DESC, id DESC LIMIT ?", limit);
+  private jobList(state: string | null | undefined, limit: number, label?: string | null) {
+    const where = [state ? "state = ?" : "", label ? "label = ?" : ""].filter(Boolean).join(" AND ");
+    const rows = this.sql.all<Row>(`SELECT * FROM jobs${where ? ` WHERE ${where}` : ""} ORDER BY created_at DESC, id DESC LIMIT ?`, ...[state, label].filter(Boolean), limit);
     return rows.map(this.jobOut);
   }
   // `tail` returns the LAST `limit` events after `after` (still oldest first): what a page wants on first load. Without it
@@ -356,7 +522,19 @@ export class Hub extends DurableObject<Env> {
     const needs = this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'waiting_approval' ORDER BY created_at, id").map(j => ({ ...this.jobOut(j), key: { id: j.key_id, label: this.one("SELECT label FROM keys WHERE id = ?", j.key_id)?.label ?? null } }));
     const latest = this.sql.all<Row>("SELECT * FROM events ORDER BY seq DESC LIMIT 5").map(this.evOut);
     const d = this.daemonInfo();
-    return { daemon: { connected: d.connected, last_seen: d.last_seen, last_seq: d.last_seq }, counts, needs_you: needs, latest_events: latest, approvals: needs.length };
+    return { daemon: { connected: d.connected, last_seen: d.last_seen, last_seq: d.last_seq }, counts, needs_you: needs, latest_events: latest, approvals: needs.length, proposals: this.proposals.pending() };
+  }
+
+  private async proposalRoute(req: Request, seg: string[]): Promise<Response> {
+    const m = req.method;
+    const reply = (o: ReturnType<Proposals["decline"]>) => "out" in o ? json(o.out) : "notFound" in o ? err(404, "not_found") : "conflict" in o ? err(409, "conflict", { message: o.conflict }) : invalid(o.errors);
+    if (seg.length === 2) return m === "GET" ? json(this.proposals.list(new URL(req.url).searchParams.get("state"))) : err(405, "method_not_allowed");
+    const p = this.proposals.get(seg[2]);
+    if (!p) return err(404, "not_found");
+    if (seg.length === 3) return m === "GET" ? json(p) : err(405, "method_not_allowed");
+    if (seg.length === 4 && seg[3] === "apply") return m === "POST" ? reply(this.proposals.apply(p.id)) : err(405, "method_not_allowed");
+    if (seg.length === 4 && seg[3] === "decline") return m === "POST" ? reply(this.proposals.decline(p.id)) : err(405, "method_not_allowed");
+    return err(404, "not_found");
   }
 
   private async createKey(req: Request): Promise<Response> {
@@ -372,11 +550,13 @@ export class Hub extends DurableObject<Env> {
     const errors: Record<string, string> = {};
     if (label.length < 1 || label.length > 60) errors.label = "Label must be 1 to 60 characters.";
     if (typeof body.contract_id !== "string" || !this.contractRow(body.contract_id)) errors.contract_id = "Unknown contract.";
+    const target = this.projects.checkTarget(body.project_id);
+    if (!target.ok) errors.project_id = target.error;
     if (Object.keys(errors).length) return { errors };
     const key = generateKey();
     const id = makeId("k_", this.next("key"));
     const now = Date.now();
-    this.sql.run("INSERT INTO keys (id, label, prefix, hash, contract_id, created_at) VALUES (?, ?, ?, ?, ?, ?)", id, label, displayPrefix(key), await hashToken(key), body.contract_id, now);
+    this.sql.run("INSERT INTO keys (id, label, prefix, hash, contract_id, created_at, project_id) VALUES (?, ?, ?, ?, ?, ?, ?)", id, label, displayPrefix(key), await hashToken(key), body.contract_id, now, target.ok ? target.id : null);
     this.event("key.created", { key_id: id, label });
     return { id, label, key };
   }
@@ -394,7 +574,7 @@ export class Hub extends DurableObject<Env> {
       this.setState(j, "cancelled", "key revoked");
       cancelled++;
       if (wasRunning) {
-        if (this.inflight === j.id) this.inflight = null;
+        this.clearInflight(j.id);
         this.send({ type: "cancel", id: j.id });
       }
     }
@@ -410,7 +590,7 @@ export class Hub extends DurableObject<Env> {
   }
 
   private saveContractCore(body: unknown, existing: Row | null): { errors: Record<string, string> } | { out: ReturnType<Hub["contractOut"]> } {
-    const v = validateContract(body);
+    const v = validateContract(body, { allowLocal: this.env.MAILROOM_ALLOW_LOCAL_URLS === "1" });
     if (!v.ok) return { errors: v.errors };
     const now = Date.now();
     const id = existing?.id ?? makeId("c_", this.next("contract"));
@@ -428,7 +608,8 @@ export class Hub extends DurableObject<Env> {
     const v = check(parse(c.body), { task: j.task, args: parse(j.args) }, { now, usedToday: this.usedToday(j.key_id, now, j.id) });
     const k = this.one("SELECT id, label FROM keys WHERE id = ?", j.key_id);
     const timeline = this.sql.all<Row>("SELECT * FROM events WHERE json_extract(payload, '$.job_id') = ? ORDER BY seq", j.id).map(this.evOut);
-    return { ...this.jobOut(j), timeline, contract_check: v.verdict === "refuse" ? { verdict: v.verdict, reason: v.reason } : { verdict: v.verdict }, key: k ?? { id: j.key_id, label: "" } };
+    this.sweepResults();
+    return { ...this.jobOut(j), result: this.resultOf(j), timeline, contract_check: v.verdict === "refuse" ? { verdict: v.verdict, reason: v.reason } : { verdict: v.verdict }, key: k ?? { id: j.key_id, label: "" } };
   }
 
   /** Re-check a job against its contract's current text. Returns a refusal reason or null. */
@@ -437,6 +618,10 @@ export class Hub extends DurableObject<Env> {
     const now = Date.now();
     j.contract_version = c.version;
     const v = check(parse(c.body), { task: j.task, args: parse(j.args) }, { now, usedToday: this.usedToday(j.key_id, now, j.id) });
+    if (v.verdict !== "refuse" && refusedWhenOver(j.task, parse(j.args))) {
+      const bs = budgetFor(this.sql, j.key_id, parse(c.body), now);
+      if (bs.over) return bs.reason!;
+    }
     return v.verdict === "refuse" ? v.reason : null;
   }
 
@@ -518,19 +703,19 @@ export class Hub extends DurableObject<Env> {
     const scopes = parse(t.scopes) as string[];
     const res = await handleMcpText(text, {
       scopes,
-      api: this.mcpApi(),
+      api: this.mcpApi(t.id),
       audit: (e) => void this.event("mcp.call", { token_id: t.id, label: t.label, tool: e.tool, ok: e.ok, ...(e.target ? { target: e.target } : {}) }),
     });
     return res === null ? new Response(null, { status: 202, headers: { "cache-control": "no-store" } }) : json(res);
   }
 
   /** The MCP tools call the same cores the owner routes use; nothing here re-implements a rule. */
-  private mcpApi(): McpApi {
+  private mcpApi(tokenId: string | null = null): McpApi {
     const need = <T>(v: T | undefined, what: string): T => { if (v === undefined) throw new ToolError(`${what} not found.`); return v; };
     const fields = (errors: Record<string, string>) => new ToolError(`Nothing was saved. ${formatFieldErrors(errors)}`, errors);
     return {
       status: async () => this.stateObj(),
-      listParcels: async ({ state, limit }) => this.jobList(state, limit),
+      listParcels: async ({ state, limit, label }) => this.jobList(state, limit, label),
       getParcel: async (id) => this.jobDetailObj(need(this.one("SELECT * FROM jobs WHERE id = ?", id), `Parcel ${id}`)),
       listKeys: async () => this.sql.all<Row>("SELECT * FROM keys ORDER BY created_at DESC, id DESC").map((k) => this.keyOut(k)),
       getKey: async (id) => this.keyDetail(need(this.one("SELECT * FROM keys WHERE id = ?", id), `Key ${id}`)),
@@ -547,6 +732,27 @@ export class Hub extends DurableObject<Env> {
         const o = this.saveContractCore(body, need(this.contractRow(id), `Contract ${id}`));
         if ("errors" in o) throw fields(o.errors);
         return o.out;
+      },
+      listProjects: async () => this.projects.list(),
+      getProject: async (id) => need(this.projects.detail(id), `Project ${id}`),
+      createProject: async (body) => {
+        const o = this.projects.create(body);
+        if ("errors" in o) throw fields(o.errors);
+        return o.out;
+      },
+      updateProject: async (id, body) => {
+        if (id === "unassigned" || !this.projects.detail(id)) throw new ToolError(`Project ${id} not found.`);
+        const o = this.projects.update(id, body);
+        if ("errors" in o) throw fields(o.errors);
+        return o.out;
+      },
+      listProposals: async (state) => this.proposals.list(state),
+      proposeContract: async (a) => {
+        const o = this.proposals.propose(a, tokenId);
+        if ("errors" in o) throw fields(o.errors);
+        if ("notFound" in o) throw new ToolError(`${o.notFound} not found.`);
+        if ("conflict" in o) throw new ToolError(o.conflict);
+        return { ...o.out, note_to_caller: "Stored only. Nothing changes until the owner applies it in Approvals." };
       },
       createKey: async (a) => {
         const o = await this.createKeyCore(a);
@@ -601,9 +807,29 @@ export class Hub extends DurableObject<Env> {
   }
 
   // ---- laptop ----
+  /** A live round trip: the Hub sends a tagged ping and the laptop must echo the tag. Tells "connected" from "looks connected". */
+  private async testLaptop(): Promise<{ ok: boolean; ms?: number; reason?: string }> {
+    const dm = this.daemon;
+    if (!dm?.hello) return { ok: false, reason: "No laptop is connected to the Hub right now." };
+    const id = crypto.randomUUID();
+    const t0 = Date.now();
+    const answered = new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), 5000);
+      dm.pings.set(id, () => { clearTimeout(timer); resolve(true); });
+    });
+    try { dm.ws.send(JSON.stringify({ type: "ping", id })); } catch { dm.pings.delete(id); return { ok: false, reason: "The connection is broken." }; }
+    const ok = await answered;
+    dm.pings.delete(id);
+    return ok ? { ok: true, ms: Date.now() - t0 } : { ok: false, reason: "The laptop is connected but did not answer within 5 seconds. It may be asleep, or running an older daemon (restart it)." };
+  }
+
   private laptop() {
     const d = this.daemonInfo();
-    return { connected: d.connected, last_seen: d.last_seen, last_seq: d.last_seq, rotated_at: d.rotated_at, credential_hint: d.hint, queue: this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at, id").map(this.jobOut) };
+    const rep = loadReport(this.sql);
+    // commands: what the laptop last reported (name, project tag, timeout), or null if it never has. Display data only.
+    const row = this.one("SELECT daemon_version, daemon_commit FROM daemon WHERE id = 1");
+    const daemonVersion = d.connected ? ((row?.daemon_version as string | null) ?? null) : null;
+    return { connected: d.connected, last_seen: d.last_seen, last_seq: d.last_seq, rotated_at: d.rotated_at, credential_hint: d.hint, hub_version: HUB_VERSION, daemon_version: daemonVersion, daemon_commit: d.connected ? ((row?.daemon_commit as string | null) ?? null) : null, daemon_notice: daemonNotice(daemonVersion, HUB_VERSION, d.connected), commands: rep ? rep.commands.map((c) => ({ name: c.name, project: c.project, timeoutMs: c.timeoutMs, estimate: c.estimate ?? null })) : null, workflows: loadWorkflowReport(this.sql)?.workflows ?? null, commands_reported_at: rep ? rep.reported_at : null, queue: this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at, id").map(this.jobOut) };
   }
 
   private async rotate(): Promise<Response> {
@@ -631,7 +857,7 @@ export class Hub extends DurableObject<Env> {
     const [client, server] = Object.values(new WebSocketPair()) as [WebSocket, WebSocket];
     server.accept();
     this.dropDaemon(this.daemon, 4002); // a new valid connection replaces the old one
-    const dm: Daemon = { ws: server, hello: false, lastPong: Date.now(), timer: null };
+    const dm: Daemon = { ws: server, hello: false, lastPong: Date.now(), timer: null, pings: new Map() };
     this.daemon = dm;
     dm.timer = setInterval(() => {
       if (Date.now() - dm.lastPong > DEAD_MS) return this.dropDaemon(dm, 1011);
@@ -654,17 +880,27 @@ export class Hub extends DurableObject<Env> {
   }
 
   private onDaemonMessage(dm: Daemon, data: unknown) {
-    if (this.daemon !== dm || typeof data !== "string" || data.length > 4 * MAX_BODY) return;
+    if (this.daemon !== dm || typeof data !== "string" || data.length > 2 * MAX_RESULT_BYTES + MAX_BODY) return;
     let m: any;
     try { m = JSON.parse(data); } catch { return; }
     if (!m || typeof m.type !== "string") return;
     this.touchDaemon(dm);
-    if (m.type === "pong") return;
+    if (m.type === "pong") {
+      if (typeof m.id === "string") dm.pings.get(m.id)?.(); // an answer to a test ping
+      return;
+    }
     if (m.type === "hello") {
       if (dm.hello) return;
       dm.hello = true;
+      this.laneMode = parseHello(m.lanes);
       this.lastSeq = Number.isInteger(m.last_seq) ? m.last_seq : 0;
-      this.sql.run("UPDATE daemon SET connected = 1 WHERE id = 1");
+      // Which commands the laptop says are safe to run twice (see isRerunSafe). A daemon that sends none has none.
+      this.sql.run("DELETE FROM daemon_rerun");
+      for (const n of parseRerunSafe(m.rerunSafe)) this.sql.run("INSERT OR IGNORE INTO daemon_rerun (name) VALUES (?)", n);
+      this.sql.run("UPDATE daemon SET connected = 1, daemon_version = ?, daemon_commit = ? WHERE id = 1", cleanVersion(m.version), cleanCommit(m.commit)); // untrusted: only a plain x.y.z and a hex commit are kept
+      if (m.commands !== undefined) storeReport(this.sql, m.commands); // untrusted display data; an old daemon sends none and the last snapshot stays
+      if (m.workflows !== undefined) storeWorkflowReport(this.sql, m.workflows); // same
+      if (m.prompts !== undefined) storePromptReport(this.sql, m.prompts); // same: untrusted display data (names and variable specs)
       this.event("daemon.connected", {});
       this.send({ type: "welcome", server_seq: this.lastEventSeq() });
       this.pushNext();
@@ -672,13 +908,38 @@ export class Hub extends DurableObject<Env> {
     }
     if (!dm.hello || typeof m.id !== "string") return;
     const j = this.one("SELECT * FROM jobs WHERE id = ?", m.id);
+    if (m.type === "usage") {
+      // What a cancelled claude job used before it was killed (the daemon sends no result for it). A running job's usage rides on its result.
+      const u = parseUsage(m.usage);
+      if (j && j.state === "cancelled" && usesBudget(j.task, parse(j.args)) && u && !this.usageSeen.has(j.id)) { this.usageSeen.add(j.id); addUsage(this.sql, j.key_id, u); }
+      return;
+    }
     if (!j || j.state !== "running") return; // late or stray (e.g. cancelled): ignore
+    if (m.type === "result" && usesBudget(j.task, parse(j.args))) { const u = parseUsage(m.usage); if (u) addUsage(this.sql, j.key_id, u); } // failed and done jobs both count
+    if (m.type === "progress") {
+      if (typeof m.text !== "string" || !this.isInflight(j.id)) return;
+      const pct = typeof m.pct === "number" && Number.isFinite(m.pct) ? Math.min(100, Math.max(0, m.pct)) : null;
+      this.sql.run("INSERT OR REPLACE INTO job_progress (job_id, text, pct, at) VALUES (?, ?, ?, ?)", j.id, m.text.slice(0, 500), pct, Date.now());
+      return;
+    }
+    if (m.type === "partial") {
+      const body = cleanPartial(m.value);
+      if (body === null || !this.isInflight(j.id)) return;
+      const n = this.partialCount(j.id as string) + 1;
+      this.sql.run("INSERT INTO job_partials (job_id, n, body, at) VALUES (?, ?, ?, ?)", j.id, n, body, Date.now());
+      this.sql.run("DELETE FROM job_partials WHERE job_id = ? AND n < ?", j.id, oldestKept(n));
+      return;
+    }
     if (m.type === "result") {
-      if (m.ok === true) this.setState(j, "done", null, m.result ?? null);
+      if (m.ok === true) {
+        const plan = planResult(JSON.stringify(m.result ?? null) ?? "null");
+        if (plan.kind === "too_large") this.setState(j, "failed", `result is bigger than ${MAX_RESULT_BYTES / 1024 / 1024} MB`);
+        else this.setState(j, "done", null, m.result ?? null);
+      }
       else this.setState(j, "failed", typeof m.error === "string" ? m.error.slice(0, 2000) : "failed");
     } else if (m.type === "refuse") this.setState(j, "refused", typeof m.reason === "string" ? m.reason.slice(0, 2000) : "refused by laptop");
     else return;
-    if (this.inflight === j.id) this.inflight = null;
+    this.clearInflight(j.id);
     this.pushNext();
   }
 
@@ -689,26 +950,40 @@ export class Hub extends DurableObject<Env> {
     if (code) { try { dm.ws.close(code, code === 4001 ? "rotated" : code === 4002 ? "replaced" : "closing"); } catch { /* already closed */ } }
     if (this.daemon !== dm) return;
     this.daemon = null;
-    this.inflight = null;
+    this.inflight.clear();
+    this.laneMode = null;
     this.sql.run("UPDATE daemon SET connected = 0 WHERE id = 1");
     if (dm.hello) this.event("daemon.disconnected", {});
-    for (const j of this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'running' ORDER BY created_at, id")) this.setState(j, "queued", "laptop disconnected");
+    for (const j of this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'running' ORDER BY created_at, id")) this.requeueOrFail(j);
   }
 
-  /** Pushes the oldest queued job when the daemon is idle, re-checking its contract first. One job at a time. */
+  private isInflight(id: string) { return [...this.inflight.values()].includes(id); }
+  private clearInflight(id: string) { for (const [k, v] of this.inflight) if (v === id) this.inflight.delete(k); }
+
+  /** Pushes the oldest queued job of every free lane, re-checking its contract first. One job per lane (one in all for an old daemon). */
   private pushNext() {
     for (let guard = 0; guard < 1000; guard++) {
-      if (!this.daemon?.hello || this.inflight) return;
-      const j = this.one("SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at, id LIMIT 1");
+      if (!this.daemon?.hello) return;
+      const queued = this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at, id LIMIT 500").map(r => ({ row: r, task: r.task as string, args: parse(r.args) }));
+      const j = pickNext(queued, new Set(this.inflight.keys()), this.laneMode)?.row;
       if (!j) return;
       const reason = this.recheck(j);
       if (reason) { this.setState(j, "refused", reason); continue; }
       const c = this.contractRow(j.contract_id)!;
-      const ok = this.send({ type: "job", id: j.id, task: j.task, args: parse(j.args), contract: parse(c.body), contract_version: c.version });
+      const lane = laneOf(j.task, parse(j.args), this.laneMode?.hints);
+      let args = parse(j.args);
+      let budget: { turns: number; ms: number } | undefined;
+      if (usesBudget(j.task, parse(j.args))) {
+        // Cap this job by what is left of the key's day: maxTurns is clipped here, the daemon also clips its timeout to `budget.ms`.
+        const bs = budgetFor(this.sql, j.key_id, parse(c.body));
+        // An ask takes no maxTurns from the client (the daemon would refuse it): its prompt sets the turns and the daemon clips them to budget.turns.
+        if (j.task === "claude") args = { ...args, maxTurns: clipMaxTurns(typeof args.maxTurns === "number" ? args.maxTurns : claudeCeiling(parse(c.body)).maxTurns, bs.turnsLeft) };
+        budget = { turns: bs.turnsLeft, ms: bs.msLeft };
+      }
+      const ok = this.send({ type: "job", id: j.id, task: j.task, args, lane, contract: parse(c.body), contract_version: c.version, ...(budget ? { budget } : {}) });
       if (!ok) return;
-      this.inflight = j.id;
+      this.inflight.set(laneKey(!!this.laneMode, lane), j.id);
       this.setState(j, "running");
-      return;
     }
   }
 }

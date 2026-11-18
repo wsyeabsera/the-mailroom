@@ -61,3 +61,47 @@ test("validateContract returns the editor's messages", () => {
   if (good.ok) assert.deepEqual(good.contract.folders, ["~/scratch"]);
   assert.equal(validateContract({ name: "x", folders: ["/"], tasks: ["echo"], dailyLimit: 1 }).ok, false); // never the whole disk
 });
+
+test("run: commands are validated, required with run, and the job must name one the contract lists", () => {
+  const base = { name: "R", folders: ["~/x"], tasks: ["run"], dailyLimit: 5, expires: null, approval: [] };
+  const bad = validateContract({ ...base });
+  assert.ok(!bad.ok && bad.errors.commands);
+  const bad2 = validateContract({ ...base, commands: ["a b"] });
+  assert.ok(!bad2.ok && bad2.errors.commands);
+  const good = validateContract({ ...base, commands: ["deploy-notes", "x.y"] });
+  assert.ok(good.ok);
+  const c = (good as { ok: true; contract: Contract }).contract;
+  assert.deepEqual(check(c, { task: "run", args: { command: "x.y", args: {} } }, ctx), { verdict: "allow" });
+  assert.equal(check(c, { task: "run", args: { command: "other" } }, ctx).verdict, "refuse");
+  assert.equal(check(c, { task: "run", args: {} }, ctx).verdict, "refuse");
+  const old = { ...c } as Contract;
+  delete old.commands; // a contract stored before commands existed
+  assert.equal(check(old, { task: "run", args: { command: "x.y" } }, ctx).verdict, "refuse");
+  assert.ok(validateContract({ ...base, tasks: ["echo"] }).ok);
+});
+
+test("claude ceilings: refuse more tools or turns, defaults when the fields are missing", () => {
+  const c: Contract = { ...notes, tasks: ["claude"], approval: [], claudeTools: ["WebFetch"], claudeMaxTurns: 6 };
+  const j = (args: object) => check(c, { task: "claude", args: { prompt: "x", cwd: "~/Hobby/dunder/notes", ...args } }, ctx);
+  assert.equal(j({}).verdict, "allow");
+  assert.equal(j({ allowedTools: ["WebFetch"], maxTurns: 6 }).verdict, "allow");
+  assert.equal(j({ allowedTools: ["Bash"] }).verdict, "refuse");
+  assert.equal(j({ allowedTools: ["WebFetch", "Bash(rm:*)"] }).verdict, "refuse");
+  assert.equal(j({ allowedTools: "WebFetch" }).verdict, "refuse");
+  assert.equal(j({ maxTurns: 50 }).verdict, "refuse");
+  const old: Contract = { ...notes, tasks: ["claude"], approval: [] }; // stored before the fields existed
+  const o = (args: object) => check(old, { task: "claude", args: { prompt: "x", cwd: "~/Hobby/dunder/notes", ...args } }, ctx).verdict;
+  assert.equal(o({ allowedTools: ["Read", "Grep"], maxTurns: 10 }), "allow");
+  assert.equal(o({ allowedTools: ["Bash"] }), "refuse");
+  assert.equal(o({ maxTurns: 11 }), "refuse");
+});
+
+test("validateContract: claude ceilings default, validate and are stored", () => {
+  const base = { name: "k", folders: ["~/a"], tasks: ["claude"], dailyLimit: 5, approval: [] };
+  const d = validateContract(base) as any;
+  assert.deepEqual([d.contract.claudeTools, d.contract.claudeMaxTurns], [["Read", "Glob", "Grep"], 10]);
+  assert.equal((validateContract({ ...base, claudeTools: ["Bash"], claudeMaxTurns: 50 }) as any).contract.claudeMaxTurns, 50);
+  const bad = validateContract({ ...base, claudeTools: ["a;b"], claudeMaxTurns: 51 }) as any;
+  assert.ok(bad.errors.claudeTools && bad.errors.claudeMaxTurns);
+  assert.ok((validateContract({ ...base, claudeTools: [] }) as any).errors.claudeTools);
+});

@@ -5,7 +5,7 @@ A remote MCP server on the Hub, so other apps, projects and Claude sessions can 
 ## Decisions (taken for the owner, all reversible)
 
 1. **Own credential: admin tokens `mra_<32 base62>`.** Separate from client keys (`mr_live_`), the daemon credential (`mrd_`) and the owner session. A token of one kind never works as another. Stored as a SHA-256 hash, shown once, revocable, compared in constant time, never logged.
-2. **Scopes, least power by default.** `read` (look only), `write` (also create and revoke keys, create and edit contracts), `approve` (also approve or decline waiting parcels). `write` and `approve` each include `read`; `approve` does not include `write` and the reverse. A new token has only `read` unless the owner ticks more. **`approve` is the dangerous one**: whoever holds it can release a risky step without the owner reading it, including a Claude session that is itself asking for the approval. The UI says so.
+2. **Scopes, least power by default.** `read` (look only), `write` (also create and revoke keys, create and edit contracts), `approve` (also approve or decline waiting parcels), `propose` (also ask for a contract change that waits for the owner; see Contract proposals below). `write`, `approve` and `propose` each include `read`; none includes another. A new token has only `read` unless the owner ticks more. **`approve` is the dangerous one**: whoever holds it can release a risky step without the owner reading it, including a Claude session that is itself asking for the approval. The UI says so.
 3. **Only the owner creates tokens, in the UI** (`POST /admin/tokens`, owner session). A token cannot create or revoke tokens, rotate the daemon credential, or sign in as the owner. Job submission stays on the client API.
 4. **Every write is audited.** Each successful or failed `write`/`approve` tool call appends an event `mcp.call` `{token_id, label, tool, ok, target?}`. Reads are not logged (noise).
 5. **Stateless Streamable HTTP.** No sessions, no server push. Simple and works on a Durable Object.
@@ -31,27 +31,43 @@ All names start with `mailroom_`. `id`s are the Hub's ids (`k_1000`, `c_1000`, `
 | Tool | Scope | Arguments | Returns |
 |---|---|---|---|
 | `mailroom_status` | read | none | the `GET /admin/state` object (daemon, counts, needs_you, latest_events, approvals) |
-| `mailroom_list_parcels` | read | `state?`, `limit?` (1-200, default 50) | array of parcels, newest first |
+| `mailroom_list_parcels` | read | `state?`, `label?` (exact), `limit?` (1-200, default 50) | array of parcels, newest first |
 | `mailroom_get_parcel` | read | `id` | parcel + `timeline` + `contract_check` + `key` |
 | `mailroom_list_keys` | read | none | keys with their contract (never the secret) |
 | `mailroom_get_key` | read | `id` | key + `contract` + `recent_jobs` |
 | `mailroom_list_contracts` | read | none | contracts with `used_by` |
 | `mailroom_get_contract` | read | `id` | the contract |
+| `mailroom_list_projects` | read | none | projects plus a synthetic `unassigned`, each with key_count, running parcel, queued, last run, today's counts |
+| `mailroom_get_project` | read | `project` (id or `unassigned`) | the project with its keys, recent parcels and the Commands view (`commands.reported` is false until the laptop reports) |
 | `mailroom_events` | read | `after?` (seq), `limit?` (1-500) | `{events, last_seq}` |
-| `mailroom_laptop` | read | none | `GET /admin/laptop` object (connected, last_seen, queue) |
+| `mailroom_laptop` | read | none | `GET /admin/laptop` object (connected, last_seen, queue, and the laptop's command report with `commands_reported_at`) |
+| `mailroom_list_proposals` | read | `state?` (pending, applied, declined, stale) | proposals, newest first, each with plain-words `changes[{field,text,widening}]` and `widening` |
+| `mailroom_propose_contract` | propose | `contract_id`, `changes` (the fields to set), `note?` | the stored proposal `{id, state:"pending", widening, changes}`, or the field errors. Never applied by the tool |
 | `mailroom_create_contract` | write | `name, folders[], tasks[], dailyLimit, expires?, approval[]` | the saved contract, or the validation errors |
 | `mailroom_update_contract` | write | `id` + the same fields | the saved contract (version bumped; queued parcels are checked again just before they are sent) |
-| `mailroom_create_key` | write | `label, contract_id` | `{id, label, key:"mr_live_..."}`: **the only time the key exists in clear**; the tool description tells the model to hand it to the owner, not to paste it elsewhere |
+| `mailroom_create_project` | write | `name, folder?, notes?, color?` | the saved project, or the field errors (a project grants nothing) |
+| `mailroom_update_project` | write | `project` + any of `name, folder, notes, color` | the saved project (only the fields sent change) |
+| `mailroom_create_key` | write | `label, contract_id, project_id?` | `{id, label, key:"mr_live_..."}`: **the only time the key exists in clear**; the tool description tells the model to hand it to the owner, not to paste it elsewhere. `project_id` puts the key in a live project (default Unassigned; an unknown or archived project is refused) |
 | `mailroom_revoke_key` | write | `id` | `{id, revoked_at, cancelled}` |
 | `mailroom_approve_parcel` | approve | `id` | `{id, state}` (must be `waiting_approval`) |
 | `mailroom_decline_parcel` | approve | `id`, `reason?` | `{id, state:"refused"}` |
 
+Projects have no tool for archiving or unarchiving, or for moving an existing key to another project: those are owner-session only (the admin app, `POST /admin/projects/:id/archive`, `PATCH /admin/keys/:id`). A tool can only put a key in a project when it creates the key.
+
 Not exposed on purpose: rotate the daemon credential, anything about admin tokens, owner login, submitting jobs.
+
+## Contract proposals
+
+A session that should not edit contracts can still ask. A token with the `propose` scope calls `mailroom_propose_contract {contract_id, changes, note?}`. `changes` holds only the fields to set (`name, folders, tasks, approval, dailyLimit, expires, commands, prompts, claudeTools, claudeMaxTurns, claudeDailyTurns, claudeDailyMinutes, callbackUrls`; a list replaces the whole list). The Hub merges them onto the contract's current text, validates the result with the same rules as the editor, and stores it as a proposal with the full proposed contract, the base version and a plain-words diff. **Nothing changes.** At most 50 proposals may wait.
+
+A change is flagged `widening` when it adds a folder not inside an existing one, adds the `write_file` or `claude` task, raises the daily limit, `claudeMaxTurns` or a Claude daily budget, adds a Claude tool or a callback address, moves the expiry later, or removes a task from `approval`. Adding `ask` or `run` names is not flagged: the laptop still decides what each name does.
+
+Owner routes (cookie session): `GET /admin/proposals?state=`, `GET /admin/proposals/:id`, `POST /admin/proposals/:id/apply` (saves the contract as the editor would, version up, `contract.saved` event; 409 if the proposal is no longer pending, or if the contract changed after it was written, in which case it is marked `stale`), `POST /admin/proposals/:id/decline`. `GET /admin/state` also carries `proposals` (the pending ones), and the Approvals page shows them as cards with Apply and Decline. Events: `proposal.created {proposal_id, contract_id, widening, changes, token_id?}`, `proposal.applied {proposal_id, contract_id, version, widening}`, `proposal.declined {proposal_id, contract_id}`. `propose` is the owner's to grant; client keys cannot propose. Table `contract_proposals` in the Hub SQLite.
 
 ## Owner routes for tokens (cookie session, same rules as the other `/admin/*` routes)
 
 - `GET /admin/tokens` -> `[{id, label, prefix, scopes, created_at, last_used_at, revoked_at}]`.
-- `POST /admin/tokens {label, scopes}` -> 201 `{id, label, scopes, token:"mra_..."}` (shown once). `label` 1..60 chars; `scopes` a non-empty subset of `read|write|approve` (anything else, or empty, is 422 `{error:"invalid", errors:{...}}`; `read` is added when `write` or `approve` is chosen).
+- `POST /admin/tokens {label, scopes}` -> 201 `{id, label, scopes, token:"mra_..."}` (shown once). `label` 1..60 chars; `scopes` a non-empty subset of `read|write|approve|propose` (anything else, or empty, is 422 `{error:"invalid", errors:{...}}`; `read` is added when `write` or `approve` is chosen).
 - `POST /admin/tokens/:id/revoke` -> `{id, revoked_at}`; takes effect on the next request.
 - Events: `token.created`, `token.revoked` `{token_id, label, scopes}`.
 - `admin_tokens(id TEXT PK 't_'+counter, label, prefix, hash, scopes JSON, created_at, revoked_at, last_used_at)` in the Hub SQLite; `last_used_at` is updated at most once a minute.

@@ -39,21 +39,24 @@
 <tr><td>Tasks</td><td>What the key may ask for. At least one of the four below.</td></tr>
 <tr><td>Daily limit</td><td>A whole number from 1 to 100000: how many parcels per day (UTC) this key may send.</td></tr>
 <tr><td>Expires</td><td>A date such as <code>2026-12-31</code>, or empty for never. A date means the <em>start</em> of that day in UTC: with <code>2026-12-31</code> the contract stops working at 00:00 UTC on the 31st, not at the end of it.</td></tr>
+<tr><td>Commands</td><td>Names the <code>run</code> task may start. Required (at least one) when <code>run</code> is allowed. The laptop decides what each name does.</td></tr>
 <tr><td>Needs approval</td><td>Tasks that wait for you before they run. Only tasks the contract allows can be listed.</td></tr>
 </tbody>
 </table>
 
-<h3>The four tasks</h3>
+<h3>The five tasks</h3>
 <table>
 <thead><tr><th>Task</th><th>What it does</th><th>Path it needs</th></tr></thead>
 <tbody>
 <tr><td><code>echo</code></td><td>Sends your text straight back. A safe test.</td><td>none</td></tr>
-<tr><td><code>read_file</code></td><td>Reads one file (up to 200 KB).</td><td><code>path</code></td></tr>
+<tr><td><code>read_file</code></td><td>Reads one file (up to 2 MB).</td><td><code>path</code></td></tr>
 <tr><td><code>write_file</code></td><td>Writes one file (up to 200 KB). Creates folders inside the allowed folder if needed.</td><td><code>path</code></td></tr>
-<tr><td><code>claude</code></td><td>Runs <code>claude -p</code> with your prompt in a folder. Times out after 5 minutes.</td><td><code>cwd</code> (the folder to work in)</td></tr>
+<tr><td><code>claude</code></td><td>Runs <code>claude -p</code> with your prompt in a folder. Times out after 5 minutes. A job may only ask for tools and turns the contract lists (default: Read, Glob, Grep and 10 turns); with none asked, it gets exactly those.</td><td><code>cwd</code> (the folder to work in)</td></tr>
+<tr><td><code>ask</code></td><td>Asks Claude one of the named prompts you registered in <code>~/.mailroom/prompts.json</code> on the laptop. The prompt text, tools, turns, model, timeout and folder are fixed there; the client sends only the prompt name and its variables, which reach Claude as quoted data. The contract lists the prompt names it may use (and its tool and turn ceilings still apply).</td><td>none (the laptop's registry sets the folder)</td></tr>
+<tr><td><code>run</code></td><td>Starts a named command you registered in <code>~/.mailroom/commands.json</code> on the laptop (a script, typed arguments, a timeout and a folder). No shell: arguments are passed as plain values. The folder must be inside the contract's folders.</td><td>none (the laptop's registry sets the folder)</td></tr>
 </tbody>
 </table>
-<div class="warn"><p>The "daily limit" counts every parcel the key sent since 00:00 UTC except refused ones. Cancelled parcels still count. The laptop does not count it again, so the limit is enforced only by the Hub.</p></div>
+<div class="warn"><p>The "daily limit" counts every parcel the key sent since 00:00 UTC except refused and cancelled ones (a cancelled parcel gives its place back). The laptop does not count it again, so the limit is enforced only by the Hub.</p></div>
 
 <h2>How a parcel is checked</h2>
 <p>The checks run in this order. The first one that fails ends it.</p>
@@ -130,7 +133,7 @@
 <ul>
 <li>Saving a contract adds a <code>contract.saved</code> event and raises its version number. Each parcel remembers the version it was last checked against.</li>
 <li>The gateway turns away a key whose contract has expired with a 401 before the check, so the "contract expired" reason appears only for parcels already in the system when the expiry passes.</li>
-<li>The daemon calls the same <code>check()</code> function on the contract the Hub sent with the job, using its own clock, then resolves real paths. Its home folder replaces <code>~</code>, which the Hub never expands. This is a second look at the same contract, so it does not protect you against a compromised Hub. A ceiling kept on the laptop itself is planned, not built.</li>
+<li>The daemon calls the same <code>check()</code> function on the contract the Hub sent with the job, using its own clock, then resolves real paths. Its home folder replaces <code>~</code>, which the Hub never expands. This is a second look at the same contract. What protects you against a compromised Hub is the laptop policy file <code>~/.mailroom/policy.json</code>: the daemon refuses any contract whose folders, tasks or commands go beyond it. Without that file, the daemon trusts the contract the Hub sends.</li>
 </ul>
 </details>
 <p>Next: <a href="/docs/parcels">Parcels and approvals</a>. For the full threat story see <a href="/docs/security">Security model</a>.</p>

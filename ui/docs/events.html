@@ -60,6 +60,8 @@
 <tr><td><code>job.done</code></td><td>The laptop finished it.</td><td></td></tr>
 <tr><td><code>job.failed</code></td><td>The laptop tried and it failed.</td><td><code>reason</code></td></tr>
 <tr><td><code>job.cancelled</code></td><td>The parcel's key was revoked, so it was stopped.</td><td><code>reason</code></td></tr>
+<tr><td><code>callback.failed</code></td><td>The job-done callback did not get a 2xx after its tries. The parcel is unchanged.</td><td><code>job_id, attempts, error</code></td></tr>
+<tr><td><code>push.failed</code></td><td>The phone push for a parcel waiting for approval could not be sent.</td><td><code>job_id, error</code></td></tr>
 </tbody>
 </table>
 <h3>Keys, contracts, the laptop and tokens</h3>
@@ -68,6 +70,13 @@
 <tbody>
 <tr><td><code>key.created</code></td><td>A client key was made.</td><td><code>key_id, label</code></td></tr>
 <tr><td><code>key.revoked</code></td><td>A client key was cut off.</td><td><code>key_id, label</code></td></tr>
+<tr><td><code>key.moved</code></td><td>A key was moved to another project, or to Unassigned.</td><td><code>key_id, label, from, to</code> (project ids, null is Unassigned)</td></tr>
+<tr><td><code>project.created</code></td><td>A project was made.</td><td><code>project_id, name</code></td></tr>
+<tr><td><code>project.updated</code></td><td>A project was edited, or brought back from the archive.</td><td><code>project_id, name</code>, and <code>unarchived: true</code> when it came back</td></tr>
+<tr><td><code>project.archived</code></td><td>A project was archived.</td><td><code>project_id, name</code></td></tr>
+<tr><td><code>proposal.created</code></td><td>A token asked for a contract change; nothing changed yet.</td><td><code>proposal_id, contract_id, widening, changes</code></td></tr>
+<tr><td><code>proposal.applied</code></td><td>You applied a proposal; a <code>contract.saved</code> event follows it.</td><td><code>proposal_id, contract_id, version, widening</code></td></tr>
+<tr><td><code>proposal.declined</code></td><td>You declined a proposal.</td><td><code>proposal_id, contract_id</code></td></tr>
 <tr><td><code>contract.saved</code></td><td>A contract was made or changed.</td><td><code>contract_id, name, version</code></td></tr>
 <tr><td><code>daemon.connected</code></td><td>The laptop connected.</td><td>none</td></tr>
 <tr><td><code>daemon.disconnected</code></td><td>The laptop went away.</td><td>none</td></tr>

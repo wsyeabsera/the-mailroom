@@ -1,10 +1,34 @@
 import WebSocket from "ws";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { VERSION } from "../shared/version.ts";
 import { loadLastSeq, saveLastSeq } from "./config.ts";
 import type { Config } from "./config.ts";
+import { commandTimeouts } from "./commands.ts";
+import { hintsFromTimeouts, laneOf, type Lane } from "../shared/lanes.ts";
 import { recheck, runTask } from "./tasks.ts";
+import { listReport } from "./commands.ts";
+import { throttle } from "./progress.ts";
+import { rerunSafeCommands } from "./commands.ts";
+import { listPromptReport } from "./prompts.ts";
+import { listWorkflowReport } from "./workflows.ts";
+import { MAX_RESULT_BYTES } from "../shared/limits.ts";
 import type { JobMsg } from "./tasks.ts";
+import type { Usage } from "../shared/claude-budget.ts";
 
-export const VERSION = "0.2.0";
+export { VERSION };
+
+/** The git commit this daemon's code was checked out at, or null (not a git checkout, no git). Read once at start. */
+export function gitCommit(): string | null {
+  try {
+    const out = execFileSync("git", ["rev-parse", "--short=12", "HEAD"], { cwd: fileURLToPath(new URL(".", import.meta.url)), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000 }).trim();
+    return /^[0-9a-f]{4,40}$/.test(out) ? out : null;
+  } catch {
+    return null;
+  }
+}
+const COMMIT = gitCommit();
+const MAX_FORWARDED_PARTIALS = 2000;
 
 export const wsUrl = (url: string) => url.replace(/^http/, "ws").replace(/\/+$/, "") + "/daemon";
 
@@ -39,15 +63,16 @@ export function run(cfg: Config, log: (s: string) => void = console.log): Promis
 
     const connect = () => {
       const ws = new WebSocket(wsUrl(cfg.url), { headers: { Authorization: `Bearer ${cfg.credential}` }, handshakeTimeout: 10000 });
-      const queue: JobMsg[] = [];
+      const queues: Record<Lane, JobMsg[]> = { short: [], long: [] }; // strict order within a lane
       const cancelled = new Set<string>();
-      let current: { id: string; abort: AbortController } | null = null;
-      let working = false;
+      const running = new Map<string, AbortController>(); // job id -> its abort controller, one per busy lane
+      const working: Record<Lane, boolean> = { short: false, long: false };
       const send = (m: unknown) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(m));
 
-      const pump = async () => {
-        if (working) return;
-        working = true;
+      const pump = async (lane: Lane) => {
+        if (working[lane]) return;
+        working[lane] = true;
+        const queue = queues[lane];
         while (queue.length && ws.readyState === WebSocket.OPEN) {
           const job = queue.shift()!;
           if (cancelled.delete(job.id)) continue;
@@ -57,19 +82,29 @@ export function run(cfg: Config, log: (s: string) => void = console.log): Promis
             continue;
           }
           const abort = new AbortController();
-          current = { id: job.id, abort };
+          running.set(job.id, abort);
+          const progress = throttle<{ text: string; pct?: number }>(p => send({ type: "progress", id: job.id, ...p }), 500);
+          let partials = 0; // a runaway script cannot flood the socket: the Hub keeps only the latest 200 anyway
+          let usage: Usage | undefined; // claude jobs: turns and wall time, for the Hub's daily budget
           try {
-            const result = await runTask(job, verdict.resolved, abort.signal);
-            if (!abort.signal.aborted) send({ type: "result", id: job.id, ok: true, result });
+            const result = await runTask(job, verdict.resolved, abort.signal, (text, pct) => progress.push(pct === undefined ? { text } : { text, pct }), u => { usage = u; }, value => { if (partials++ < MAX_FORWARDED_PARTIALS) send({ type: "partial", id: job.id, value }); });
+            progress.stop();
+            if (!abort.signal.aborted) {
+              // The Hub refuses a result over the cap; say so here, in words, instead of sending megabytes it will drop.
+              if (Buffer.byteLength(JSON.stringify(result) ?? "null") > MAX_RESULT_BYTES) send({ type: "result", id: job.id, ok: false, error: `result is bigger than ${MAX_RESULT_BYTES / 1024 / 1024} MB`, usage });
+              else send({ type: "result", id: job.id, ok: true, result, usage });
+            }
           } catch (e) {
-            if (!abort.signal.aborted) send({ type: "result", id: job.id, ok: false, error: (e as Error).message });
+            progress.stop();
+            if (!abort.signal.aborted) send({ type: "result", id: job.id, ok: false, error: (e as Error).message, usage });
           }
-          current = null;
+          if (abort.signal.aborted && usage) send({ type: "usage", id: job.id, usage }); // cancelled: no result, but what it used still counts
+          running.delete(job.id);
         }
-        working = false;
+        working[lane] = false;
       };
 
-      ws.on("open", () => send({ type: "hello", version: VERSION, last_seq: loadLastSeq() }));
+      ws.on("open", () => send({ type: "hello", version: VERSION, ...(COMMIT ? { commit: COMMIT } : {}), last_seq: loadLastSeq(), commands: listReport(), rerunSafe: rerunSafeCommands(), prompts: listPromptReport(), workflows: listWorkflowReport(), lanes: { commands: hintsFromTimeouts(commandTimeouts()) } }));
       ws.on("message", raw => {
         let m: any;
         try {
@@ -77,18 +112,20 @@ export function run(cfg: Config, log: (s: string) => void = console.log): Promis
         } catch {
           return;
         }
-        if (m.type === "ping") send({ type: "pong" });
+        if (m.type === "ping") send({ type: "pong", id: m.id });
         else if (m.type === "welcome") {
           delay = 1000;
           if (Number.isInteger(m.server_seq)) saveLastSeq(m.server_seq);
           log("connected to the Hub");
         } else if (m.type === "job" && typeof m.id === "string") {
-          queue.push(m);
-          void pump();
+          // The Hub names the lane; fall back to our own rule if it did not (never trust it beyond the two names).
+          const lane: Lane = m.lane === "short" || m.lane === "long" ? m.lane : laneOf(m.task, m.args);
+          queues[lane].push(m);
+          void pump(lane);
         } else if (m.type === "cancel") {
-          const cur = current as { id: string; abort: AbortController } | null;
-          if (cur && cur.id === m.id) cur.abort.abort();
-          else if (queue.some(j => j.id === m.id)) cancelled.add(m.id);
+          const abort = running.get(m.id);
+          if (abort) abort.abort();
+          else if (queues.short.some(j => j.id === m.id) || queues.long.some(j => j.id === m.id)) cancelled.add(m.id);
         }
       });
       ws.on("unexpected-response", (_q, res) => {
@@ -98,8 +135,9 @@ export function run(cfg: Config, log: (s: string) => void = console.log): Promis
       });
       ws.on("error", () => {}); // 'close' follows
       ws.on("close", code => {
-        current?.abort.abort(); // the Hub requeues running jobs when we drop
-        queue.length = 0;
+        for (const a of running.values()) a.abort(); // the Hub requeues running jobs when we drop
+        queues.short.length = 0;
+        queues.long.length = 0;
         if (stopped) return;
         if (code === 4001) fatal({ code, message: "The daemon credential was rotated. Run `mailroom login` with the new credential." });
         else if (code === 4002) fatal({ code, message: "Replaced by another daemon. Exiting." });

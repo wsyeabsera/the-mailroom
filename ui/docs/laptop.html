@@ -97,7 +97,7 @@
 </ul>
 
 <h2>The daemon checks again</h2>
-<p>The Hub checks every parcel against its contract before sending it. The daemon checks again. It runs <strong>the same contract check itself</strong>. The laptop keeps no copy of the contract: the Hub sends the contract inside every job, and the daemon checks that one. This catches Hub bugs and stale state. It is not a defence against a compromised Hub, which could send a wider contract; a laptop-side ceiling is a planned hardening step, not built yet.</p>
+<p>The Hub checks every parcel against its contract before sending it. The daemon checks again. It runs <strong>the same contract check itself</strong>. The Hub sends the contract inside every job, and the daemon checks that one. On top of that, the laptop can keep its own ceiling in <code>~/.mailroom/policy.json</code> (folders, tasks, command names and the <code>claude</code> tools and turns, file mode 0600). The daemon reads it fresh for every job and refuses any job whose contract goes beyond it, so a compromised Hub cannot widen what the laptop will do. Set it with <code>mailroom policy show</code>, <code>mailroom policy allow-folder &lt;path&gt;</code> <code>mailroom policy allow-task &lt;task&gt;</code>, <code>mailroom policy allow-command &lt;name&gt;</code>, <code>mailroom policy allow-claude-tool &lt;tool&gt;</code> and <code>mailroom policy claude-max-turns &lt;n&gt;</code>. When the daemon refuses a job for the policy, the reason names the exact folder, task, command or tool and the command that allows it. Without claude settings the policy allows only Read, Glob and Grep and 10 turns. If the file does not exist, the daemon has no ceiling, trusts the Hub's contract and logs a warning once. An unreadable or malformed policy file refuses every job.</p>
 <p>The daemon also does one thing the Hub cannot: it asks the real disk where a path ends up. It expands <code>~</code> with the laptop's own home folder, cleans up <code>..</code>, then follows every symlink on the way (a symlink is a file that points somewhere else). If the real location is outside the contract's folders, the job is refused and nothing is read or written.</p>
 
 <figure class="dg">
@@ -144,9 +144,9 @@
 <thead><tr><th>Task</th><th>What it does</th><th>Limits</th></tr></thead>
 <tbody>
 <tr><td><code>echo</code></td><td>Sends your text straight back. Use it to test the whole route.</td><td>None.</td></tr>
-<tr><td><code>read_file</code></td><td>Reads one file and returns its text.</td><td>The path must be a file inside a contract folder. Larger than 200 KB: the job fails with "file is bigger than 200 KB".</td></tr>
+<tr><td><code>read_file</code></td><td>Reads one file and returns its text.</td><td>The path must be a file inside a contract folder. Larger than 2 MB: the job fails with "file is bigger than 2 MB". A result over 200 KB is kept by the Hub for 7 days.</td></tr>
 <tr><td><code>write_file</code></td><td>Writes the given text to a file. It makes missing folders inside the allowed folder. It writes to a temporary file first, then renames it into place.</td><td>Content over 200 KB fails. You choose per contract which tasks wait for your approval.</td></tr>
-<tr><td><code>claude</code></td><td>Runs <code>claude -p "&lt;prompt&gt;"</code> in a folder (<code>cwd</code>) the contract allows and returns what it prints.</td><td>5 minute timeout, then it is stopped and the job fails with "claude timed out". Only the first 200 KB of output is kept. Needs <code>claude</code> on the daemon's PATH.</td></tr>
+<tr><td><code>claude</code></td><td>Runs <code>claude -p "&lt;prompt&gt;"</code> in a folder (<code>cwd</code>) the contract allows and returns what it prints.</td><td>5 minute timeout, then it is stopped and the job fails with "claude timed out". Only the first 2 MB of output is kept. Needs <code>claude</code> on the daemon's PATH.</td></tr>
 </tbody>
 </table>
 
@@ -158,6 +158,7 @@
 </details>
 
 <h2>If the credential is rotated</h2>
+<p><strong>Phone alerts.</strong> The Laptop page also tells you how to get a push on your phone when a parcel needs approval: set the Worker secret <code>PUSH_URL</code> to a ntfy-compatible topic address with <code>npx wrangler secret put PUSH_URL</code>. The push holds only the task, the key's name and a link to Approvals. See <a href="/docs/api#callbacks">the API page</a>.</p>
 <p>Rotating the credential (Laptop page, "Rotate credential") kills the old one at once. This is the move to make if you think the credential leaked. The Hub closes the daemon's connection. The daemon prints "The daemon credential was rotated. Run <code>mailroom login</code> with the new credential." and exits. It does not retry, because retrying cannot work.</p>
 <ol class="steps">
   <li><p>In the app, open <strong>Laptop</strong> and rotate. Copy the new credential. It is shown once.</p></li>

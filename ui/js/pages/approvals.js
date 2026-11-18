@@ -18,11 +18,19 @@ let ctx_refresh = () => {};
 function list(body, ctx) {
   ctx_refresh = ctx.refresh;
   let banners = ctx.takeFlash();
-  const load = () => loadInto(body, async () => ({ jobs: await api("/admin/jobs?state=waiting_approval&limit=100"), labels: await keyLabels().catch(() => new Map()) }), ({ jobs, labels }) => {
-    const sub = jobs.length ? `${plural(jobs.length, "parcel")} ${jobs.length === 1 ? "is" : "are"} holding at the counter until you say so.` : "The counter is clear.";
+  const load = () => loadInto(body, async () => ({ jobs: await api("/admin/jobs?state=waiting_approval&limit=100"), proposals: await api("/admin/proposals?state=pending"), labels: await keyLabels().catch(() => new Map()) }), ({ jobs, proposals, labels }) => {
+    const sub = jobs.length || proposals.length ? [jobs.length ? `${plural(jobs.length, "parcel")} ${jobs.length === 1 ? "is" : "are"} holding at the counter until you say so.` : "", proposals.length ? `${plural(proposals.length, "contract change")} ${proposals.length === 1 ? "is" : "are"} waiting for your answer.` : ""].filter(Boolean).join(" ") : "The counter is clear.";
     body.append(pageHead("Approvals", sub));
     if (banners) { body.append(banner(banners.kind, h("span", null, h("b", null, banners.title || "Decision recorded."), " ", banners.text))); banners = null; }
-    if (!jobs.length) { body.append(emptyState("Nothing waiting for you", "When a contract needs your say-so, the parcel holds here.", h("a", { class: "btn", href: "#/parcels" }, "See all parcels"))); return; }
+    for (const p of proposals) body.append(proposalCard(p, async (verdict, btn) => {
+      btn.disabled = true;
+      try {
+        await api(`/admin/proposals/${enc(p.id)}/${verdict}`, { method: "POST" });
+        banners = { kind: "", text: verdict === "apply" ? `The contract ${p.contract_name || p.contract_id} was changed.` : "The proposal was declined; the contract is unchanged." };
+      } catch (e) { banners = { kind: "err", title: "Not recorded.", text: e.status === 409 ? (e.data && e.data.message) || `${p.id} is no longer waiting.` : e.message }; }
+      ctx_refresh(); mount(body); load();
+    }));
+    if (!jobs.length && !proposals.length) { body.append(emptyState("Nothing waiting for you", "When a contract needs your say-so, the parcel holds here.", h("a", { class: "btn", href: "#/parcels" }, "See all parcels"))); return; }
     for (const j of [...jobs].reverse()) {
       const d = describeJob(j);
       const act = async (verdict, btn) => {
@@ -84,4 +92,18 @@ function detail(body, id, ctx) {
           h("p", { style: "margin:0 0 16px" }, "Contract ", h("a", { href: "#/contracts/" + enc(job.contract_id), style: "text-decoration:underline" }, (job.contract && job.contract.name) || job.contract_id), ` says ${job.task} needs your approval. `, (job.contract_check || {}).verdict === "approve" ? "The folder check passed." : ""),
           waiting ? h("div", { class: "btns" }, approve, decline) : h("a", { class: "btn", href: "#/approvals" }, "Back to approvals")))));
   });
+}
+
+// A contract change someone asked for. Plain-words changes, widening ones in amber; nothing has changed until Apply.
+function proposalCard(p, act) {
+  return h("div", { class: "card proposal", "data-proposal": p.id }, h("div", { class: "ask" },
+    h("div", { style: "flex:1;min-width:0" },
+      h("span", { class: "mono" }, p.id), " ", tag("contract change"), p.widening ? [" ", tag("widens", "wa")] : null,
+      h("div", { class: "what", style: "margin:6px 0 0" }, "Change contract ", h("a", { href: "#/contracts/" + enc(p.contract_id), style: "text-decoration:underline" }, p.contract_name || p.contract_id)),
+      h("div", { class: "f" }, `asked ${hhmm(p.created_at)}${p.note ? " · " + p.note : ""}`),
+      h("ul", { class: "diff", style: "margin:8px 0 0;padding-left:18px" }, p.changes.map((c) => h("li", null, c.text, c.widening ? [" ", tag("widens", "wa")] : null))),
+      h("div", { class: "f", style: "margin-top:6px" }, "Nothing has changed yet.")),
+    h("div", { class: "btns", style: "white-space:nowrap;align-self:flex-start" },
+      h("button", { class: "btn p", type: "button", onclick: (e) => act("apply", e.currentTarget) }, "Apply"),
+      h("button", { class: "btn", type: "button", onclick: (e) => act("decline", e.currentTarget) }, "Decline"))));
 }

@@ -28,7 +28,7 @@ function list(body) {
         : h("div", { class: "card tblwrap" }, h("table", null,
           h("thead", null, h("tr", null, ["Parcel", "Task", "Key", "State"].map((t) => h("th", null, t)), h("th", { class: "r" }, "Sent"))),
           h("tbody", null, rows.map((j) => h("tr", { class: "go", onclick: (e) => { if (!e.target.closest("a")) location.hash = "#/parcels/" + enc(j.id); } },
-            h("td", null, h("a", { class: "mono", href: "#/parcels/" + enc(j.id) }, j.id)), h("td", null, j.task),
+            h("td", null, h("a", { class: "mono", href: "#/parcels/" + enc(j.id) }, j.id)), h("td", null, j.task, j.label ? [" ", tag(j.label)] : null),
             h("td", { class: "m" }, labels.get(j.key_id) || j.key_id), h("td", null, stateTag(j.state)), h("td", { class: "f tn r" }, hhmm(j.created_at))))))));
     };
     body.append(head, tabs, results);
@@ -70,7 +70,7 @@ function detail(body, id, ctx) {
     body.append(
       h("a", { class: "back", href: "#/parcels" }, "← All parcels"),
       h("h1", null, h("span", { class: "mono", style: "font-size:24px" }, job.id), " ", stateTag(job.state)),
-      h("p", { class: "sub" }, `${job.task} · sent ${hhmm(job.created_at)} by `, h("a", { href: "#/keys/" + enc(key.id || job.key_id), style: "text-decoration:underline" }, key.label || job.key_id)));
+      h("p", { class: "sub" }, job.label ? [tag(job.label), " "] : null, `${job.task} · sent ${hhmm(job.created_at)} by `, h("a", { href: "#/keys/" + enc(key.id || job.key_id), style: "text-decoration:underline" }, key.label || job.key_id)));
     const right = h("div", { class: "f1" });
     if (job.state === "refused") {
       const allowed = contract && contract.folders ? contract.folders : [];

@@ -23,6 +23,7 @@
 <tr><td>Connect this laptop for the first time</td><td><code>mailroom login</code>, then <code>mailroom run</code> or <code>mailroom service install</code></td></tr>
 <tr><td>Try it in a terminal and watch what happens</td><td><code>mailroom run</code></td></tr>
 <tr><td>Keep it connected after a reboot or a closed terminal (macOS)</td><td><code>mailroom service install</code></td></tr>
+<tr><td>Add the Claude Code plugin to another project</td><td><code>mailroom plugin install</code>, run in that project's folder (<code>--scope user</code> for all projects)</td></tr>
 <tr><td>Find out if the Hub accepts this laptop</td><td><code>mailroom status</code> (or <code>mailroom service status</code> for the background copy too)</td></tr>
 <tr><td>Use a new credential after rotating</td><td><code>mailroom login</code>, then <code>mailroom service install</code> again</td></tr>
 <tr><td>Stop the background copy</td><td><code>mailroom service uninstall</code></td></tr>
@@ -66,10 +67,55 @@
 <h2>logout</h2>
 <p>Deletes <code>~/.mailroom/config.json</code>. It prints "Logged out." or "Nothing to delete.". It does not touch the background service. A daemon that is already running keeps its connection until it stops, and after that it cannot start again. To fully stop, run <code>mailroom service uninstall</code> first, then <code>mailroom logout</code>.</p>
 
+<h2>policy</h2>
+<p>Sets the ceiling the daemon never goes beyond, whatever contract the Hub sends. It is stored in <code>~/.mailroom/policy.json</code>. Every subcommand saves the file and prints its path.</p>
+<table>
+<thead><tr><th>Run</th><th>Does</th></tr></thead>
+<tbody>
+<tr><td><code>mailroom policy show</code></td><td>Lists the folders, tasks, commands, <code>claude</code> tools and <code>claude</code> turns the policy allows. Tools and turns say "(default)" when unset: Read, Glob, Grep and 10 turns.</td></tr>
+<tr><td><code>mailroom policy allow-folder &lt;path&gt;</code></td><td>Lets contracts use this folder or anything inside it.</td></tr>
+<tr><td><code>mailroom policy allow-task &lt;task&gt;</code></td><td>Lets contracts use this task.</td></tr>
+<tr><td><code>mailroom policy allow-command &lt;name&gt;</code></td><td>Lets contracts name this command for the <code>run</code> task. The name is letters, numbers, dots and dashes, up to 60.</td></tr>
+<tr><td><code>mailroom policy allow-prompt &lt;name&gt;</code></td><td>Lets contracts name this prompt for the <code>ask</code> task (the prompt itself lives in <code>~/.mailroom/prompts.json</code>).</td></tr>
+<tr><td><code>mailroom policy allow-workflow &lt;name&gt;</code></td><td>Lets contracts name this workflow for the <code>workflow</code> task (it lives in <code>~/.mailroom/workflows.json</code>). See <a href="/docs/pipelines">Batches and workflows</a>.</td></tr>
+<tr><td><code>mailroom policy batch-max-items &lt;n&gt;</code>, <code>batch-max-concurrency &lt;n&gt;</code></td><td>Ceilings on the most items in a batch and the most run at once (1 to 1000). A contract asking for more is refused.</td></tr>
+<tr><td><code>mailroom policy allow-claude-tool &lt;tool&gt;</code></td><td>Lets contracts grant this tool to the <code>claude</code> task, like <code>'Bash(git log:*)'</code>.</td></tr>
+<tr><td><code>mailroom policy claude-max-turns &lt;n&gt;</code></td><td>Sets the most turns a contract may grant a <code>claude</code> job (1 to 50).</td></tr>
+</tbody>
+</table>
+<p>When the daemon refuses a job because of the policy, the reason names the exact folder, task, command or tool and the line to run, for example <code>contract commands deploy-notes are not allowed by the laptop policy. To allow: mailroom policy allow-command deploy-notes</code>.</p>
+
+<h2>commands.json and the project tag</h2>
+<p>The <code>run</code> task starts commands you list in <code>~/.mailroom/commands.json</code> (mode <code>0600</code>, read fresh for every job). Each entry has an absolute <code>script</code>, a <code>cwd</code>, typed <code>args</code>, an optional <code>timeoutMs</code> and <code>rerunSafe</code>, and an optional <code>project</code>.</p>
+<pre><code>{
+  "deploy-notes": {
+    "script": "/Users/you/bin/deploy-notes.sh",
+    "cwd": "/Users/you/notes",
+    "args": { "env": { "type": "enum", "values": ["staging", "prod"], "required": true } },
+    "timeoutMs": 120000,
+    "project": "pr_1000"
+  }
+}</code></pre>
+<p><code>project</code> is the id of a Hub project (<code>pr_1000</code>, shown on the Projects page and in <code>GET /admin/projects</code>). It is only a tag: it decides which project's Commands tab lists the command and nothing else. It does not allow, deny or limit anything, and a wrong or missing tag never stops a job. When the daemon connects it reports each command's name, tag, arg specs and timeout to the Hub (never the script path or folder). See <a href="/docs/projects">Projects</a>.</p>
+
+<h2>doctor</h2>
+<p><code>mailroom doctor [--contracts file.json] [--token mra_...]</code> checks this laptop's setup and prints each problem with the command that fixes it. It runs nothing. Exit code 1 if it found an error, otherwise 0.</p>
+<ul>
+  <li>File modes: <code>commands.json</code>, <code>prompts.json</code>, <code>mcp.json</code>, <code>policy.json</code>, <code>config.json</code> must not be readable by others (<code>chmod 600 ...</code>).</li>
+  <li>Each command: the script exists, is executable, has a <code>#!</code> line whose interpreter (often <code>node</code>) is found on the PATH the background service uses (a Mac service gets a short PATH, so a script that works in your shell can fail there), and its folder exists and is inside the policy.</li>
+  <li>Each prompt: its folder, its tools against the policy (<code>mailroom policy allow-claude-tool ...</code>), and that <code>claude</code> is on the service PATH.</li>
+  <li>With contracts (a file exported from the Hub, or a read-scope admin token that lets doctor ask the Hub): contract folders, tasks, commands, prompts and tools against the policy; commands and prompts a contract names that are not registered; registry entries no contract uses.</li>
+</ul>
+<h2>explain</h2>
+<p><code>mailroom explain &lt;key label&gt; '&lt;job json&gt;' [--token mra_...] [--contract file.json]</code> runs the two checks a real job meets without running anything: the Hub's contract check, then the laptop's own (contract, policy, registry). It says which one refuses and why, with the same words a real refusal has. For example <code>mailroom explain "tv app" '{"task":"run","args":{"command":"scan","args":{}}}'</code>. It does not check the daily limit or Claude budget, or whether the script itself succeeds.</p>
+<h2>logs</h2>
+<p><code>mailroom logs &lt;job id&gt;</code> prints what Claude said in a <code>claude</code> or <code>ask</code> job: the turns and the raw reply. The Hub only ever gets a character count; this file stays on the laptop (<code>~/.mailroom/logs/</code>, mode 0600, deleted after 7 days). <code>mailroom policy logs off</code> stops writing it.</p>
+
 <h2>service install, uninstall, status</h2>
 <p>macOS only. They manage a launchd user agent (the system's own way to keep a program running) that starts <code>mailroom run</code> at login and restarts it if it stops.</p>
 <ul>
   <li><code>install</code> needs you to be logged in. It writes the definition, loads it and waits a couple of seconds to see if the daemon is running. Running it again replaces the running copy. It prints where the log is. Exit 0 if it is running, 1 if not.</li>
+  <li><code>restart</code> replaces the running copy with a fresh one, so it runs the code on disk. Use it when the Laptop page says the daemon is older than the Hub.</li>
   <li><code>uninstall</code> stops it and deletes the definition: "Service removed." or "No service was installed.".</li>
   <li><code>status</code> prints one line, then asks the Hub the same question as <code>mailroom status</code>. Exit 0 only if the service is running.</li>
 </ul>

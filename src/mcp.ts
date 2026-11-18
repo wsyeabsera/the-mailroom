@@ -1,10 +1,12 @@
 // The MCP admin channel: JSON-RPC 2.0 dispatch and tool definitions. Pure: no Worker imports, no I/O of its own.
 // The Hub supplies `api` (the same internals the owner routes use) and `audit`; this module only decides who may call what.
 
+import { PROPOSABLE_FIELDS } from "../shared/proposal.ts";
+
 export const SERVER_NAME = "the-mailroom";
 export const SERVER_VERSION = "0.3.0";
 export const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
-export const SCOPES = ["read", "write", "approve"] as const;
+export const SCOPES = ["read", "write", "approve", "propose"] as const;
 export type Scope = (typeof SCOPES)[number];
 
 export const INSTRUCTIONS =
@@ -23,7 +25,7 @@ export class ToolError extends Error {
 /** "name: Give it a short name. folders: Allow at least one folder." for the contract editor's field messages. */
 export const formatFieldErrors = (errors: Record<string, string>): string => Object.entries(errors).map(([k, v]) => `${k}: ${v}`).join(" ");
 
-export type ParcelFilter = { state?: string; limit: number };
+export type ParcelFilter = { state?: string; label?: string; limit: number };
 export type McpApi = {
   status(): Promise<unknown>;
   listParcels(a: ParcelFilter): Promise<unknown>;
@@ -36,7 +38,13 @@ export type McpApi = {
   laptop(): Promise<unknown>;
   createContract(body: Record<string, unknown>): Promise<unknown>;
   updateContract(id: string, body: Record<string, unknown>): Promise<unknown>;
-  createKey(a: { label: string; contract_id: string }): Promise<unknown>;
+  listProjects(): Promise<unknown>;
+  getProject(id: string): Promise<unknown>;
+  createProject(body: Record<string, unknown>): Promise<unknown>;
+  updateProject(id: string, body: Record<string, unknown>): Promise<unknown>;
+  listProposals(state?: string): Promise<unknown>;
+  proposeContract(a: { contract_id: string; changes: Record<string, unknown>; note?: string }): Promise<unknown>;
+  createKey(a: { label: string; contract_id: string; project_id?: string | null }): Promise<unknown>;
   revokeKey(id: string): Promise<unknown>;
   approveParcel(id: string): Promise<unknown>;
   declineParcel(id: string, reason?: string): Promise<unknown>;
@@ -115,12 +123,30 @@ const idArg = (what: string, eg: string): Schema => ({ type: "object", propertie
 const CONTRACT_PROPS: Record<string, Schema> = {
   name: { type: "string", minLength: 1, maxLength: 60, description: "Short name for the contract (letters, numbers, spaces)." },
   folders: { type: "array", items: { type: "string", maxLength: 1000 }, minItems: 1, maxItems: 50, description: "Folders the key may touch, each starting with ~/ or / (never the whole home or root)." },
-  tasks: { type: "array", items: { type: "string", enum: ["echo", "read_file", "write_file", "claude"] }, minItems: 1, description: "Tasks the key may ask for: echo, read_file, write_file, claude." },
+  tasks: { type: "array", items: { type: "string", enum: ["echo", "read_file", "write_file", "claude", "run", "ask", "batch", "workflow"] }, minItems: 1, description: "Tasks the key may ask for: echo, read_file, write_file, claude, run, ask, batch (one command or prompt over a list of items), workflow (a named multi-step pipeline registered on the laptop)." },
+  batches: { type: "array", items: { type: "string", maxLength: 64 }, maxItems: 50, description: "Targets the batch task may run, each run:<command> or ask:<prompt> (required and non-empty when tasks includes batch; each must also be in commands or prompts). Omit or [] otherwise." },
+  batchMaxItems: { type: "integer", minimum: 1, maximum: 1000, description: "Most items in one batch. Default 100." },
+  batchMaxConcurrency: { type: "integer", minimum: 1, maximum: 6, description: "Most items a batch runs at once. Default 3, at most 6." },
+  workflows: { type: "array", items: { type: "string", maxLength: 60 }, maxItems: 50, description: "Names of the laptop-registered workflows the workflow task may run (required and non-empty when tasks includes workflow). Every step of a workflow is still checked against this contract (its commands, prompts and batches). Omit or [] otherwise." },
+  prompts: { type: "array", items: { type: "string", maxLength: 60 }, maxItems: 50, description: "Names of the laptop-registered prompts the ask task may run (required and non-empty when tasks includes ask). The laptop's prompts.json fixes each prompt's text, tools, turns and model; a job supplies only variables. Omit or [] otherwise." },
+  commands: { type: "array", items: { type: "string", maxLength: 60 }, maxItems: 50, description: "Names of the laptop-registered commands the run task may start (required and non-empty when tasks includes run). Omit or [] otherwise." },
+  claudeTools: { type: "array", items: { type: "string", maxLength: 100 }, minItems: 1, maxItems: 20, description: "Ceiling for the claude task: the tool names (exact match, like Read or Bash(git log:*)) a claude job may ask for; a job with no allowedTools gets exactly these. Default Read, Glob, Grep. Keep it read-only unless the owner says otherwise." },
+  claudeMaxTurns: { type: "integer", minimum: 1, maximum: 50, description: "Ceiling for the claude task: the most turns a claude job may ask for; a job with no maxTurns gets this many. Default 10." },
+  claudeDailyTurns: { type: "integer", minimum: 1, maximum: 100000, description: "Budget for claude jobs per key per UTC day, in turns (a new claude job is refused once the day's total reaches it). Default 100." },
+  claudeDailyMinutes: { type: "integer", minimum: 1, maximum: 1440, description: "The same budget in wall-clock minutes per key per UTC day. Default 60." },
+  callbackUrls: { type: "array", items: { type: "string", maxLength: 500 }, maxItems: 20, description: "Optional. https URL prefixes, each ending in /, that a job's callback_url may start with; the Hub POSTs a signed result there when the job ends. No IP addresses or local names. Omit or [] for none." },
   dailyLimit: { type: "integer", minimum: 1, maximum: 100000, description: "Whole parcels per UTC day, 1 to 100000." },
   expires: { type: ["string", "null"], description: "Date like 2026-12-31 after which the contract stops working, or null for never." },
   approval: { type: "array", items: { type: "string" }, description: "Tasks (a subset of tasks) that wait for the owner before they run. Use [] for none." },
 };
 const CONTRACT_REQUIRED = ["name", "folders", "tasks", "dailyLimit", "approval"];
+const PROJECT_PROPS: Record<string, Schema> = {
+  name: { type: "string", minLength: 1, maxLength: 60, description: "The project's name, 1 to 60 characters, unique among live projects." },
+  folder: { type: ["string", "null"], description: "The project's home folder on the laptop, starting with ~/ or /, or null for none." },
+  notes: { type: "string", maxLength: 2000, description: "Free notes, up to 2000 characters." },
+  color: { type: ["string", "null"], description: "A colour like #1a2b3c, or null." },
+};
+const projectArg: Schema = { type: "object", properties: { project: { type: "string", minLength: 1, maxLength: 40, description: "The project id, like pr_1000, or \"unassigned\" for keys with no project." } }, required: ["project"], additionalProperties: false };
 const idOf = (a: Record<string, any>) => (typeof a.id === "string" ? a.id : undefined);
 
 export const TOOLS: Tool[] = [
@@ -132,12 +158,12 @@ export const TOOLS: Tool[] = [
   {
     name: "mailroom_list_parcels", scope: "read",
     description: "List parcels (jobs that clients submitted), newest first. Optionally filter by state. Returns an array of parcels, each with id, key_id, task, args, state, reason, result and timestamps. Use mailroom_get_parcel for one parcel's full story.",
-    inputSchema: { type: "object", properties: { state: { type: "string", enum: ["queued", "waiting_approval", "running", "done", "failed", "refused", "expired", "cancelled"], description: "Only parcels in this state." }, limit: { type: "integer", minimum: 1, maximum: 200, description: "How many to return, 1 to 200 (default 50)." } }, additionalProperties: false },
-    run: (a, api) => api.listParcels({ state: a.state, limit: a.limit ?? 50 }),
+    inputSchema: { type: "object", properties: { state: { type: "string", enum: ["queued", "waiting_approval", "running", "done", "failed", "refused", "expired", "cancelled"], description: "Only parcels in this state." }, label: { type: "string", maxLength: 60, description: "Only parcels the client labelled exactly this (for example \"test\")." }, limit: { type: "integer", minimum: 1, maximum: 200, description: "How many to return, 1 to 200 (default 50)." } }, additionalProperties: false },
+    run: (a, api) => api.listParcels({ state: a.state, ...(a.label ? { label: a.label } : {}), limit: a.limit ?? 50 }),
   },
   {
     name: "mailroom_get_parcel", scope: "read", inputSchema: idArg("parcel", "p_1001"),
-    description: "Get one parcel with its timeline of events, a fresh contract check (what the contract says about this parcel now) and the key that sent it. Use this to see exactly what a parcel will do before the owner decides on it.",
+    description: "Get one parcel with its timeline of events, its count of partial results so far (partials; clients read them at GET /api/jobs/:id/partials), a fresh contract check (what the contract says about this parcel now) and the key that sent it. Use this to see exactly what a parcel will do before the owner decides on it.",
     run: (a, api) => api.getParcel(a.id),
   },
   {
@@ -168,8 +194,32 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "mailroom_laptop", scope: "read", inputSchema: NONE,
-    description: "Is the owner's laptop connected, when was it last seen, and which parcels are queued waiting for it. Returns {connected, last_seen, last_seq, rotated_at, credential_hint, queue}. It never reveals the laptop credential.",
+    description: "Is the owner's laptop connected, when was it last seen, and which parcels are queued waiting for it. Returns {connected, last_seen, last_seq, rotated_at, credential_hint, hub_version, daemon_version, daemon_commit, daemon_notice, queue}; daemon_notice says the connected daemon is older than the Hub and should be restarted (mailroom service restart). It never reveals the laptop credential.",
     run: (_a, api) => api.laptop(),
+  },
+  {
+    name: "mailroom_list_projects", scope: "read", inputSchema: NONE,
+    description: "List projects (named groups of keys, with a home folder and notes) plus a synthetic \"unassigned\" entry for keys with none. Each has key_count, the running parcel, queued count, last run and today's done/failed/refused counts. A project grants nothing: contracts still decide what a key may do.",
+    run: (_a, api) => api.listProjects(),
+  },
+  {
+    name: "mailroom_get_project", scope: "read", inputSchema: projectArg,
+    description: "Get one project: its keys, 20 most recent parcels, and the Commands view (commands tagged to it or allowed by its keys' contracts, with mismatch badges and whether the laptop has reported its commands). Use project \"unassigned\" for keys with no project.",
+    run: (a, api) => api.getProject(a.project),
+  },
+  {
+    name: "mailroom_create_project", scope: "write",
+    description: "Create a project: a name (required), optional folder, notes and colour. Returns the saved project, or what to fix field by field. A project grants nothing and changes no contract.",
+    inputSchema: { type: "object", properties: PROJECT_PROPS, required: ["name"], additionalProperties: false },
+    target: (_a, r) => r?.id,
+    run: (a, api) => api.createProject(a),
+  },
+  {
+    name: "mailroom_update_project", scope: "write",
+    description: "Change a project's name, folder, notes or colour (send only what changes). Returns the saved project or what to fix.",
+    inputSchema: { type: "object", properties: { project: { type: "string", minLength: 1, maxLength: 40, description: "The project id, like pr_1000." }, ...PROJECT_PROPS }, required: ["project"], additionalProperties: false },
+    target: (a) => (typeof a.project === "string" ? a.project : undefined),
+    run: (a, api) => { const { project, ...body } = a; return api.updateProject(project, body); },
   },
   {
     name: "mailroom_create_contract", scope: "write", soft: true,
@@ -186,11 +236,24 @@ export const TOOLS: Tool[] = [
     run: (a, api) => { const { id, ...body } = a; return api.updateContract(id, body); },
   },
   {
+    name: "mailroom_list_proposals", scope: "read",
+    description: "List contract change proposals (newest first), optionally only those in one state: pending, applied, declined or stale. Each has the plain-words changes and whether it widens the contract. Returns [{id, contract_id, state, widening, changes:[{field,text,widening}], note, ...}].",
+    inputSchema: { type: "object", properties: { state: { type: "string", enum: ["pending", "applied", "declined", "stale"], description: "Only proposals in this state." } }, additionalProperties: false },
+    run: (a, api) => api.listProposals(a.state),
+  },
+  {
+    name: "mailroom_propose_contract", scope: "propose",
+    description: "Ask the owner to change a contract. Send only the fields to change in `changes` (for example {tasks:[\"echo\",\"ask\"], prompts:[\"summarise\"]}; a list field replaces the whole list, so include the entries you keep). It is stored as a proposal and NOTHING changes until the owner applies it in Approvals; you cannot apply it. The owner sees the plain-words diff, and widening changes (new folders outside the old ones, the write_file or claude task, higher limits or budgets, fewer approvals) are flagged. Ask for the least that you need and say why in `note`. Returns the proposal {id, state:\"pending\", widening, changes}, or what to fix field by field.",
+    inputSchema: { type: "object", properties: { contract_id: { type: "string", minLength: 1, maxLength: 40, description: "The contract id, like c_1000." }, changes: { type: "object", description: `The contract fields to change (${PROPOSABLE_FIELDS.join(", ")}); same shapes as mailroom_update_contract.` }, note: { type: "string", maxLength: 500, description: "Why, in plain words, for the owner." } }, required: ["contract_id", "changes"], additionalProperties: false },
+    target: (_a, r) => r?.id,
+    run: (a, api) => api.proposeContract({ contract_id: a.contract_id, changes: a.changes, ...(a.note !== undefined ? { note: a.note } : {}) }),
+  },
+  {
     name: "mailroom_create_key", scope: "write",
     description: "Create a client key under an existing contract. Returns {id, label, key}. IMPORTANT: the key (starting mr_live_) is shown only once, in this result; The Mailroom keeps only a hash and cannot show it again. Hand it to the owner in your reply to them and never store it, write it to a file, log it, or repeat it anywhere else. If it is lost, revoke the key and make a new one.",
-    inputSchema: { type: "object", properties: { label: { type: "string", minLength: 1, maxLength: 60, description: "Who or what will use this key, 1 to 60 characters." }, contract_id: { type: "string", minLength: 1, maxLength: 40, description: "The contract the key works under, like c_1000." } }, required: ["label", "contract_id"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { label: { type: "string", minLength: 1, maxLength: 60, description: "Who or what will use this key, 1 to 60 characters." }, contract_id: { type: "string", minLength: 1, maxLength: 40, description: "The contract the key works under, like c_1000." }, project_id: { type: ["string", "null"], description: "Optional project the key belongs to, like pr_1000 (default: unassigned). Archived or unknown projects are refused." } }, required: ["label", "contract_id"], additionalProperties: false },
     target: (_a, r) => r?.id,
-    run: (a, api) => api.createKey({ label: a.label, contract_id: a.contract_id }),
+    run: (a, api) => api.createKey({ label: a.label, contract_id: a.contract_id, ...(a.project_id !== undefined ? { project_id: a.project_id } : {}) }),
   },
   {
     name: "mailroom_revoke_key", scope: "write", inputSchema: idArg("key", "k_1000"),
@@ -214,7 +277,7 @@ export const TOOLS: Tool[] = [
 ];
 
 /** Does a token with these scopes hold `need`? write and approve each include read. */
-export const hasScope = (scopes: readonly string[], need: Scope): boolean => scopes.includes(need) || (need === "read" && (scopes.includes("write") || scopes.includes("approve")));
+export const hasScope = (scopes: readonly string[], need: Scope): boolean => scopes.includes(need) || (need === "read" && (scopes.includes("write") || scopes.includes("approve") || scopes.includes("propose")));
 
 export const toolsFor = (scopes: readonly string[]) => TOOLS.filter((t) => hasScope(scopes, t.scope));
 

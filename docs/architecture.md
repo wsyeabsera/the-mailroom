@@ -38,7 +38,21 @@ Nothing is updated in place except job state and revocation; each change also ap
 4. If the daemon is connected, the Hub pushes the job. If not, it waits; the UI shows "waiting for laptop".
 5. The Hub sends the job with its contract; the daemon **checks that contract again on the laptop** before acting (real paths and symlinks, `~` with the laptop's home, the laptop's clock), then runs and returns the result. Hub stores it; client reads it by job id.
 
-The second check catches Hub bugs, stale state and symlink or path tricks the gateway cannot see. It does **not** make the laptop independent of the Hub: the contract arrives in the job message, so a compromised Hub could send a wider one. A laptop-side ceiling (folders and tasks the daemon refuses to go beyond whatever the Hub says) is not built yet.
+The second check catches Hub bugs, stale state and symlink or path tricks the gateway cannot see. The contract arrives in the job message, so on its own it does not make the laptop independent of the Hub. The laptop policy (`~/.mailroom/policy.json`, `{folders, tasks, commands?}`, mode 0600, managed by `mailroom policy`) is that ceiling: `recheck` loads it fresh per job and refuses any job whose contract folders (symlink-safe) or tasks exceed it, or whose commands exceed it when the contract has them. With no policy file the daemon keeps the old behaviour and warns once; a malformed file refuses every job.
+
+## Lanes
+
+Two lanes so a long job does not delay a quick one. `short`: `echo`, `read_file`, `write_file`, and `run` commands the laptop reported with `timeoutMs <= 60000`. `long`: `claude`, every other `run`, anything unknown. The pure rules are in `shared/lanes.ts`. The Hub (`pushNext`) keeps at most one job in flight per lane and picks the oldest queued job of each free lane, so order is strict within a lane. The daemon (`daemon/client.ts`) keeps a queue, an abort controller and progress reporting per running job and cancels by id. The Hub cannot read a laptop's registry, so the daemon reports lane hints in its hello (`lanes.commands`); an unreported command is `long`, the conservative choice. A daemon whose hello has no `lanes` field keeps the old single lane. A lost connection requeues every running job in both lanes, as before. A policy of "short" is a hint for scheduling only; it grants nothing.
+
+## Projects
+
+A project is a label that groups keys so the owner sees one app's keys, parcels, commands and events together. It grants nothing: contracts (Hub) and the laptop policy stay the only gates, and moving a key between projects changes no contract. Storage (`src/projects.ts`, pure rules in `shared/projects.ts`):
+
+- `projects(id, name, folder, notes, color, created_at, archived_at)`. Archive hides a project and stops keys joining it; it is refused (409 `has_active_keys`) while any non-revoked key is in it. "Unassigned" is not a row but the keys with `project_id` NULL, shown as a built-in project (id `unassigned`).
+- `keys.project_id` (nullable), added by a guarded `ALTER TABLE` on start; existing keys stay Unassigned. Moved with `PATCH /admin/keys/:id`.
+- `laptop_report(id=1, commands, reported_at)`: the laptop's command list from its latest hello (name, `project` tag from `commands.json`, arg specs, timeout; never script path or cwd).
+
+**Trust rule.** The report is untrusted display data, like every other thing the laptop says. The Hub sanitises it (caps, bad entries dropped, never throws) and uses it only to (1) draw the Commands tab and its mismatch badges, (2) answer `GET /api/commands` so a caller can see arg specs, and (3) pre-check `run` args so a bad call is refused early. It never widens or narrows what a contract allows, never authorises a job, and the daemon re-checks every job against `commands.json` itself. A `project` tag on the laptop decides only which project's Commands tab lists a command, never what a key may do.
 
 ## Rules
 

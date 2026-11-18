@@ -64,12 +64,15 @@ export function eventText(ev) {
     case "daemon.rotated": return "Laptop credential rotated";
     case "token.created": return `Token “${p.label}” created`;
     case "token.revoked": return `Token “${p.label}” revoked`;
+    case "callback.failed": return `Callback for ${id} failed after ${p.attempts ?? 0} tries${p.error ? ": " + p.error : ""}`;
+    case "push.failed": return `Phone push for ${id} failed${p.error ? ": " + p.error : ""}`;
     case "mcp.call": return `${p.label ?? "A token"} called ${String(p.tool ?? "a tool").replace(/^mailroom_/, "")}${p.ok === false ? " (refused)" : ""}`;
     default: return ev.kind;
   }
 }
 export function eventTag(ev) {
   const k = ev.kind;
+  if (k === "callback.failed" || k === "push.failed") return [k.split(".")[0], "er"];
   if (k === "job.waiting_approval") return ["approval", "wa"];
   if (k === "job.refused" || k === "job.declined" || k === "job.failed") return [k.slice(4), "er"];
   if (k === "job.done") return ["done", "ok"];
@@ -77,7 +80,7 @@ export function eventTag(ev) {
   return [k.split(".")[0], ""];
 }
 
-export const TASK_WORDS = { echo: "echo", read_file: "read", write_file: "write", claude: "ask claude" };
+export const TASK_WORDS = { echo: "echo", read_file: "read", write_file: "write", claude: "ask claude", run: "run a command" };
 export function joinWords(list) {
   if (list.length <= 1) return list.join("");
   return list.slice(0, -1).join(", ") + " and " + list[list.length - 1];
