@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import { parseProgressLine } from "./progress.ts";
+import { killTree, killTreeOnAbort, spawnTree, timeoutMessage } from "./proc.ts";
 import { check, normalizePath } from "../shared/contract.ts";
 import type { Contract } from "../shared/contract.ts";
 import { buildArgv, loadCommand } from "./commands.ts";
@@ -116,27 +116,30 @@ function runClaude(prompt: string, cwd: string, signal: AbortSignal, args: Recor
       return reject(e);
     }
     // options go before the prompt; "--" is not used because --allowedTools is variadic
-    const child = spawn("claude", [...opts.argv, "-p", prompt], { cwd, stdio: ["ignore", "pipe", "pipe"], signal });
+    const child = spawnTree("claude", [...opts.argv, "-p", prompt], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const unhook = killTreeOnAbort(child, signal);
     let out = Buffer.alloc(0);
     let err = "";
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      killTree(child);
     }, claudeTimeout());
-    child.stdout.on("data", (d: Buffer) => {
+    child.stdout!.on("data", (d: Buffer) => {
       if (out.length < MAX_BYTES) out = Buffer.concat([out, d]).subarray(0, MAX_BYTES);
     });
-    child.stderr.on("data", (d: Buffer) => {
+    child.stderr!.on("data", (d: Buffer) => {
       err = (err + d).slice(-2000);
     });
     child.on("error", e => {
       clearTimeout(timer);
+      unhook();
       reject(e);
     });
     child.on("close", code => {
       clearTimeout(timer);
-      if (timedOut) reject(new Error("claude timed out"));
+      unhook();
+      if (timedOut) reject(new Error(timeoutMessage(claudeTimeout())));
       else if (code !== 0) reject(new Error(`claude exited with ${code}: ${err.trim()}`));
       else if (opts.json) {
         try {
@@ -156,19 +159,20 @@ function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal
     if ("error" in c) return reject(new Error(c.error));
     const b = buildArgv(c.command, a.args);
     if ("error" in b) return reject(new Error(b.error));
-    const child = spawn(c.command.script, b.argv, { cwd, stdio: ["ignore", "pipe", "pipe"], signal, shell: false });
+    const child = spawnTree(c.command.script, b.argv, { cwd, stdio: ["ignore", "pipe", "pipe"], shell: false });
+    const unhook = killTreeOnAbort(child, signal);
     let out = Buffer.alloc(0);
     let err = "";
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      killTree(child);
     }, c.command.timeoutMs);
-    child.stdout.on("data", (d: Buffer) => {
+    child.stdout!.on("data", (d: Buffer) => {
       if (out.length < MAX_BYTES) out = Buffer.concat([out, d]).subarray(0, MAX_BYTES);
     });
     let pending = ""; // stderr arrives in chunks; a progress line may be split across them
-    child.stderr.on("data", (d: Buffer) => {
+    child.stderr!.on("data", (d: Buffer) => {
       err = (err + d).slice(-2000);
       const lines = (pending + d).split("\n");
       pending = lines.pop()!.slice(-1000);
@@ -179,11 +183,13 @@ function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal
     });
     child.on("error", e => {
       clearTimeout(timer);
+      unhook();
       reject(e);
     });
     child.on("close", code => {
       clearTimeout(timer);
-      if (timedOut) reject(new Error(`${a.command} timed out`));
+      unhook();
+      if (timedOut) reject(new Error(timeoutMessage(c.command.timeoutMs)));
       else if (code !== 0) reject(new Error(`${a.command} exited with ${code}: ${err.trim()}`));
       else resolve({ output: out.toString("utf8"), exitCode: 0 });
     });
