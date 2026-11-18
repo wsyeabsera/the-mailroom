@@ -155,3 +155,9 @@ Registry entry:
 Schema validation (#2797): `shared/json-schema.ts` supports `type` (object, array, string, number, integer, boolean, null), `properties`, `required`, `items`, `enum`, `minLength`, `maxLength`, `minimum`, `maximum`; extra fields are allowed, as in JSON Schema. A reply that is not valid JSON (for example truncated) or does not match fails the job with the path of the first violation and the length of the reply (never the reply itself), for example `answer does not match the schema at $.streams[0].url: expected a string (reply was 212 characters)`. A code fence around the JSON is tolerated. The result is the parsed value.
 
 Resume (#2800): a job arg `resume: <job id>` on `ask` or `claude` continues the Claude session of that earlier job (`claude --resume <session id>`). At submit the Hub refuses (403, `refused`) a `resume` naming a job that does not exist, belongs to another key, or is not an `ask`/`claude` job. The daemon keeps session ids per job in `~/.mailroom/sessions.json` (mode 0600, entries older than 7 days are dropped) and fails a job whose `resume` it does not know, whose earlier job was a different task, or (for `ask`) a different prompt. The new job still runs under its own prompt's limits and the contract ceilings.
+
+## Pipelines foundations (#2801-#2810)
+
+### JSON output from a command (#2806)
+
+A `commands.json` entry may set `"output": "json"`. The daemon then parses the command's stdout and returns it as `result.output` (an object or array instead of a string). Stdout that is not valid JSON, or is 200 KB or more, fails the job with `<command> printed N bytes that are not valid JSON`: the byte count, never the text. Any other `output` value makes the registry entry refuse. `client.run()` returns `{output, exitCode}` with `output` already parsed.

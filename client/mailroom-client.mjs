@@ -63,7 +63,7 @@ export function createClient({ url, key, fetch: f = globalThis.fetch } = {}) {
     if (!r.res.ok) throw fail(r);
     return r.data;
   }
-  // Submit a registered command (task "run") and wait. Throws unless the job ends "done"; returns its result.
+  // Submit a registered command (task "run") and wait. Throws unless the job ends "done"; returns its result: { output, exitCode }. output is already parsed JSON when the command is registered with output: "json", else stdout text.
   async function run(command, args = {}, opts = {}) {
     const sub = await submit("run", { command, args }, opts);
     if (sub.state === "refused") throw new MailroomError(sub.reason || "refused", { status: 403, code: "refused", body: sub });

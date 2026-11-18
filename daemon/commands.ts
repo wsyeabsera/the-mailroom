@@ -8,7 +8,7 @@ import { COMMAND_RE } from "../shared/contract.ts";
 import { sanitizeReport, type ArgSpec, type ReportedCommand } from "../shared/projects.ts";
 
 export type { ArgSpec, ReportedCommand };
-export type Command = { script: string; args: Record<string, ArgSpec>; timeoutMs: number; cwd: string; rerunSafe: boolean; project?: string };
+export type Command = { script: string; args: Record<string, ArgSpec>; timeoutMs: number; cwd: string; rerunSafe: boolean; project?: string; output?: "json" };
 
 export const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -34,8 +34,9 @@ export function loadCommand(name: unknown, home = os.homedir()): { command: Comm
     if (s.type === "enum" && (!Array.isArray(s.values) || s.values.some((v: unknown) => typeof v !== "string"))) return { error: `command “${name}” arg “${k}” needs values` };
     args[k] = { type: s.type, required: s.required === true, maxLength: typeof s.maxLength === "number" ? s.maxLength : undefined, values: s.values };
   }
+  if (c.output !== undefined && c.output !== "json") return { error: `command “${name}” has a bad output (only "json" is known)` };
   const timeoutMs = typeof c.timeoutMs === "number" && c.timeoutMs > 0 ? c.timeoutMs : DEFAULT_TIMEOUT_MS;
-  return { command: { script: c.script, args, timeoutMs, cwd: c.cwd, rerunSafe: c.rerunSafe === true, ...(typeof c.project === "string" ? { project: c.project } : {}) } };
+  return { command: { script: c.script, args, timeoutMs, cwd: c.cwd, rerunSafe: c.rerunSafe === true, ...(c.output === "json" ? { output: "json" as const } : {}), ...(typeof c.project === "string" ? { project: c.project } : {}) } };
 }
 
 /** What the daemon tells the Hub on hello: name, project tag, arg specs and timeout for every registered command.

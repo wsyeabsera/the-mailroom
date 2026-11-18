@@ -278,7 +278,7 @@ function execClaude(prompt: string, cwd: string, signal: AbortSignal, opts: { ar
 }
 
 /** Starts a registered command: argv array, no shell, so metacharacters in args stay literal. */
-function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal, report: (text: string, pct?: number) => void): Promise<{ output: string; exitCode: number }> {
+function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal, report: (text: string, pct?: number) => void): Promise<{ output: unknown; exitCode: number }> {
   return new Promise((resolve, reject) => {
     const c = loadCommand(a.command);
     if ("error" in c) return reject(new Error(c.error));
@@ -319,7 +319,15 @@ function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal
       release();
       if (timedOut) reject(new Error(timeoutMessage(c.command.timeoutMs)));
       else if (code !== 0) reject(new Error(`${a.command} exited with ${code}: ${err.trim()}`));
-      else resolve({ output: out.toString("utf8"), exitCode: 0 });
+      else if (c.command.output === "json") {
+        // The registry says stdout is JSON: return it parsed. A failure names the size, never the text.
+        try {
+          if (out.length >= MAX_RESULT_BYTES) throw new Error("too big");
+          resolve({ output: JSON.parse(out.toString("utf8")), exitCode: 0 });
+        } catch {
+          reject(new Error(`${a.command} printed ${out.length} bytes that are not valid JSON (its registry entry says output: json)`));
+        }
+      } else resolve({ output: out.toString("utf8"), exitCode: 0 });
     });
   });
 }
