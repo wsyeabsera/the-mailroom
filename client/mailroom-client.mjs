@@ -17,6 +17,7 @@ export class MailroomError extends Error {
   }
 }
 
+/** @param {{ url?: string, key?: string, fetch?: typeof fetch }} [o] */
 export function createClient({ url, key, fetch: f = globalThis.fetch } = {}) {
   if (!url || !key) throw new TypeError("createClient needs { url, key }");
   const base = String(url).replace(/\/+$/, "");
@@ -44,6 +45,7 @@ export function createClient({ url, key, fetch: f = globalThis.fetch } = {}) {
     return r.data; // {id, state, reason?, result?, progress?: {text, pct?}, created_at, updated_at}
   }
   // Poll until a finished state. Rejects on timeout (the parcel keeps going; cancel it if you must).
+  /** @param {string} jobId @param {{ onProgress?: (p: { text: string, pct?: number }) => void, intervalMs?: number, timeoutMs?: number }} [o] */
   async function wait(jobId, { onProgress, intervalMs = 1000, timeoutMs = 300000 } = {}) {
     const end = Date.now() + timeoutMs;
     let last;
