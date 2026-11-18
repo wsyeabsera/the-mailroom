@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Use it from another project · The Mailroom</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/docs/docs.css">
+<script src="/js/theme-init.js"></script>
+</head>
+<body data-slug="client">
+<main id="doc">
+<h1>Use it from another project</h1>
+<p class="lede">One small file lets another app, or a Cloudflare Worker, send parcels to your laptop and follow them.</p>
+
+<div class="note"><p>The helper is <code>client/mailroom-client.mjs</code>. It has no dependencies and uses only <code>fetch</code>, so it runs in Node 18+ and in a Worker. Copy the file into your project.</p></div>
+
+<h2>What you set up once</h2>
+<ol>
+<li>In the admin app, make a <a href="/docs/keys-contracts">contract</a> that allows the <code>run</code> task and the command you want, then make a key on it. Copy the key (<code>mr_live_...</code>); it is shown once.</li>
+<li>Keep the key as a secret, never in code. In the other project: <code>npx wrangler secret put MAILROOM_KEY</code>. For local work put <code>MAILROOM_KEY=mr_live_...</code> in its <code>.dev.vars</code>.</li>
+<li>Register the command on your laptop so the daemon knows what <code>tvdash-scan</code> means (see <a href="/docs/cli">The mailroom command</a>).</li>
+<li>Test against a local Hub: run <code>npm run dev</code> in this repo (<code>wrangler dev</code>), and use <code>http://localhost:8787</code> as the URL.</li>
+</ol>
+
+<h2>The five calls</h2>
+<table>
+<thead><tr><th>Call</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>submit(task, args, {idempotency?})</code></td><td>Sends a parcel. Returns <code>{id, state}</code>. A refused parcel comes back with <code>state:"refused"</code> and a <code>reason</code>; other errors throw a <code>MailroomError</code> with <code>status</code> and <code>code</code>.</td></tr>
+<tr><td><code>get(jobId)</code></td><td>Reads the status: <code>state</code>, <code>result</code>, <code>reason</code>, and <code>progress: {text, pct?}</code> while it runs.</td></tr>
+<tr><td><code>wait(jobId, {onProgress, intervalMs, timeoutMs})</code></td><td>Polls until the parcel finishes (default every 1 s, up to 5 minutes). <code>onProgress</code> is called each time the progress changes. On timeout it throws but the parcel keeps going.</td></tr>
+<tr><td><code>cancel(jobId)</code></td><td><code>POST /api/jobs/:id/cancel</code>. Stops a queued or running parcel.</td></tr>
+<tr><td><code>run(command, args)</code></td><td>Submits a <code>run</code> parcel for a registered command, waits, and returns the result. Throws if it fails, is refused or is cancelled.</td></tr>
+</tbody>
+</table>
+<div class="note"><p>Progress and cancel are new on the Hub. If your Hub does not have <code>POST /api/jobs/:id/cancel</code> yet, <code>cancel</code> throws a 404 <code>not_found</code>, and jobs simply have no <code>progress</code>.</p></div>
+
+<h2>Example: the tvdash scan</h2>
+<p>Start the scan, show how far it is, and stop it if it takes too long. This runs as is in a Worker (the key comes from <code>env</code>).</p>
+<pre><code>import { createClient } from "./mailroom-client.mjs";
+
+export default {
+  async fetch(request, env) {
+    const mr = createClient({ url: env.MAILROOM_URL, key: env.MAILROOM_KEY });
+
+    // 1. Start it. Reusing the same idempotency string is safe on a retry.
+    const sub = await mr.submit("run", { command: "tvdash-scan", args: {} }, { idempotency: "scan-2026-11-18" });
+    if (sub.state === "refused") return new Response(sub.reason, { status: 403 });
+
+    // 2. Show progress while it runs. Give up after 2 minutes.
+    try {
+      const job = await mr.wait(sub.id, {
+        intervalMs: 2000,
+        timeoutMs: 120000,
+        onProgress: p =&gt; console.log(`scan: ${p.text}` + (p.pct != null ? ` (${p.pct}%)` : "")),
+      });
+      return Response.json(job.result);
+    } catch (e) {
+      // 3. Too slow: cancel the parcel.
+      if (e.code === "timeout") { await mr.cancel(sub.id); return new Response("scan cancelled", { status: 504 }); }
+      throw e;
+    }
+  },
+};</code></pre>
+<p>If you do not need the steps, the short form is one line: <code>const result = await mr.run("tvdash-scan", {})</code>.</p>
+
+<h2>If something goes wrong</h2>
+<ul>
+<li><code>401 bad_key</code>: the key is wrong, revoked, or its contract expired.</li>
+<li><code>refused</code>: the contract does not allow that task or command; the <code>reason</code> says which.</li>
+<li>Stuck on <code>queued</code>: the laptop is off or asleep. Stuck on <code>waiting_approval</code>: approve it in the admin app.</li>
+</ul>
+<p>The raw routes behind these calls are on <a href="/docs/api">HTTP API</a>.</p>
+</main>
+<script type="module" src="/docs/docs.js"></script>
+</body>
+</html>

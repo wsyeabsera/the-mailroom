@@ -20,6 +20,7 @@ export const NAV = [
   { group: "Reference", pages: [
     { slug: "security", title: "Security model", summary: "What protects what, and the honest limits." },
     { slug: "cli", title: "The mailroom command", summary: "Every command and what it does." },
+    { slug: "client", title: "Use it from another project", summary: "The mailroom-client helper: submit, progress, cancel." },
     { slug: "api", title: "HTTP API", summary: "Routes for clients, the owner and the daemon." },
     { slug: "events", title: "Events", summary: "The log of everything that happens." },
     { slug: "troubleshooting", title: "Troubleshooting", summary: "When something looks wrong." },
