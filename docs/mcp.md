@@ -37,11 +37,15 @@ All names start with `mailroom_`. `id`s are the Hub's ids (`k_1000`, `c_1000`, `
 | `mailroom_get_key` | read | `id` | key + `contract` + `recent_jobs` |
 | `mailroom_list_contracts` | read | none | contracts with `used_by` |
 | `mailroom_get_contract` | read | `id` | the contract |
+| `mailroom_list_projects` | read | none | projects plus a synthetic `unassigned`, each with key_count, running parcel, queued, last run, today's counts |
+| `mailroom_get_project` | read | `project` (id or `unassigned`) | the project with its keys, recent parcels and the Commands view (`commands.reported` is false until the laptop reports) |
 | `mailroom_events` | read | `after?` (seq), `limit?` (1-500) | `{events, last_seq}` |
 | `mailroom_laptop` | read | none | `GET /admin/laptop` object (connected, last_seen, queue) |
 | `mailroom_create_contract` | write | `name, folders[], tasks[], dailyLimit, expires?, approval[]` | the saved contract, or the validation errors |
 | `mailroom_update_contract` | write | `id` + the same fields | the saved contract (version bumped; queued parcels are checked again just before they are sent) |
-| `mailroom_create_key` | write | `label, contract_id` | `{id, label, key:"mr_live_..."}`: **the only time the key exists in clear**; the tool description tells the model to hand it to the owner, not to paste it elsewhere |
+| `mailroom_create_project` | write | `name, folder?, notes?, color?` | the saved project, or the field errors (a project grants nothing) |
+| `mailroom_update_project` | write | `project` + any of `name, folder, notes, color` | the saved project (only the fields sent change) |
+| `mailroom_create_key` | write | `label, contract_id, project_id?` | `{id, label, key:"mr_live_..."}`: **the only time the key exists in clear**; the tool description tells the model to hand it to the owner, not to paste it elsewhere. `project_id` puts the key in a live project (default Unassigned; an unknown or archived project is refused) |
 | `mailroom_revoke_key` | write | `id` | `{id, revoked_at, cancelled}` |
 | `mailroom_approve_parcel` | approve | `id` | `{id, state}` (must be `waiting_approval`) |
 | `mailroom_decline_parcel` | approve | `id`, `reason?` | `{id, state:"refused"}` |

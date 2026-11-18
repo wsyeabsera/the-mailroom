@@ -58,7 +58,7 @@ ok(r.data.error.code === -32600, "batch is -32600");
 r = await rpc(T_read.token, "nope/nope");
 ok(r.data.error.code === -32601, "unknown method is -32601");
 const nRead = await toolNames(T_read.token), nWrite = await toolNames(T_write.token), nAppr = await toolNames(T_approve.token);
-ok(nRead.length === 9 && nWrite.length === 13 && nAppr.length === 11, `tools/list differs per scope (${nRead.length}/${nWrite.length}/${nAppr.length})`);
+ok(nRead.length === 11 && nWrite.length === 17 && nAppr.length === 13, `tools/list differs per scope (${nRead.length}/${nWrite.length}/${nAppr.length})`);
 ok(!nRead.includes("mailroom_create_key") && nWrite.includes("mailroom_create_key") && !nWrite.includes("mailroom_approve_parcel") && nAppr.includes("mailroom_approve_parcel"), "the right tools per scope");
 
 // setup through the owner API so the read token has something to see
@@ -89,9 +89,26 @@ ok(res.isError === false && res.structuredContent.id && res.structuredContent.ve
 const mcid = res.structuredContent.id;
 res = await tool(T_write.token, "mailroom_update_contract", { id: mcid, name: "MCP made", folders: ["~/mcp-smoke"], tasks: ["echo", "read_file"], dailyLimit: 10, approval: [] });
 ok(res.isError === false && res.structuredContent.version === 2, "write token updates a contract");
-res = await tool(T_write.token, "mailroom_create_key", { label: "MCP key", contract_id: mcid });
+res = await tool(T_write.token, "mailroom_create_project", { name: "MCP project", folder: "~/mcp-smoke", notes: "made by smoke" });
+ok(res.isError === false && /^pr_/.test(res.structuredContent.id), "write token creates a project");
+const mpid = res.structuredContent.id;
+res = await tool(T_write.token, "mailroom_update_project", { project: mpid, notes: "changed" });
+ok(res.isError === false && res.structuredContent.notes === "changed" && res.structuredContent.name === "MCP project", "write token updates a project");
+res = await tool(T_write.token, "mailroom_update_project", { project: "pr_nope", notes: "x" });
+ok(res.isError === true && /not found/.test(res.structuredContent.error), "updating an unknown project is a plain error");
+res = await tool(T_write.token, "mailroom_create_project", { name: "MCP project" });
+ok(res.isError === true && /already exists/.test(res.structuredContent.error), "a duplicate project name is refused");
+res = await tool(T_read.token, "mailroom_list_projects");
+ok(res.isError === false && res.structuredContent.items.some((p) => p.id === mpid) && res.structuredContent.items.some((p) => p.id === "unassigned"), "read token lists projects with Unassigned");
+res = await tool(T_read.token, "mailroom_get_project", { project: mpid });
+ok(res.isError === false && res.structuredContent.name === "MCP project" && Array.isArray(res.structuredContent.keys), "read token gets one project");
+res = await tool(T_write.token, "mailroom_create_key", { label: "bad project", contract_id: mcid, project_id: "pr_nope" });
+ok(res.isError === true, "create_key into an unknown project is refused");
+res = await tool(T_write.token, "mailroom_create_key", { label: "MCP key", contract_id: mcid, project_id: mpid });
 ok(res.isError === false && /^mr_live_[0-9A-Za-z]{32}$/.test(res.structuredContent.key), "write token creates a key (shown once)");
 const mkey = res.structuredContent.key, mkid = res.structuredContent.id;
+res = await tool(T_read.token, "mailroom_get_project", { project: mpid });
+ok(res.structuredContent.keys.some((k) => k.id === mkid), "the key made with project_id sits in that project");
 r = await call("POST", "/api/jobs", { bearer: mkey, auth: false, body: { task: "echo", args: { text: "hi" } } });
 ok(r.status === 202, "the MCP-made key works on /api/jobs");
 res = await tool(T_write.token, "mailroom_revoke_key", { id: mkid });

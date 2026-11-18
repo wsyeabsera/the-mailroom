@@ -36,7 +36,11 @@ export type McpApi = {
   laptop(): Promise<unknown>;
   createContract(body: Record<string, unknown>): Promise<unknown>;
   updateContract(id: string, body: Record<string, unknown>): Promise<unknown>;
-  createKey(a: { label: string; contract_id: string }): Promise<unknown>;
+  listProjects(): Promise<unknown>;
+  getProject(id: string): Promise<unknown>;
+  createProject(body: Record<string, unknown>): Promise<unknown>;
+  updateProject(id: string, body: Record<string, unknown>): Promise<unknown>;
+  createKey(a: { label: string; contract_id: string; project_id?: string | null }): Promise<unknown>;
   revokeKey(id: string): Promise<unknown>;
   approveParcel(id: string): Promise<unknown>;
   declineParcel(id: string, reason?: string): Promise<unknown>;
@@ -125,6 +129,13 @@ const CONTRACT_PROPS: Record<string, Schema> = {
   approval: { type: "array", items: { type: "string" }, description: "Tasks (a subset of tasks) that wait for the owner before they run. Use [] for none." },
 };
 const CONTRACT_REQUIRED = ["name", "folders", "tasks", "dailyLimit", "approval"];
+const PROJECT_PROPS: Record<string, Schema> = {
+  name: { type: "string", minLength: 1, maxLength: 60, description: "The project's name, 1 to 60 characters, unique among live projects." },
+  folder: { type: ["string", "null"], description: "The project's home folder on the laptop, starting with ~/ or /, or null for none." },
+  notes: { type: "string", maxLength: 2000, description: "Free notes, up to 2000 characters." },
+  color: { type: ["string", "null"], description: "A colour like #1a2b3c, or null." },
+};
+const projectArg: Schema = { type: "object", properties: { project: { type: "string", minLength: 1, maxLength: 40, description: "The project id, like pr_1000, or \"unassigned\" for keys with no project." } }, required: ["project"], additionalProperties: false };
 const idOf = (a: Record<string, any>) => (typeof a.id === "string" ? a.id : undefined);
 
 export const TOOLS: Tool[] = [
@@ -176,6 +187,30 @@ export const TOOLS: Tool[] = [
     run: (_a, api) => api.laptop(),
   },
   {
+    name: "mailroom_list_projects", scope: "read", inputSchema: NONE,
+    description: "List projects (named groups of keys, with a home folder and notes) plus a synthetic \"unassigned\" entry for keys with none. Each has key_count, the running parcel, queued count, last run and today's done/failed/refused counts. A project grants nothing: contracts still decide what a key may do.",
+    run: (_a, api) => api.listProjects(),
+  },
+  {
+    name: "mailroom_get_project", scope: "read", inputSchema: projectArg,
+    description: "Get one project: its keys, 20 most recent parcels, and the Commands view (commands tagged to it or allowed by its keys' contracts, with mismatch badges and whether the laptop has reported its commands). Use project \"unassigned\" for keys with no project.",
+    run: (a, api) => api.getProject(a.project),
+  },
+  {
+    name: "mailroom_create_project", scope: "write",
+    description: "Create a project: a name (required), optional folder, notes and colour. Returns the saved project, or what to fix field by field. A project grants nothing and changes no contract.",
+    inputSchema: { type: "object", properties: PROJECT_PROPS, required: ["name"], additionalProperties: false },
+    target: (_a, r) => r?.id,
+    run: (a, api) => api.createProject(a),
+  },
+  {
+    name: "mailroom_update_project", scope: "write",
+    description: "Change a project's name, folder, notes or colour (send only what changes). Returns the saved project or what to fix.",
+    inputSchema: { type: "object", properties: { project: { type: "string", minLength: 1, maxLength: 40, description: "The project id, like pr_1000." }, ...PROJECT_PROPS }, required: ["project"], additionalProperties: false },
+    target: (a) => (typeof a.project === "string" ? a.project : undefined),
+    run: (a, api) => { const { project, ...body } = a; return api.updateProject(project, body); },
+  },
+  {
     name: "mailroom_create_contract", scope: "write", soft: true,
     description: "Create a contract: the rules a key works under. Returns the saved contract, or an error listing what to fix, field by field. Folders must start with ~/ or / and may never be the whole home or root. Keep contracts narrow: only the folders and tasks the client really needs, and put risky tasks (write_file, claude) under approval. Ask the owner before creating a broad contract.",
     inputSchema: { type: "object", properties: CONTRACT_PROPS, required: CONTRACT_REQUIRED, additionalProperties: false },
@@ -192,9 +227,9 @@ export const TOOLS: Tool[] = [
   {
     name: "mailroom_create_key", scope: "write",
     description: "Create a client key under an existing contract. Returns {id, label, key}. IMPORTANT: the key (starting mr_live_) is shown only once, in this result; The Mailroom keeps only a hash and cannot show it again. Hand it to the owner in your reply to them and never store it, write it to a file, log it, or repeat it anywhere else. If it is lost, revoke the key and make a new one.",
-    inputSchema: { type: "object", properties: { label: { type: "string", minLength: 1, maxLength: 60, description: "Who or what will use this key, 1 to 60 characters." }, contract_id: { type: "string", minLength: 1, maxLength: 40, description: "The contract the key works under, like c_1000." } }, required: ["label", "contract_id"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { label: { type: "string", minLength: 1, maxLength: 60, description: "Who or what will use this key, 1 to 60 characters." }, contract_id: { type: "string", minLength: 1, maxLength: 40, description: "The contract the key works under, like c_1000." }, project_id: { type: ["string", "null"], description: "Optional project the key belongs to, like pr_1000 (default: unassigned). Archived or unknown projects are refused." } }, required: ["label", "contract_id"], additionalProperties: false },
     target: (_a, r) => r?.id,
-    run: (a, api) => api.createKey({ label: a.label, contract_id: a.contract_id }),
+    run: (a, api) => api.createKey({ label: a.label, contract_id: a.contract_id, ...(a.project_id !== undefined ? { project_id: a.project_id } : {}) }),
   },
   {
     name: "mailroom_revoke_key", scope: "write", inputSchema: idArg("key", "k_1000"),

@@ -32,6 +32,7 @@ Nothing is updated in place except job state, key revocation and `daemon`; each 
 - 401 `{error:"bad_key"}` if the key is unknown, revoked, or its contract is expired.
 - Body over 256 KB: 413. More than 60 requests a minute per key: 429.
 - Runs `check()` with `usedToday` = this key's jobs created since 00:00 UTC that are not refused or cancelled (a cancelled parcel gives its place back).
+- For a `run` job whose command the laptop has reported (with its arg specs), the args are also checked here with the same rules and messages as the daemon (`shared/args.ts`); a bad one is a `refuse`. A command not reported yet is left to the laptop, which always re-checks.
 - `refuse` -> 403 `{id, state:"refused", reason}` (a job row + `job.refused` event are still written; nothing reaches the laptop).
 - `allow` -> 202 `{id, state:"queued"}`; `approve` -> 202 `{id, state:"waiting_approval"}`.
 - If the daemon is connected and the job is `queued`, push it (see daemon protocol).

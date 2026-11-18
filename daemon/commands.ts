@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { buildArgv as buildArgvShared } from "../shared/args.ts";
 import { COMMAND_RE } from "../shared/contract.ts";
 import { sanitizeReport, type ArgSpec, type ReportedCommand } from "../shared/projects.ts";
 
@@ -10,7 +11,6 @@ export type { ArgSpec, ReportedCommand };
 export type Command = { script: string; args: Record<string, ArgSpec>; timeoutMs: number; cwd: string; rerunSafe: boolean; project?: string };
 
 export const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
-const STRING_MAX = 1000;
 
 /** Loads one command from the registry. Never throws; the error text is what the job is refused with. */
 export function loadCommand(name: unknown, home = os.homedir()): { command: Command } | { error: string } {
@@ -71,31 +71,7 @@ export function commandTimeouts(home = os.homedir()): Record<string, number> {
 
 /** Checks the job's args against the command's schema and builds the argv: `--name value` pairs, a boolean is a bare `--name` when true. */
 export function buildArgv(cmd: Command, given: unknown): { argv: string[] } | { error: string } {
-  if (given === undefined || given === null) given = {};
-  if (typeof given !== "object" || Array.isArray(given)) return { error: "args must be an object" };
-  const g = given as Record<string, unknown>;
-  for (const k of Object.keys(g)) if (!Object.hasOwn(cmd.args, k)) return { error: `unknown arg “${k}”` };
-  const argv: string[] = [];
-  for (const [k, s] of Object.entries(cmd.args)) {
-    const v = g[k];
-    if (v === undefined || v === null) {
-      if (s.required) return { error: `arg “${k}” is required` };
-      continue;
-    }
-    if (s.type === "boolean") {
-      if (typeof v !== "boolean") return { error: `arg “${k}” must be true or false` };
-      if (v) argv.push(`--${k}`);
-    } else if (s.type === "number") {
-      if (typeof v !== "number" || !Number.isFinite(v)) return { error: `arg “${k}” must be a number` };
-      argv.push(`--${k}`, String(v));
-    } else {
-      if (typeof v !== "string" || v.includes("\0")) return { error: `arg “${k}” must be a string` };
-      if (v.length > Math.min(s.maxLength ?? STRING_MAX, STRING_MAX)) return { error: `arg “${k}” is too long` };
-      if (s.type === "enum" && !s.values!.includes(v)) return { error: `arg “${k}” must be one of ${s.values!.join(", ")}` };
-      argv.push(`--${k}`, v);
-    }
-  }
-  return { argv };
+  return buildArgvShared(cmd.args, given);
 }
 
 /** Names of the registered commands flagged `rerunSafe: true`. Sent to the Hub in the hello, read when the daemon connects. */
