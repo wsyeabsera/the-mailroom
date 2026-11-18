@@ -1,4 +1,7 @@
 import WebSocket from "ws";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { VERSION } from "../shared/version.ts";
 import { loadLastSeq, saveLastSeq } from "./config.ts";
 import type { Config } from "./config.ts";
 import { commandTimeouts } from "./commands.ts";
@@ -12,7 +15,18 @@ import { MAX_RESULT_BYTES } from "../shared/limits.ts";
 import type { JobMsg } from "./tasks.ts";
 import type { Usage } from "../shared/claude-budget.ts";
 
-export const VERSION = "0.2.0";
+export { VERSION };
+
+/** The git commit this daemon's code was checked out at, or null (not a git checkout, no git). Read once at start. */
+export function gitCommit(): string | null {
+  try {
+    const out = execFileSync("git", ["rev-parse", "--short=12", "HEAD"], { cwd: fileURLToPath(new URL(".", import.meta.url)), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000 }).trim();
+    return /^[0-9a-f]{4,40}$/.test(out) ? out : null;
+  } catch {
+    return null;
+  }
+}
+const COMMIT = gitCommit();
 
 export const wsUrl = (url: string) => url.replace(/^http/, "ws").replace(/\/+$/, "") + "/daemon";
 
@@ -87,7 +101,7 @@ export function run(cfg: Config, log: (s: string) => void = console.log): Promis
         working[lane] = false;
       };
 
-      ws.on("open", () => send({ type: "hello", version: VERSION, last_seq: loadLastSeq(), commands: listReport(), rerunSafe: rerunSafeCommands(), prompts: listPromptReport(), lanes: { commands: hintsFromTimeouts(commandTimeouts()) } }));
+      ws.on("open", () => send({ type: "hello", version: VERSION, ...(COMMIT ? { commit: COMMIT } : {}), last_seq: loadLastSeq(), commands: listReport(), rerunSafe: rerunSafeCommands(), prompts: listPromptReport(), lanes: { commands: hintsFromTimeouts(commandTimeouts()) } }));
       ws.on("message", raw => {
         let m: any;
         try {

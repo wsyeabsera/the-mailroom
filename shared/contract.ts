@@ -29,6 +29,10 @@ export const DEFAULT_CLAUDE_TOOLS: readonly string[] = ["Read", "Glob", "Grep"];
 export const DEFAULT_CLAUDE_MAX_TURNS = 10;
 export const MAX_CLAUDE_TURNS = 50;
 export const CLAUDE_TOOL_RE = /^[\w:*() .\-]{1,100}$/;
+/** An MCP tool is named `mcp__<server>__<tool>`, one tool at a time: no wildcard and no server-wide name. Anything starting with `mcp__` must match this. */
+export const MCP_TOOL_RE = /^mcp__([A-Za-z0-9-]{1,40})__([A-Za-z0-9_-]{1,60})$/;
+/** Is this a usable tool name? A plain tool name, or a well-formed MCP tool name. */
+export const toolNameOk = (t: unknown): t is string => typeof t === "string" && CLAUDE_TOOL_RE.test(t) && (!t.startsWith("mcp__") || MCP_TOOL_RE.test(t));
 /** The claude ceilings a contract grants (the defaults when the fields are missing). */
 export const claudeCeiling = (c: { claudeTools?: string[]; claudeMaxTurns?: number }) => ({
   tools: Array.isArray(c.claudeTools) ? c.claudeTools : [...DEFAULT_CLAUDE_TOOLS],
@@ -175,6 +179,10 @@ export function validateContract(raw: unknown, urlOpts: UrlOpts = {}): Validatio
     for (const t of ctIn) {
       if (typeof t !== "string" || !CLAUDE_TOOL_RE.test(t.trim())) {
         errors.claudeTools = `“${String(t)}” is not a tool name (letters, numbers, spaces and : * ( ) . - only).`;
+        break;
+      }
+      if (!toolNameOk(t.trim())) {
+        errors.claudeTools = `“${t}” is not allowed: an MCP tool is named mcp__<server>__<tool>, one tool at a time (no wildcards).`;
         break;
       }
       if (!claudeTools.includes(t.trim())) claudeTools.push(t.trim());

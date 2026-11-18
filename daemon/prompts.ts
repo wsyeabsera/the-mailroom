@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CLAUDE_TOOL_RE, DEFAULT_CLAUDE_MAX_TURNS, MAX_CLAUDE_TURNS, PROMPT_RE } from "../shared/contract.ts";
+import { toolNameOk, DEFAULT_CLAUDE_MAX_TURNS, MAX_CLAUDE_TURNS, PROMPT_RE } from "../shared/contract.ts";
 import { sanitizePromptReport, type ReportedPrompt } from "../shared/projects.ts";
 import type { ArgSpec } from "./commands.ts";
 
@@ -18,6 +18,7 @@ export type Prompt = {
   cwd: string;
   scratch: boolean;
   schema?: Record<string, unknown>;
+  repair?: 1; // on a schema failure, resume the session once and ask for the JSON only
 };
 
 export const DEFAULT_PROMPT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -61,17 +62,18 @@ export function loadPrompt(name: unknown, home = os.homedir()): { prompt: Prompt
   }
   for (const v of templateVars(c.template)) if (!Object.hasOwn(vars, v)) return bad(`uses {${v}} but does not declare it in vars`);
   const tools = c.tools === undefined ? ["Read", "Glob", "Grep"] : c.tools;
-  if (!Array.isArray(tools) || tools.length < 1 || tools.length > 20 || tools.some((t: unknown) => typeof t !== "string" || !CLAUDE_TOOL_RE.test(t))) return bad("has bad tools");
+  if (!Array.isArray(tools) || tools.length < 1 || tools.length > 20 || tools.some((t: unknown) => !toolNameOk(t))) return bad("has bad tools (an MCP tool is named mcp__<server>__<tool>, one at a time, no wildcards)");
   const maxTurns = c.maxTurns === undefined ? DEFAULT_CLAUDE_MAX_TURNS : c.maxTurns;
   if (!Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > MAX_CLAUDE_TURNS) return bad(`has a bad maxTurns (1 to ${MAX_CLAUDE_TURNS})`);
   if (c.model !== undefined && (typeof c.model !== "string" || !/^[\w.\-\[\]]{1,60}$/.test(c.model))) return bad("has a bad model");
   if (c.timeoutMs !== undefined && !(typeof c.timeoutMs === "number" && c.timeoutMs > 0)) return bad("has a bad timeoutMs");
   if (c.schema !== undefined && (!c.schema || typeof c.schema !== "object" || Array.isArray(c.schema) || JSON.stringify(c.schema).length > SCHEMA_MAX)) return bad("has a bad schema");
+  if (c.repair !== undefined && c.repair !== 0 && c.repair !== 1) return bad("has a bad repair (0 or 1)");
   return {
     prompt: {
       template: c.template, vars, tools, maxTurns, ...(c.model !== undefined ? { model: c.model } : {}),
       timeoutMs: c.timeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS, cwd: c.cwd, scratch: c.scratch === true,
-      ...(c.schema !== undefined ? { schema: c.schema } : {}),
+      ...(c.schema !== undefined ? { schema: c.schema } : {}), ...(c.repair === 1 ? { repair: 1 as const } : {}),
     },
   };
 }

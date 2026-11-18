@@ -1,4 +1,5 @@
 import { test, before, after } from "node:test";
+import { VERSION } from "../shared/version.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -66,7 +67,7 @@ async function run(id: string, task: string, args: Record<string, unknown>, c: u
 
 test("hello carries version and last_seq; welcome persists last_seq", async () => {
   const h = hub.messages.find(m => m.type === "hello");
-  assert.equal(h.version, "0.2.0");
+  assert.equal(h.version, VERSION);
   assert.equal(h.last_seq, 0);
   assert.equal(hub.auth[0], `Bearer ${CRED}`);
   await new Promise(r => setTimeout(r, 200));

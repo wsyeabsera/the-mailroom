@@ -3,8 +3,11 @@ import readline from "node:readline";
 import { deleteConfig, configPath, loadConfig, saveConfig } from "./config.ts";
 import { probe, run } from "./client.ts";
 import { loadPolicy, savePolicy, policyPath, policyClaude } from "./policy.ts";
-import { COMMAND_RE, PROMPT_RE, CLAUDE_TOOL_RE } from "../shared/contract.ts";
+import { COMMAND_RE, PROMPT_RE, toolNameOk } from "../shared/contract.ts";
 import * as service from "./service.ts";
+import { purgeLogs, readLog } from "./logs.ts";
+import { doctor, explain, fetchFromHub } from "./doctor.ts";
+import fs from "node:fs";
 import { SCOPES, runPlugin, setupNote } from "./plugin.ts";
 import type { Scope } from "./plugin.ts";
 import { fileURLToPath } from "node:url";
@@ -13,11 +16,14 @@ const HELP = `mailroom <command>
   login [--url URL] [--credential mrd_...]   save the Hub URL and daemon credential (or env MAILROOM_URL / MAILROOM_CREDENTIAL)
   run                                        connect to the Hub and do its jobs
   status                                     show the config and whether the Hub accepts the credential
-  policy show|allow-folder <path>|allow-task <task>|allow-command <name>|allow-prompt <name>|allow-claude-tool <tool>|claude-max-turns <n>   the laptop ceiling the daemon never goes beyond (~/.mailroom/policy.json)
+  policy show|allow-folder <path>|allow-task <task>|allow-command <name>|allow-prompt <name>|allow-claude-tool <tool>|claude-max-turns <n>|logs on|off   the laptop ceiling the daemon never goes beyond (~/.mailroom/policy.json)
   plugin install|uninstall [--scope user|project|local]   add the Claude Code plugin to the project in the current folder (default scope: project)
   plugin install|uninstall [--scope user|project|local]   add the Claude Code plugin to the project in this folder (default: project)
+  doctor [--contracts file.json] [--token mra_...]   check commands.json, prompts.json, policy.json and mcp.json (and the Hub's contracts) and print each problem with its fix
+  explain <key label> '<job json>' [--contract file.json] [--token mra_...]   say which rule would refuse a job, without running it
+  logs <job id>                              print the owner-only debug log of a claude or ask job (reply and turns; kept 7 days; never sent to the Hub)
   logout                                   delete the saved config
-  service install|uninstall|status           keep the daemon running in the background (macOS launchd, starts at login)`;
+  service install|uninstall|restart|status   keep the daemon running in the background (macOS launchd, starts at login)`;
 
 function flag(args: string[], name: string): string | undefined {
   const i = args.indexOf(`--${name}`);
@@ -51,6 +57,7 @@ async function main() {
       const cfg = loadConfig();
       if (!cfg) return fail("Not logged in. Run `mailroom login` first.");
       console.log(`mailroom daemon -> ${cfg.url}`);
+      purgeLogs();
       const f = await run(cfg);
       return fail(f.message, f.code === 4002 ? 2 : 1);
     }
@@ -78,6 +85,14 @@ async function main() {
         console.log(st.running ? `Running (pid ${st.pid}). It starts at login and restarts if it stops. Log: ~/Library/Logs/mailroom-daemon.log` : "Installed, but not running yet. See ~/Library/Logs/mailroom-daemon.log");
         return st.running ? 0 : 1;
       }
+      if (sub === "restart") {
+        if (!service.status(opts).installed) return fail("No service is installed. Run `mailroom service install` first.");
+        service.install(opts); // replaces the running copy with a fresh one: it picks up the code on disk
+        await new Promise(r => setTimeout(r, 2500));
+        const st = service.status(opts);
+        console.log(st.running ? `Restarted (pid ${st.pid}). It runs the code on disk now.` : "Restarted, but not running yet. See ~/Library/Logs/mailroom-daemon.log");
+        return st.running ? 0 : 1;
+      }
       if (sub === "uninstall") { console.log(service.uninstall(opts) ? "Service removed." : "No service was installed."); return 0; }
       if (sub === "status") {
         const st = service.status(opts);
@@ -86,7 +101,7 @@ async function main() {
         if (cfg) console.log(`hub: ${await probe(cfg)}`);
         return st.running ? 0 : 1;
       }
-      return fail("Usage: mailroom service install|uninstall|status");
+      return fail("Usage: mailroom service install|uninstall|restart|status");
     }
     case "plugin": {
       const sub = args[0];
@@ -111,6 +126,7 @@ async function main() {
         const pc = policyClaude(p);
         console.log(`claude tools: ${pc.tools.join(", ")}${p.claudeTools ? "" : " (default)"}`);
         console.log(`claude max turns: ${pc.maxTurns}${p.claudeMaxTurns === undefined ? " (default)" : ""}`);
+        console.log(`debug logs: ${p.logs === false ? "off" : "on"}`);
         return 0;
       }
       if (sub === "allow-command" && args[1]) {
@@ -130,9 +146,15 @@ async function main() {
         return 0;
       }
       if (sub === "allow-claude-tool" && args[1]) {
-        if (!CLAUDE_TOOL_RE.test(args[1])) return fail(`“${args[1]}” is not a tool name.`);
+        if (!toolNameOk(args[1])) return fail(`“${args[1]}” is not a tool name (an MCP tool is mcp__<server>__<tool>, one at a time, no wildcards).`);
         p.claudeTools = p.claudeTools ?? policyClaude(p).tools;
         if (!p.claudeTools.includes(args[1])) p.claudeTools.push(args[1]);
+        savePolicy(p);
+        console.log(`Saved ${policyPath()}`);
+        return 0;
+      }
+      if (sub === "logs" && (args[1] === "on" || args[1] === "off")) {
+        p.logs = args[1] === "on";
         savePolicy(p);
         console.log(`Saved ${policyPath()}`);
         return 0;
@@ -152,7 +174,57 @@ async function main() {
         console.log(`Saved ${policyPath()}`);
         return 0;
       }
-      return fail("Usage: mailroom policy show|allow-folder <path>|allow-task <task>|allow-command <name>|allow-prompt <name>|allow-claude-tool <tool>|claude-max-turns <n>");
+      return fail("Usage: mailroom policy show|allow-folder <path>|allow-task <task>|allow-command <name>|allow-prompt <name>|allow-claude-tool <tool>|claude-max-turns <n>|logs on|off");
+    }
+    case "doctor": {
+      let contracts: any[] | null = null;
+      const file = flag(args, "contracts");
+      const token = flag(args, "token") ?? process.env.MAILROOM_ADMIN_TOKEN;
+      try {
+        if (file) { const j = JSON.parse(fs.readFileSync(file, "utf8")); contracts = Array.isArray(j) ? j : [j]; }
+        else if (token) {
+          const cfg = loadConfig();
+          if (!cfg) return fail("Not logged in, so the Hub URL is unknown. Run `mailroom login` first, or pass --contracts <file>.");
+          contracts = (await fetchFromHub(cfg.url, token)).contracts;
+        }
+      } catch (e) { return fail(`Could not read the contracts: ${(e as Error).message}`); }
+      const found = doctor({ contracts });
+      for (const f of found) console.log(`${f.level === "error" ? "ERROR" : f.level === "warn" ? "warn " : "info "} ${f.message}${f.fix ? `\n      fix: ${f.fix}` : ""}`);
+      const errors = found.filter(f => f.level === "error").length;
+      console.log(errors ? `${errors} problem${errors === 1 ? "" : "s"} found.` : "No problems found.");
+      return errors ? 1 : 0;
+    }
+    case "explain": {
+      const [label, jobText] = [args[0], args[1]];
+      if (!label || !jobText) return fail("Usage: mailroom explain <key label> '<job json, like {\"task\":\"run\",\"args\":{...}}>' [--contract file.json] [--token mra_...]");
+      let job: any;
+      try { job = JSON.parse(jobText); } catch { return fail("The job is not valid JSON."); }
+      if (!job || typeof job.task !== "string") return fail('The job needs a "task", like {"task":"echo","args":{"text":"hi"}}.');
+      let contract: any;
+      try {
+        const file = flag(args, "contract");
+        const token = flag(args, "token") ?? process.env.MAILROOM_ADMIN_TOKEN;
+        if (file) contract = JSON.parse(fs.readFileSync(file, "utf8"));
+        else if (token) {
+          const cfg = loadConfig();
+          if (!cfg) return fail("Not logged in, so the Hub URL is unknown. Run `mailroom login` first, or pass --contract <file>.");
+          const hub = await fetchFromHub(cfg.url, token);
+          const keys = hub.keys.filter(k => k.label === label && !k.revoked_at);
+          if (keys.length !== 1) return fail(keys.length ? `${keys.length} keys are labelled “${label}”.` : `No live key is labelled “${label}”.`);
+          contract = hub.contracts.find(c => c.id === keys[0].contract.id);
+          if (!contract) return fail("That key's contract was not found.");
+        } else return fail("explain needs the key's contract: pass --token mra_... (a read-scope admin token, or env MAILROOM_ADMIN_TOKEN) or --contract <file.json>.");
+      } catch (e) { return fail(`Could not get the contract: ${(e as Error).message}`); }
+      const r = explain(contract, { task: job.task, args: job.args ?? {} });
+      for (const l of r.lines) console.log(l);
+      return r.refused ? 1 : 0;
+    }
+    case "logs": {
+      if (!args[0]) return fail("Usage: mailroom logs <job id>");
+      const r = readLog(args[0]);
+      if ("error" in r) return fail(r.error);
+      process.stdout.write(r.text);
+      return 0;
     }
     case "logout":
       console.log(deleteConfig() ? "Logged out." : "Nothing to delete.");

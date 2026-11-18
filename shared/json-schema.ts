@@ -48,19 +48,54 @@ export function validate(schema: unknown, value: unknown, path = "$", depth = 0)
   return null;
 }
 
-/** Parses Claude's text answer as JSON (a single ``` fence around it is tolerated) and validates it. The error names the path of the
- *  first violation and the reply's length, never its text. */
-export function parseAnswer(schema: unknown, text: string): { ok: true; value: unknown } | { ok: false; error: string } {
-  const len = `reply was ${text.length} characters`;
+/** The end index (exclusive) of the balanced object or array starting at `start`, aware of strings and escapes; -1 when it never closes. */
+function balancedEnd(t: string, start: number): number {
+  let depth = 0;
+  let inStr = false;
+  for (let i = start; i < t.length; i++) {
+    const c = t[i];
+    if (inStr) {
+      if (c === "\\") i++;
+      else if (c === '"') inStr = false;
+    } else if (c === '"') inStr = true;
+    else if (c === "{" || c === "[") depth++;
+    else if (c === "}" || c === "]") {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+/** Lenient reader: the whole text as JSON, else (a code fence tolerated) the first balanced object or array in it that parses.
+ *  Text around it is dropped. A candidate that never closes (a truncated reply) ends the search, since all that follows is inside it. */
+export function extractJson(text: string): { ok: true; value: unknown } | { ok: false } {
   let t = text.trim();
   const fence = /^```[\w-]*\s*\n([\s\S]*?)\n?```$/.exec(t);
   if (fence) t = fence[1].trim();
-  let value: unknown;
   try {
-    value = JSON.parse(t);
-  } catch {
-    return { ok: false, error: `answer is not valid JSON (it may be truncated; ${len})` };
+    return { ok: true, value: JSON.parse(t) };
+  } catch { /* look inside */ }
+  for (let i = 0; i < t.length; i++) {
+    if (t[i] !== "{" && t[i] !== "[") continue;
+    const end = balancedEnd(t, i);
+    if (end < 0) return { ok: false };
+    try {
+      return { ok: true, value: JSON.parse(t.slice(i, end)) };
+    } catch {
+      i = end - 1;
+    }
   }
+  return { ok: false };
+}
+
+/** Reads Claude's text answer as JSON (see extractJson: a fence or text around it is tolerated, and dropped) and validates it. The error names the path of the
+ *  first violation and the reply's length, never its text. */
+export function parseAnswer(schema: unknown, text: string): { ok: true; value: unknown } | { ok: false; error: string } {
+  const len = `reply was ${text.length} characters`;
+  const r = extractJson(text);
+  if (!r.ok) return { ok: false, error: `answer is not valid JSON (it may be truncated; ${len})` };
+  const value = r.value;
   const v = validate(schema, value);
   if (v) return { ok: false, error: `answer does not match the schema at ${v.path}: ${v.message} (${len})` };
   return { ok: true, value };

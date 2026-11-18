@@ -12,6 +12,8 @@ import { findResume, recordSession, scratchRoot, type SessionEntry } from "./ses
 import { parseAnswer } from "../shared/json-schema.ts";
 import { fillTemplate, loadPrompt, type Prompt } from "./prompts.ts";
 import { loadPolicy, exceeds } from "./policy.ts";
+import { writeLog } from "./logs.ts";
+import { mcpConfigArgs, mcpRefusal, mcpServerOf } from "./mcp.ts";
 import { MAX_RESULT_BYTES, MAX_WRITE_BYTES } from "../shared/limits.ts";
 
 export type JobMsg = { id: string; task: string; args: Record<string, unknown>; contract: Contract; budget?: { turns: number; ms: number } /* what is left of the key's claude day; from the Hub */ };
@@ -62,7 +64,18 @@ export function recheck(job: JobMsg, now = Date.now(), home = os.homedir()): { r
     if ("error" in p) return { reason: p.error };
     const f = fillTemplate(p.prompt, job.args.vars);
     if ("error" in f) return { reason: f.error };
+    // MCP tools: a prompt that names one needs the contract to allow exactly it and the laptop to have declared its server (mcp.json).
+    const mcpTools = p.prompt.tools.filter(t => mcpServerOf(t) !== null);
+    const ceilTools = claudeCeiling(job.contract).tools;
+    const missing = mcpTools.filter(t => !ceilTools.includes(t));
+    if (missing.length) return { reason: `prompt “${name}” needs the MCP tool ${missing.join(", ")}, which the contract does not allow (add it to the contract's claudeTools)` };
+    const undeclared = mcpRefusal(mcpTools, home);
+    if (undeclared) return { reason: `prompt “${name}”: ${undeclared}` };
     raw = p.prompt.cwd; // the laptop's registered cwd, not an arg
+  }
+  if (job.task === "claude" && Array.isArray(job.args.allowedTools)) {
+    const undeclared = mcpRefusal(job.args.allowedTools.filter((t: unknown): t is string => typeof t === "string"), home);
+    if (undeclared) return { reason: undeclared };
   }
   if (job.task === "run") {
     const c = loadCommand(job.args.command, home);
@@ -118,12 +131,14 @@ export async function runTask(job: JobMsg, resolved: string | null, signal: Abor
 
 function claudeOptions(a: Record<string, unknown>, ceil: { tools: string[]; maxTurns: number }): { argv: string[]; json: boolean; scratch: boolean } {
   const argv: string[] = [];
+  let toolsUsed: string[] = [];
   // Re-checked here so the daemon holds even if recheck were skipped; no option = the contract's defaults, never the CLI's.
   if (a.allowedTools === undefined) {
     // scratch default is read-only tools, clipped by the ceiling so a scratch job never gets more than the contract allows
     const def = a.scratch === true ? READ_ONLY_TOOLS.filter(x => ceil.tools.includes(x)) : ceil.tools;
     if (!def.length) throw new Error("scratch needs a read-only tool (Read, Grep or Glob) in the contract's claudeTools");
     argv.push("--allowedTools", ...def);
+    toolsUsed = def;
   }
   else {
     const t = a.allowedTools;
@@ -132,6 +147,7 @@ function claudeOptions(a: Record<string, unknown>, ceil: { tools: string[]; maxT
     const over = (t as string[]).filter(x => !ceil.tools.includes(x));
     if (over.length) throw new Error(`allowedTools ${over.join(", ")} not allowed by the contract`);
     argv.push("--allowedTools", ...(t as string[]));
+    toolsUsed = t as string[];
   }
   if (a.maxTurns === undefined) argv.push("--max-turns", String(ceil.maxTurns));
   else {
@@ -145,9 +161,15 @@ function claudeOptions(a: Record<string, unknown>, ceil: { tools: string[]; maxT
   }
   if (a.json !== undefined && typeof a.json !== "boolean") throw new Error("json must be true or false");
   if (a.scratch !== undefined && typeof a.scratch !== "boolean") throw new Error("scratch must be true or false");
+  const mcp = mcpConfigArgs(toolsUsed);
+  if ("error" in mcp) throw new Error(mcp.error);
+  argv.push(...mcp.argv);
   // --output-format is added by runClaude (always stream-json internally; json:true returns the final result object)
   return { argv, json: a.json === true, scratch: a.scratch === true };
 }
+
+export const REPAIR_MESSAGE = "Your last reply was not one JSON value that matches the schema. Reply again with only that JSON value, no other text and no code fences.";
+const REPAIR_MAX_TURNS = 2;
 
 /** The `ask` task: the laptop's registered prompt, filled with checked variables, run with the prompt's own tools, turns, model and timeout.
  *  The contract's claude ceilings still clip tools (intersection) and turns (minimum); the client supplies only variables. */
@@ -158,11 +180,27 @@ async function runAsk(job: JobMsg, cwd: string, signal: AbortSignal, report: (te
   const f = fillTemplate(p.prompt, a.vars);
   if ("error" in f) throw new Error(f.error);
   const opts = askOptions(p.prompt, claudeCeiling(job.contract));
-  const r = await execClaude(f.text, cwd, signal, opts, p.prompt.timeoutMs, report, { id: job.id, task: "ask", prompt: String(a.prompt), resume: a.resume }, onUsage, job.budget);
-  const text = typeof r.result?.result === "string" ? r.result.result : r.raw;
+  // Usage is reported cumulatively: the repair's turns and time count against the same budget as the first run.
+  const total: Usage = { turns: 0, ms: 0 };
+  const count = (u: Usage) => { total.turns += u.turns; total.ms += u.ms; onUsage({ ...total }); };
+  const r = await execClaude(f.text, cwd, signal, opts, p.prompt.timeoutMs, report, { id: job.id, task: "ask", prompt: String(a.prompt), resume: a.resume }, count, job.budget);
+  let text = typeof r.result?.result === "string" ? r.result.result : r.raw;
   // A prompt with a schema never returns a result that does not match it: the answer is parsed and validated, and the parsed value is the output.
   if (p.prompt.schema) {
-    const parsed = parseAnswer(p.prompt.schema, text);
+    let parsed = parseAnswer(p.prompt.schema, text);
+    if (!parsed.ok && p.prompt.repair === 1 && typeof r.result?.session_id === "string" && !signal.aborted) {
+      const left = job.budget ? { turns: job.budget.turns - total.turns, ms: job.budget.ms - total.ms } : undefined;
+      if (!left || (left.turns > 0 && left.ms > 0)) {
+        report("asking once more for valid JSON");
+        // Same session (the first run recorded it under this job id), a short run, the same ceilings and budget.
+        const argv = [...opts.argv];
+        const i = argv.indexOf("--max-turns");
+        if (i >= 0) argv[i + 1] = String(Math.min(Number(argv[i + 1]), REPAIR_MAX_TURNS));
+        const r2 = await execClaude(REPAIR_MESSAGE, cwd, signal, { ...opts, argv }, p.prompt.timeoutMs, report, { id: job.id, task: "ask", prompt: String(a.prompt), resume: job.id }, count, left);
+        text = typeof r2.result?.result === "string" ? r2.result.result : r2.raw;
+        parsed = parseAnswer(p.prompt.schema, text);
+      }
+    }
     if (!parsed.ok) throw new Error(parsed.error);
     return { output: parsed.value };
   }
@@ -170,11 +208,16 @@ async function runAsk(job: JobMsg, cwd: string, signal: AbortSignal, report: (te
 }
 
 /** Builds claude's options from a registered prompt, clipped by the contract ceiling. Throws when nothing is left to run with. */
-export function askOptions(p: Prompt, ceil: { tools: string[]; maxTurns: number }): { argv: string[]; scratch: boolean } {
+export function askOptions(p: Prompt, ceil: { tools: string[]; maxTurns: number }, home = os.homedir()): { argv: string[]; scratch: boolean } {
   const tools = p.tools.filter(t => ceil.tools.includes(t));
   if (!tools.length) throw new Error(`none of the prompt's tools (${p.tools.join(", ")}) are allowed by the contract (it allows: ${ceil.tools.join(", ")})`);
+  const lost = p.tools.filter(t => mcpServerOf(t) !== null && !tools.includes(t)); // an MCP tool the prompt relies on is never silently dropped
+  if (lost.length) throw new Error(`the prompt needs the MCP tool ${lost.join(", ")}, which the contract does not allow`);
+  const mcp = mcpConfigArgs(tools, home);
+  if ("error" in mcp) throw new Error(mcp.error);
   const argv = ["--allowedTools", ...tools, "--max-turns", String(Math.min(p.maxTurns, ceil.maxTurns))];
   if (p.model) argv.push("--model", p.model);
+  argv.push(...mcp.argv);
   return { argv, scratch: p.scratch };
 }
 
@@ -237,7 +280,8 @@ function execClaude(prompt: string, cwd: string, signal: AbortSignal, opts: { ar
     const unhook = killTreeOnAbort(child, signal);
     const release = keepAwake(child);
     let last = "";
-    const stream = new StreamReader(text => { if (text !== last) { last = text; report(text); } });
+    const turnLog: string[] = []; // for the owner-only debug log (daemon/logs.ts)
+    const stream = new StreamReader(text => { turnLog.push(text); if (text !== last) { last = text; report(text); } });
     let err = "";
     let raw = Buffer.alloc(0); // non-stream fallback (a claude that ignored stream-json)
     let timedOut = false;
@@ -268,6 +312,9 @@ function execClaude(prompt: string, cwd: string, signal: AbortSignal, opts: { ar
       // Usage for the Hub's daily budget: turns from the result event (else the assistant turns seen), and wall time. Reported on every outcome.
       const nt = stream.result?.num_turns;
       onUsage({ turns: typeof nt === "number" && Number.isFinite(nt) ? nt : stream.turn, ms: Date.now() - startedAt });
+      const lp = loadPolicy();
+      if (!("error" in lp) && lp.policy?.logs !== false)
+        writeLog(who.id, { label: `${who.task}${who.prompt ? ` ${who.prompt}` : ""}${who.resume !== undefined ? " (resumed)" : ""}`, turns: turnLog, reply: typeof stream.result?.result === "string" ? stream.result.result : raw.toString("utf8"), ...(timedOut ? { error: timeoutMessage(limitMs) } : code !== 0 ? { error: `exited with ${code}: ${err.trim()}` } : {}) });
       if (timedOut) return reject(new Error(timeoutMessage(limitMs)));
       if (code !== 0) return reject(new Error(`claude exited with ${code}: ${err.trim()}`));
       const sid = stream.result?.session_id;
@@ -278,7 +325,7 @@ function execClaude(prompt: string, cwd: string, signal: AbortSignal, opts: { ar
 }
 
 /** Starts a registered command: argv array, no shell, so metacharacters in args stay literal. */
-function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal, report: (text: string, pct?: number) => void): Promise<{ output: string; exitCode: number }> {
+function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal, report: (text: string, pct?: number) => void): Promise<{ output: unknown; exitCode: number }> {
   return new Promise((resolve, reject) => {
     const c = loadCommand(a.command);
     if ("error" in c) return reject(new Error(c.error));
@@ -319,7 +366,15 @@ function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal
       release();
       if (timedOut) reject(new Error(timeoutMessage(c.command.timeoutMs)));
       else if (code !== 0) reject(new Error(`${a.command} exited with ${code}: ${err.trim()}`));
-      else resolve({ output: out.toString("utf8"), exitCode: 0 });
+      else if (c.command.output === "json") {
+        // The registry says stdout is JSON: return it parsed. A failure names the size, never the text.
+        try {
+          if (out.length >= MAX_RESULT_BYTES) throw new Error("too big");
+          resolve({ output: JSON.parse(out.toString("utf8")), exitCode: 0 });
+        } catch {
+          reject(new Error(`${a.command} printed ${out.length} bytes that are not valid JSON (its registry entry says output: json)`));
+        }
+      } else resolve({ output: out.toString("utf8"), exitCode: 0 });
     });
   });
 }
