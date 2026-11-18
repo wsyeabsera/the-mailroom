@@ -15,6 +15,7 @@ import { clipMaxTurns, isClaudeTask, parseUsage } from "../shared/claude-budget.
 import { claudeCeiling } from "../shared/contract.ts";
 import { markerBytes, planResult, resultCutoff, resultExpired } from "./results.ts";
 import { MAX_RESULT_BYTES } from "../shared/limits.ts";
+import { VERSION as HUB_VERSION, cleanCommit, cleanVersion, daemonNotice } from "../shared/version.ts";
 import { Notifier, type NotifyEnv } from "./notify.ts";
 import { SESSION_SECONDS, sessionCookie, signSession } from "./session.ts";
 
@@ -89,6 +90,7 @@ export class Hub extends DurableObject<Env> {
       progress: (id) => this.progressOf(id), contractBody: (id) => { const c = this.contractRow(id); return c ? (parse(c.body) as Contract) : undefined; }, readJson: (r) => this.readJson(r),
     });
     try { this.sql.run("ALTER TABLE jobs ADD COLUMN label TEXT"); } catch { /* already there */ }
+    for (const col of ["daemon_version", "daemon_commit"]) try { this.sql.run(`ALTER TABLE daemon ADD COLUMN ${col} TEXT`); } catch { /* already there */ }
     this.sweepResults();
     this.notify = new Notifier(this.sql, this.env, (k, p) => this.event(k, p), (p) => this.ctx.waitUntil(p)); // callbacks + phone push (src/notify.ts)
     // A fresh instance has no socket: nothing can still be running.
@@ -773,7 +775,9 @@ export class Hub extends DurableObject<Env> {
     const d = this.daemonInfo();
     const rep = loadReport(this.sql);
     // commands: what the laptop last reported (name, project tag, timeout), or null if it never has. Display data only.
-    return { connected: d.connected, last_seen: d.last_seen, last_seq: d.last_seq, rotated_at: d.rotated_at, credential_hint: d.hint, commands: rep ? rep.commands.map((c) => ({ name: c.name, project: c.project, timeoutMs: c.timeoutMs })) : null, commands_reported_at: rep ? rep.reported_at : null, queue: this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at, id").map(this.jobOut) };
+    const row = this.one("SELECT daemon_version, daemon_commit FROM daemon WHERE id = 1");
+    const daemonVersion = d.connected ? ((row?.daemon_version as string | null) ?? null) : null;
+    return { connected: d.connected, last_seen: d.last_seen, last_seq: d.last_seq, rotated_at: d.rotated_at, credential_hint: d.hint, hub_version: HUB_VERSION, daemon_version: daemonVersion, daemon_commit: d.connected ? ((row?.daemon_commit as string | null) ?? null) : null, daemon_notice: daemonNotice(daemonVersion, HUB_VERSION, d.connected), commands: rep ? rep.commands.map((c) => ({ name: c.name, project: c.project, timeoutMs: c.timeoutMs })) : null, commands_reported_at: rep ? rep.reported_at : null, queue: this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at, id").map(this.jobOut) };
   }
 
   private async rotate(): Promise<Response> {
@@ -841,7 +845,7 @@ export class Hub extends DurableObject<Env> {
       // Which commands the laptop says are safe to run twice (see isRerunSafe). A daemon that sends none has none.
       this.sql.run("DELETE FROM daemon_rerun");
       for (const n of parseRerunSafe(m.rerunSafe)) this.sql.run("INSERT OR IGNORE INTO daemon_rerun (name) VALUES (?)", n);
-      this.sql.run("UPDATE daemon SET connected = 1 WHERE id = 1");
+      this.sql.run("UPDATE daemon SET connected = 1, daemon_version = ?, daemon_commit = ? WHERE id = 1", cleanVersion(m.version), cleanCommit(m.commit)); // untrusted: only a plain x.y.z and a hex commit are kept
       if (m.commands !== undefined) storeReport(this.sql, m.commands); // untrusted display data; an old daemon sends none and the last snapshot stays
       if (m.prompts !== undefined) storePromptReport(this.sql, m.prompts); // same: untrusted display data (names and variable specs)
       this.event("daemon.connected", {});

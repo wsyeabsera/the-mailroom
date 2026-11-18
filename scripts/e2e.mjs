@@ -137,6 +137,7 @@ console.log("old daemon (hello without commands or lanes)");
   old.send(JSON.stringify({ type: "hello", last_seq: 0 }));
   ok(await until(async () => seen.some(m => m.type === "welcome")), "the Hub welcomes a hello with no commands and no lanes");
   ok((await owner("GET", "/admin/laptop")).json.connected, "the old daemon counts as connected");
+  { const lp = (await owner("GET", "/admin/laptop")).json; ok(lp.daemon_version === null && /older than 0\./.test(lp.daemon_notice || "") && /mailroom service restart/.test(lp.daemon_notice || ""), "a hello with no version shows a restart notice on /admin/laptop (#2804)"); }
   const oj = await client(key, "POST", "/api/jobs", { task: "echo", args: { text: "old" } });
   ok(oj.status === 202, "a job is accepted for the old daemon");
   const done = await until(async () => { const x = (await client(key, "GET", `/api/jobs/${oj.json.id}`)).json; return x.state === "done" ? x : null; });
@@ -414,6 +415,7 @@ ok(r?.status === 200, "GET /api/commands says greet is on the laptop after the d
 ok(r && r.json.find(c => c.name === "greet").args.who?.type === "string" && r.json.find(c => c.name === "greet").args.who.required === true, "it carries the full arg spec");
 const gr = await client(ghostKey, "GET", "/api/commands");
 ok(gr.json.find(c => c.name === "ghost").on_laptop === false && gr.json.find(c => c.name === "ghost").args === null && gr.json.find(c => c.name === "ghost").timeoutMs === null, "a contract command the laptop did not report is on_laptop false, args null");
+{ const lp = await until(async () => { const x = (await owner("GET", "/admin/laptop")).json; return x.connected ? x : null; }) || {}; ok(/^\d+\.\d+\.\d+$/.test(lp.daemon_version) && lp.daemon_version === lp.hub_version && lp.daemon_notice === null && /^[0-9a-f]{12}$/.test(lp.daemon_commit || ""), `the real daemon reports its version and commit, no notice (${JSON.stringify({ ...lp, commands: 0, queue: 0 })})`); }
 { const lp = (await owner("GET", "/admin/laptop")).json; ok(Array.isArray(lp.commands) && lp.commands.some(c => c.name === "greet" && c.project === null) && lp.commands_reported_at > 0, "/admin/laptop lists the reported commands with their project tag"); }
 ok(r && !JSON.stringify(r.json).includes("greet.sh") && !JSON.stringify(r.json).includes(allowed), "no script path or cwd is reported");
 { // #2793: the Hub refuses bad run args at submit, from the specs the laptop reported

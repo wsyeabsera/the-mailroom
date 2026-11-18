@@ -169,3 +169,7 @@ For a prompt with a `schema`, the reader first tries the whole reply as JSON (on
 ### Owner-only debug log (#2803)
 
 When the Hub gets only a character count for a failed `ask` or `claude` job, the laptop still keeps what Claude said: `~/.mailroom/logs/<job id>.txt` (folder 0700, file 0600) holds the run label, the turn list, the error (timeout or exit code) and the raw reply (cut at 1 MB), one block per Claude run (a repair adds a second block). It is written for every outcome, is never sent to the Hub, and is deleted after 7 days when the daemon starts. `mailroom logs <job id>` prints it. `mailroom policy logs off` (or `"logs": false` in `policy.json`) stops writing; `policy logs on` restores it.
+
+### Daemon version (#2804)
+
+The daemon's hello carries `version` (from `shared/version.ts`, the same constant the Hub uses; bump it with `package.json`) and `commit` (the short git commit of the checkout it runs from, omitted when there is none). The Hub keeps only a plain `x.y.z` and a hex commit (untrusted input). `GET /admin/laptop` and the `mailroom_laptop` tool add `hub_version`, `daemon_version`, `daemon_commit` and `daemon_notice`: a sentence telling the owner to restart when the connected daemon is older than the Hub, or reported no version (an older daemon), else null. The Laptop page shows the version and a warning banner. `mailroom service restart` replaces the running background service with a fresh process, so it runs the code on disk.

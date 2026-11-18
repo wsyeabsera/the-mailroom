@@ -19,7 +19,7 @@ const HELP = `mailroom <command>
   plugin install|uninstall [--scope user|project|local]   add the Claude Code plugin to the project in this folder (default: project)
   logs <job id>                              print the owner-only debug log of a claude or ask job (reply and turns; kept 7 days; never sent to the Hub)
   logout                                   delete the saved config
-  service install|uninstall|status           keep the daemon running in the background (macOS launchd, starts at login)`;
+  service install|uninstall|restart|status   keep the daemon running in the background (macOS launchd, starts at login)`;
 
 function flag(args: string[], name: string): string | undefined {
   const i = args.indexOf(`--${name}`);
@@ -81,6 +81,14 @@ async function main() {
         console.log(st.running ? `Running (pid ${st.pid}). It starts at login and restarts if it stops. Log: ~/Library/Logs/mailroom-daemon.log` : "Installed, but not running yet. See ~/Library/Logs/mailroom-daemon.log");
         return st.running ? 0 : 1;
       }
+      if (sub === "restart") {
+        if (!service.status(opts).installed) return fail("No service is installed. Run `mailroom service install` first.");
+        service.install(opts); // replaces the running copy with a fresh one: it picks up the code on disk
+        await new Promise(r => setTimeout(r, 2500));
+        const st = service.status(opts);
+        console.log(st.running ? `Restarted (pid ${st.pid}). It runs the code on disk now.` : "Restarted, but not running yet. See ~/Library/Logs/mailroom-daemon.log");
+        return st.running ? 0 : 1;
+      }
       if (sub === "uninstall") { console.log(service.uninstall(opts) ? "Service removed." : "No service was installed."); return 0; }
       if (sub === "status") {
         const st = service.status(opts);
@@ -89,7 +97,7 @@ async function main() {
         if (cfg) console.log(`hub: ${await probe(cfg)}`);
         return st.running ? 0 : 1;
       }
-      return fail("Usage: mailroom service install|uninstall|status");
+      return fail("Usage: mailroom service install|uninstall|restart|status");
     }
     case "plugin": {
       const sub = args[0];

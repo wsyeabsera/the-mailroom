@@ -186,7 +186,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "mailroom_laptop", scope: "read", inputSchema: NONE,
-    description: "Is the owner's laptop connected, when was it last seen, and which parcels are queued waiting for it. Returns {connected, last_seen, last_seq, rotated_at, credential_hint, queue}. It never reveals the laptop credential.",
+    description: "Is the owner's laptop connected, when was it last seen, and which parcels are queued waiting for it. Returns {connected, last_seen, last_seq, rotated_at, credential_hint, hub_version, daemon_version, daemon_commit, daemon_notice, queue}; daemon_notice says the connected daemon is older than the Hub and should be restarted (mailroom service restart). It never reveals the laptop credential.",
     run: (_a, api) => api.laptop(),
   },
   {
