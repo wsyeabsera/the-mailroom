@@ -300,6 +300,7 @@ ok(r?.status === 200, "GET /api/commands says greet is on the laptop after the d
 ok(r && r.json.find(c => c.name === "greet").args.who?.type === "string" && r.json.find(c => c.name === "greet").args.who.required === true, "it carries the full arg spec");
 const gr = await client(ghostKey, "GET", "/api/commands");
 ok(gr.json.find(c => c.name === "ghost").on_laptop === false && gr.json.find(c => c.name === "ghost").args === null && gr.json.find(c => c.name === "ghost").timeoutMs === null, "a contract command the laptop did not report is on_laptop false, args null");
+{ const lp = (await owner("GET", "/admin/laptop")).json; ok(Array.isArray(lp.commands) && lp.commands.some(c => c.name === "greet" && c.project === null) && lp.commands_reported_at > 0, "/admin/laptop lists the reported commands with their project tag"); }
 ok(r && !JSON.stringify(r.json).includes("greet.sh") && !JSON.stringify(r.json).includes(allowed), "no script path or cwd is reported");
 ok((await client("mr_live_" + "x".repeat(32), "GET", "/api/commands")).status === 401, "/api/commands needs a client key");
 r = await owner("GET", `/admin/projects/${projId}`);

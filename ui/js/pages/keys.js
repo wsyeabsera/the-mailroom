@@ -6,7 +6,7 @@ import { ago, dayMonth, plural, joinWords, TASK_WORDS, expiryText } from "../for
 export function render(view, params, ctx) {
   const body = h("div");
   mount(view, body);
-  if (params[0] === "new") return newKey(body, ctx);
+  if (params[0] === "new") return newKey(body, ctx, params[1]);
   return params[0] ? detail(body, params[0], ctx) : list(body, ctx);
 }
 
@@ -45,8 +45,12 @@ export function contractSummary(c) {
     kv("Needs approval", (c.approval || []).length ? c.approval.join(", ") : "nothing"));
 }
 
-function newKey(body, ctx) {
-  loadInto(body, () => api("/admin/contracts"), (contracts) => {
+function newKey(body, ctx, presetProject) {
+  loadInto(body, async () => ({ contracts: await api("/admin/contracts"), projects: await api("/admin/projects") }), ({ contracts, projects }) => {
+    const choices = projects.filter((p) => p.id !== "unassigned" && !p.archived_at);
+    let project = choices.some((p) => p.id === presetProject) ? presetProject : "";
+    const picker = h("select", { class: "fld", id: "project", onchange: () => { project = picker.value; } },
+      h("option", { value: "" }, "Unassigned"), choices.map((p) => h("option", { value: p.id, selected: p.id === project }, p.name)));
     let chosen = contracts[0] ? contracts[0].id : null;
     const label = h("input", { class: "fld", id: "label", maxlength: "80", placeholder: "e.g. Dunder Miffbot", autocomplete: "off" });
     const err = h("div", { class: "et", id: "label-err", hidden: true });
@@ -70,9 +74,9 @@ function newKey(body, ctx) {
       if (!chosen) return showErr("Pick a contract first, or write a new one.");
       showErr(""); create.disabled = true;
       try {
-        const k = await api("/admin/keys", { method: "POST", body: { label: name, contract_id: chosen } });
+        const k = await api("/admin/keys", { method: "POST", body: { label: name, contract_id: chosen, project_id: project || null } });
         ctx.refresh();
-        slip(body, k, contracts.find((c) => c.id === chosen), ctx);
+        slip(body, k, contracts.find((c) => c.id === chosen), ctx, project);
       } catch (e2) {
         create.disabled = false;
         if (e2.status === 422 && e2.data.errors) showErr(e2.data.errors.label || e2.data.errors.contract_id || "That did not go through.");
@@ -81,19 +85,20 @@ function newKey(body, ctx) {
     } },
       h("div", { class: "cb" },
         h("label", { for: "label" }, "Label"), label, err,
+        h("label", { for: "project" }, "Project"), picker,
         h("div", { class: "lbl", id: "cl" }, "Contract"),
         h("div", { role: "radiogroup", "aria-labelledby": "cl" }, contracts.map((c) => h("label", { class: "opt", style: "color:inherit;font-size:inherit;font-weight:inherit;margin-bottom:8px" },
           h("input", { type: "radio", name: "contract", value: c.id, checked: c.id === chosen, onchange: () => { chosen = c.id; drawSummary(); } }),
           h("b", null, c.name), h("span", { class: "m" }, `${(c.tasks || []).map((t) => TASK_WORDS[t] || t).join(", ")} · ${c.dailyLimit} a day${(c.approval || []).length ? " · needs approval" : ""}`)))),
         h("p", { style: "margin:4px 0 20px" }, h("a", { class: "m", href: "#/contracts/new", style: "text-decoration:underline" }, "+ Write a new contract instead")),
-        h("div", { class: "btns" }, create, h("a", { class: "btn", href: "#/keys" }, "Cancel"))));
+        h("div", { class: "btns" }, create, h("a", { class: "btn", href: presetProject && project ? "#/projects/" + enc(project) + "/keys" : "#/keys" }, "Cancel"))));
     body.append(pageHead("New key", "Name it after the client, then pick what it may do."), h("div", { class: "row" }, formEl, summary));
     drawSummary();
   });
 }
 
-function slip(body, k, contract, ctx) {
-  const done = h("button", { class: "btn", type: "button", disabled: true, onclick: () => { ctx.flash("", `Key “${k.label}” is ready. Hand it to the client.`); ctx.go("#/keys"); } }, "Done, back to keys");
+function slip(body, k, contract, ctx, project) {
+  const done = h("button", { class: "btn", type: "button", disabled: true, onclick: () => { ctx.flash("", `Key “${k.label}” is ready. Hand it to the client.`); ctx.go(project ? "#/projects/" + enc(project) + "/keys" : "#/keys"); } }, project ? "Done, back to the project" : "Done, back to keys");
   const s1 = h("span", null, h("b", null, "1"), " Copy it");
   const s2 = h("span", null, "2 Store it somewhere safe");
   const box = secretBox(k.key, () => {

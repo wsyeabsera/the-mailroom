@@ -30,11 +30,23 @@ export function render(view, _p, ctx) {
         h("div", { class: "kv", style: "margin-bottom:16px" }, h("span", { class: "mono" }, hint), h("span", { class: "f" }, l.rotated_at ? `rotated ${dayMonth(l.rotated_at)}` : "never rotated")),
         h("button", { class: "btn", type: "button", onclick: () => confirmRotate() }, "Rotate credential…")));
     body.append(h("div", { class: "row" }, status, cred));
+    body.append(untagged(l));
     if (l.queue.length || !l.connected) {
       body.append(h("div", { class: "card", style: "max-width:640px" }, h("div", { class: "ch" }, h("h2", null, "In the queue"), tag(plural(l.queue.length, "parcel"))),
         l.queue.length ? h("table", null, l.queue.map((j) => h("tr", null, h("td", null, h("a", { class: "mono", href: "#/parcels/" + enc(j.id) }, j.id)), h("td", null, j.task), h("td", { class: "f" }, labels.get(j.key_id) || j.key_id))))
           : h("div", { class: "cb m" }, "Nothing queued.")));
     }
+  }
+
+  // Commands the laptop reported without a project tag: the owner's to-do list for tagging.
+  function untagged(l) {
+    const box = (...kids) => h("div", { class: "card", style: "max-width:640px" }, ...kids);
+    if (!Array.isArray(l.commands)) return box(h("div", { class: "ch" }, h("h2", null, "Untagged on the laptop")), h("div", { class: "cb m" }, "The laptop has not reported commands yet. Start or restart the daemon and its commands show up here."));
+    const list = l.commands.filter((c) => !c.project);
+    return box(h("div", { class: "ch" }, h("h2", null, "Untagged on the laptop"), tag(plural(list.length, "command"))),
+      list.length ? [h("p", { class: "m", style: "margin:0;padding:12px 16px 0" }, "These commands belong to no project. Add a project id to them in the laptop's commands file so they show under that project."),
+        h("table", null, list.map((c) => h("tr", null, h("td", null, h("span", { class: "mono" }, c.name)), h("td", { class: "f r" }, c.timeoutMs ? Math.round(c.timeoutMs / 1000) + " s limit" : ""))))]
+        : h("div", { class: "cb m" }, l.commands.length ? "Every command on the laptop is tagged to a project." : "The laptop reports no commands."));
   }
 
   function confirmRotate() {

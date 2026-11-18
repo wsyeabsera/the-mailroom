@@ -3,7 +3,7 @@
 // exercised without the Worker.  Run: node scripts/ui-mock.mjs   ->  http://localhost:8799
 // Owner password: "mailroom" (override with MOCK_PASSWORD). Data is in memory and resets on restart.
 // Handy routes: GET /mock/offline?on=1|0 (toggle the daemon, no arg = toggle), GET /mock/event (emit a fake event),
-// GET /mock/tokens-clear (remove all admin tokens, for the empty state), GET /mock/reset-lock (clear the login lockout). Start offline with ?offline in the first URL or MOCK_OFFLINE=1.
+// GET /mock/unreported?on=1|0 (daemon has not / has reported its commands; also MOCK_UNREPORTED=1), GET /mock/tokens-clear (remove all admin tokens, for the empty state), GET /mock/reset-lock (clear the login lockout). Start offline with ?offline in the first URL or MOCK_OFFLINE=1.
 import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -21,7 +21,8 @@ const t = (m) => now - m * min;
 // ---------------------------------------------------------------- data
 const db = {
   daemon: { connected: process.env.MOCK_OFFLINE !== "1", last_seen: t(0), rotated_at: t(6 * 1440), hint: "mrd_...9a3f", seq: 0 },
-  contracts: new Map(), keys: new Map(), jobs: new Map(), events: [], tokens: new Map(),
+  contracts: new Map(), keys: new Map(), jobs: new Map(), events: [], tokens: new Map(), projects: new Map(), progress: new Map(),
+  reported: process.env.MOCK_UNREPORTED !== "1",
 };
 let seq = 400;
 const sessions = new Set();
@@ -38,17 +39,34 @@ function emit(kind, payload, ts = Date.now()) {
   return e;
 }
 const putContract = (id, c, version = 1) => db.contracts.set(id, { id, ...c, version, updated_at: now });
-putContract("c_notes", { name: "Notes writer", folders: ["~/Hobby/dunder/notes"], tasks: ["echo", "read_file", "write_file"], dailyLimit: 50, expires: null, approval: ["write_file"] });
+putContract("c_notes", { name: "Notes writer", folders: ["~/Hobby/dunder/notes"], tasks: ["echo", "read_file", "write_file"], dailyLimit: 50, expires: null, approval: ["write_file"], commands: ["deploy", "lint", "legacy", "ghost-cmd"] });
 putContract("c_docs", { name: "Docs reader", folders: ["~/Documents/public"], tasks: ["read_file"], dailyLimit: 200, expires: "2026-12-31T00:00:00.000Z", approval: [] });
 putContract("c_scratch", { name: "Scratch", folders: ["~/scratch"], tasks: ["echo"], dailyLimit: 20, expires: null, approval: [] });
 const putKey = (id, label, prefix, contract_id, created, used, secret) => db.keys.set(id, { id, label, prefix, contract_id, created_at: created, last_used_at: used, revoked_at: null, secret });
 putKey("k_prod", "Dunder Miffbot (prod)", "mr_live_9aKd", "c_notes", t(12 * 1440), t(2));
 putKey("k_stage", "Dunder Miffbot (staging)", "mr_live_2Lm8", "c_notes", t(12 * 1440), t(180));
 putKey("k_hobby", "Hobby scripts", "mr_live_7Qx2", "c_scratch", t(5), null);
+// ---- projects: Dunder (running job at 50%), Side quests (idle), an archived one, and Unassigned (k_hobby)
+const putProject = (id, name, folder, notes, color, created, archived_at = null) => db.projects.set(id, { id, name, folder, notes, color, created_at: created, archived_at });
+putProject("pr_1000", "Dunder Miffbot", "~/Hobby/dunder", "The paper-company bot.\nDeploys go through the deploy command.", "#f2703a", t(14 * 1440));
+putProject("pr_1001", "Side quests", null, "", "#5b8def", t(9 * 1440));
+putProject("pr_1002", "Old experiments", "~/Hobby/old", "Wound down in October.", null, t(60 * 1440), t(20 * 1440));
+db.keys.get("k_prod").project_id = "pr_1000";
+db.keys.get("k_stage").project_id = "pr_1000";
+// the laptop's last command report: one of each mismatch kind plus untagged commands (null when it has not reported)
+const REPORT = [
+  { name: "deploy", project: "pr_1000", timeoutMs: 600000, args: {} },
+  { name: "lint", project: "pr_1001", timeoutMs: 120000, args: {} },       // a Dunder key's contract allows it -> other-project
+  { name: "legacy", project: "pr_1002", timeoutMs: null, args: {} },       // tagged to an archived project -> unknown-project
+  { name: "format", project: null, timeoutMs: 60000, args: {} },           // untagged
+  { name: "greet", project: null, timeoutMs: null, args: {} },             // untagged
+];
+// ghost-cmd is in c_notes but not in REPORT -> not-on-laptop
 const putJob = (n, key, task, args, state, created, extra = {}) => db.jobs.set("p_" + n, { id: "p_" + n, key_id: key, contract_id: db.keys.get(key).contract_id, contract_version: 1, task, args, state, reason: null, result: null, created_at: created, updated_at: created, ...extra });
 putJob(4816, "k_prod", "echo", { text: "hi" }, "done", t(50), { result: { echo: "hi" } });
 putJob(4817, "k_prod", "echo", { text: "ping" }, "queued", t(47));
 putJob(4818, "k_stage", "write_file", { path: "~/Hobby/dunder/notes/log.md", content: "# log\n" }, "running", t(46));
+db.progress.set("p_4818", { text: "Writing notes 3 of 6", pct: 50, at: t(1) });
 putJob(4819, "k_hobby", "echo", { text: "hello from the cloud" }, "done", t(44), { result: { echo: "hello from the cloud" } });
 putJob(4820, "k_prod", "read_file", { path: "~/Documents/taxes/2025.pdf" }, "refused", t(42), { reason: "folder is outside the contract" });
 putJob(4821, "k_prod", "write_file", { path: "~/Hobby/dunder/notes/standup.md", content: "# Standup 15 Nov\n- shipped the gateway rate limit\n- next: approval UI\n".padEnd(214, " ") }, "waiting_approval", t(41));
@@ -100,11 +118,60 @@ function check(c, job, used) {
   return c.approval.includes(job.task) ? { verdict: "approve" } : { verdict: "allow" };
 }
 
+function pvalidate(o, exceptId) {
+  const errors = {};
+  const name = typeof o.name === "string" ? o.name.trim() : "";
+  if (name.length < 1 || name.length > 60) errors.name = "Give it a name of 1 to 60 characters.";
+  else if ([...db.projects.values()].some((q) => q.id !== exceptId && !q.archived_at && q.name.toLowerCase() === name.toLowerCase())) errors.name = "A project with that name already exists.";
+  let folder = null;
+  if (o.folder) { const n = normalize(String(o.folder).trim()); if (n === null) errors.folder = "Use a folder starting with ~/ or /."; else folder = n; }
+  if (o.notes && String(o.notes).length > 2000) errors.notes = "Notes can be at most 2000 characters.";
+  if (o.color && !/^#[0-9a-fA-F]{6}$/.test(o.color)) errors.color = "Use a colour like #1a2b3c.";
+  return Object.keys(errors).length ? { errors } : { p: { name, folder, notes: o.notes || "", color: o.color || null } };
+}
+
 // ---------------------------------------------------------------- helpers
 const json = (res, status, body, headers = {}) => { res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", ...headers }); res.end(body === undefined ? "" : JSON.stringify(body)); };
 const err = (res, status, error, extra = {}) => json(res, status, { error, ...extra });
-const keyOut = (k) => ({ id: k.id, label: k.label, prefix: k.prefix, contract: { id: k.contract_id, name: db.contracts.get(k.contract_id)?.name }, created_at: k.created_at, last_used_at: k.last_used_at, revoked_at: k.revoked_at });
-const jobOut = ({ ...j }) => j;
+const keyOut = (k) => ({ project_id: k.project_id ?? null, id: k.id, label: k.label, prefix: k.prefix, contract: { id: k.contract_id, name: db.contracts.get(k.contract_id)?.name }, created_at: k.created_at, last_used_at: k.last_used_at, revoked_at: k.revoked_at });
+const jobOut = ({ ...j }) => ({ ...j, progress: db.progress.get(j.id) });
+const keyOutP = (k) => ({ ...keyOut(k), project_id: k.project_id ?? null });
+const UN = "unassigned";
+const utcDay = () => Date.now() - (Date.now() % 86400000);
+const projKeys = (id) => [...db.keys.values()].filter((k) => (id === UN ? !k.project_id : k.project_id === id));
+const projBase = (p) => ({ id: p.id, name: p.name, folder: p.folder, notes: p.notes, color: p.color, archived_at: p.archived_at, created_at: p.created_at });
+function card(id) {
+  const ks = new Set(projKeys(id).map((k) => k.id));
+  const js = [...db.jobs.values()].filter((j) => ks.has(j.key_id));
+  const run = js.find((j) => j.state === "running");
+  const last = js.filter((j) => j.state === "done" || j.state === "failed").sort((a, b) => b.updated_at - a.updated_at)[0];
+  const today = (s) => js.filter((j) => j.state === s && j.updated_at >= utcDay()).length;
+  return { key_count: projKeys(id).filter((k) => !k.revoked_at).length, running: run ? { job_id: run.id, task: run.task, progress: db.progress.get(run.id) ?? null } : null, queued: js.filter((j) => j.state === "queued").length,
+    last_run: last ? { job_id: last.id, state: last.state, at: last.updated_at } : null, today: { done: today("done"), failed: today("failed"), refused: today("refused") } };
+}
+const unBase = { id: UN, name: "Unassigned", folder: null, notes: "", color: null, archived_at: null, created_at: null };
+function commandsView(id) {
+  const rep = db.reported ? REPORT : null;
+  const via = new Map();
+  for (const k of projKeys(id)) if (!k.revoked_at) for (const n of db.contracts.get(k.contract_id).commands || []) via.set(n, [...(via.get(n) || []), k.id]);
+  const names = new Set(via.keys());
+  for (const c of rep || []) if (c.project === id) names.add(c.name);
+  const live = new Set([...db.projects.values()].filter((p) => !p.archived_at).map((p) => p.id));
+  const rows = [...names].sort().map((name) => {
+    const r = (rep || []).find((c) => c.name === name), tagged = r ? r.project : null, viaKeys = via.get(name) || [];
+    let mismatch = null;
+    if (tagged !== null && !live.has(tagged)) mismatch = "unknown-project";
+    else if (tagged !== null && tagged !== id) mismatch = "other-project";
+    else if (rep && viaKeys.length && !r) mismatch = "not-on-laptop";
+    return { name, onLaptop: !!r, taggedTo: tagged, viaKeys, mismatch };
+  });
+  return { rows, reported: !!rep };
+}
+function projectDetail(id) {
+  const base = id === UN ? unBase : projBase(db.projects.get(id));
+  const ks = projKeys(id), ids = new Set(ks.map((k) => k.id));
+  return { ...base, ...card(id), keys: ks.map(keyOutP), recent_jobs: newest().filter((j) => ids.has(j.key_id)).slice(0, 20).map(jobOut), commands: commandsView(id), laptop_reported_at: db.reported ? t(3) : null };
+}
 const newest = () => [...db.jobs.values()].sort((a, b) => b.created_at - a.created_at || b.id.localeCompare(a.id));
 const jobEvents = (id) => db.events.filter((e) => e.payload.job_id === id);
 const usedBy = (cid) => [...db.keys.values()].filter((k) => k.contract_id === cid && !k.revoked_at).length;
@@ -145,14 +212,17 @@ async function admin(req, res, url) {
     return json(res, 200, { daemon: { connected: db.daemon.connected, last_seen: db.daemon.last_seen, last_seq: db.daemon.seq }, counts, needs_you: needs, latest_events: db.events.slice(-5).reverse(), approvals: needs.length });
   }
   if (p === "/admin/keys" && m === "GET") return json(res, 200, [...db.keys.values()].map(keyOut));
+  if (p === "/admin/projects" && m === "GET") return json(res, 200, [...db.projects.values()].map((q) => ({ ...projBase(q), ...card(q.id) })).concat([{ ...unBase, ...card(UN) }]));
   if (p === "/admin/keys" && m === "POST") {
     const b = (await body(req)) || {}, errors = {};
     const label = typeof b.label === "string" ? b.label.trim() : "";
     if (label.length < 1 || label.length > 60) errors.label = "Every key needs a label, or you will not remember who it is.";
     if (!db.contracts.has(b.contract_id)) errors.contract_id = "Unknown contract.";
+    if (b.project_id != null && !(db.projects.get(b.project_id) && !db.projects.get(b.project_id).archived_at)) errors.project_id = "Unknown project.";
     if (Object.keys(errors).length) return err(res, 422, "invalid", { errors });
     const secret = "mr_live_" + base62(32), id = "k_" + base62(6).toLowerCase();
     putKey(id, label, secret.slice(0, 12), b.contract_id, Date.now(), null, secret);
+    db.keys.get(id).project_id = b.project_id ?? null;
     emit("key.created", { key_id: id, label });
     return json(res, 201, { id, label, key: secret });
   }
@@ -160,6 +230,16 @@ async function admin(req, res, url) {
     const k = db.keys.get(seg[2]);
     if (!k) return err(res, 404, "not_found");
     if (m === "GET" && !seg[3]) return json(res, 200, { ...keyOut(k), contract: { ...db.contracts.get(k.contract_id) }, contract_id: k.contract_id, recent_jobs: newest().filter((j) => j.key_id === k.id).slice(0, 10) });
+    if (m === "PATCH" && !seg[3]) {
+      const b = (await body(req)) || {};
+      if (!("project_id" in b)) return err(res, 422, "invalid", { errors: { project_id: "Send project_id (a project id, or null for Unassigned)." } });
+      const q = b.project_id === null || b.project_id === UN ? null : db.projects.get(b.project_id);
+      if (q === undefined) return err(res, 422, "invalid", { errors: { project_id: "Unknown project." } });
+      if (q && q.archived_at) return err(res, 422, "invalid", { errors: { project_id: "That project is archived. Unarchive it first." } });
+      emit("key.moved", { key_id: k.id, label: k.label, from: k.project_id ?? null, to: q ? q.id : null });
+      k.project_id = q ? q.id : null;
+      return json(res, 200, keyOutP(k));
+    }
     if (m === "POST" && seg[3] === "revoke") {
       if (k.revoked_at) return err(res, 409, "conflict");
       k.revoked_at = Date.now();
@@ -168,6 +248,39 @@ async function admin(req, res, url) {
       emit("key.revoked", { key_id: k.id, label: k.label });
       return json(res, 200, { id: k.id, revoked_at: k.revoked_at, cancelled });
     }
+  }
+  if (seg[1] === "projects") {
+    const id = seg[2];
+    if (!id && m === "POST") {
+      const r = pvalidate(await body(req), null);
+      if (r.errors) return err(res, 422, "invalid", { errors: r.errors });
+      const nid = "pr_" + (1000 + db.projects.size);
+      putProject(nid, r.p.name, r.p.folder, r.p.notes, r.p.color, Date.now());
+      emit("project.created", { project_id: nid, name: r.p.name });
+      return json(res, 201, { ...projBase(db.projects.get(nid)), ...card(nid) });
+    }
+    const q = db.projects.get(id);
+    if (m === "GET" && id === UN && !seg[3]) return json(res, 200, projectDetail(UN));
+    if (!q) return err(res, 404, "not_found");
+    if (m === "GET" && !seg[3]) return json(res, 200, projectDetail(id));
+    if (m === "PATCH" && !seg[3]) {
+      const r = pvalidate({ ...q, ...((await body(req)) || {}) }, id);
+      if (r.errors) return err(res, 422, "invalid", { errors: r.errors });
+      Object.assign(q, r.p); emit("project.updated", { project_id: id, name: q.name });
+      return json(res, 200, { ...projBase(q), ...card(id) });
+    }
+    if (m === "POST" && seg[3] === "archive") {
+      const n = projKeys(id).filter((k) => !k.revoked_at).length;
+      if (n) return err(res, 409, "has_active_keys", { count: n, message: `This project still has ${n} active key${n === 1 ? "" : "s"}. Move or revoke ${n === 1 ? "it" : "them"} first.` });
+      q.archived_at = q.archived_at || Date.now(); emit("project.archived", { project_id: id, name: q.name });
+      return json(res, 200, { ...projBase(q), ...card(id) });
+    }
+    if (m === "POST" && seg[3] === "unarchive") {
+      if ([...db.projects.values()].some((o) => o.id !== id && !o.archived_at && o.name.toLowerCase() === q.name.toLowerCase())) return err(res, 409, "name_taken", { message: "Another project already uses this name. Rename one of them first." });
+      q.archived_at = null; emit("project.updated", { project_id: id, name: q.name, unarchived: true });
+      return json(res, 200, { ...projBase(q), ...card(id) });
+    }
+    return err(res, 404, "not_found");
   }
   if (p === "/admin/tokens" && m === "GET") return json(res, 200, [...db.tokens.values()]);
   if (p === "/admin/tokens" && m === "POST") {
@@ -245,7 +358,7 @@ async function admin(req, res, url) {
     req.on("close", () => { clients.delete(res); clearInterval(ping); });
     return;
   }
-  if (p === "/admin/laptop" && m === "GET") return json(res, 200, { connected: db.daemon.connected, last_seen: db.daemon.last_seen, last_seq: db.daemon.seq, rotated_at: db.daemon.rotated_at, credential_hint: db.daemon.hint, queue: newest().filter((j) => j.state === "queued").reverse() });
+  if (p === "/admin/laptop" && m === "GET") return json(res, 200, { connected: db.daemon.connected, last_seen: db.daemon.last_seen, last_seq: db.daemon.seq, rotated_at: db.daemon.rotated_at, credential_hint: db.daemon.hint, commands: db.reported ? REPORT.map(({ name, project, timeoutMs }) => ({ name, project, timeoutMs })) : null, commands_reported_at: db.reported ? t(3) : null, queue: newest().filter((j) => j.state === "queued").reverse() });
   if (p === "/admin/laptop/rotate" && m === "POST") {
     const cred = "mrd_" + base62(32);
     db.daemon.hint = "mrd_..." + cred.slice(-4); db.daemon.rotated_at = Date.now(); db.daemon.connected = false; db.daemon.last_seen = Date.now();
@@ -289,6 +402,7 @@ http.createServer(async (req, res) => {
   try {
     if (url.pathname === "/mock/offline") { db.daemon.connected = url.searchParams.has("on") ? url.searchParams.get("on") !== "0" : !db.daemon.connected; if (!db.daemon.connected) { db.daemon.last_seen = Date.now(); emit("daemon.disconnected", {}); } else { emit("daemon.connected", {}); pushQueued(); } return json(res, 200, { connected: db.daemon.connected }); }
     if (url.pathname === "/mock/event") { const j = [...db.jobs.values()][0]; return json(res, 200, emit("job.done", { job_id: j.id, key_id: j.key_id, task: j.task })); }
+    if (url.pathname === "/mock/unreported") { db.reported = url.searchParams.get("on") === "0"; return json(res, 200, { reported: db.reported }); }
     if (url.pathname === "/mock/tokens-clear") { db.tokens.clear(); return json(res, 200, { ok: true }); }
     if (url.pathname === "/mock/reset-lock") { fails.clear(); return json(res, 200, { ok: true }); }
     if (url.pathname.startsWith("/admin/")) return await admin(req, res, url);

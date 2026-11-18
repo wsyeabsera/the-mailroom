@@ -6,7 +6,7 @@ import { bearer, credentialHint, displayPrefix, generateAdminToken, generateDaem
 import { formatFieldErrors, handleMcpText, ToolError, type McpApi } from "./mcp.ts";
 import { checkLogin, clearFailures, LOGIN_TABLE, recordFailure, type Sql } from "./login-limit.ts";
 import { laneKey, laneOf, parseHello, pickNext, type LaneHints } from "../shared/lanes.ts";
-import { ensureProjectSchema, Projects, storeReport } from "./projects.ts";
+import { ensureProjectSchema, loadReport, Projects, storeReport } from "./projects.ts";
 import { SESSION_SECONDS, sessionCookie, signSession } from "./session.ts";
 
 export interface Env {
@@ -667,7 +667,9 @@ export class Hub extends DurableObject<Env> {
 
   private laptop() {
     const d = this.daemonInfo();
-    return { connected: d.connected, last_seen: d.last_seen, last_seq: d.last_seq, rotated_at: d.rotated_at, credential_hint: d.hint, queue: this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at, id").map(this.jobOut) };
+    const rep = loadReport(this.sql);
+    // commands: what the laptop last reported (name, project tag, timeout), or null if it never has. Display data only.
+    return { connected: d.connected, last_seen: d.last_seen, last_seq: d.last_seq, rotated_at: d.rotated_at, credential_hint: d.hint, commands: rep ? rep.commands.map((c) => ({ name: c.name, project: c.project, timeoutMs: c.timeoutMs })) : null, commands_reported_at: rep ? rep.reported_at : null, queue: this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at, id").map(this.jobOut) };
   }
 
   private async rotate(): Promise<Response> {
