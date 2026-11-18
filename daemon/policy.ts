@@ -5,9 +5,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolvePathFor } from "./paths.ts";
+import { batchLimits } from "../shared/pipeline.ts";
 import { claudeCeiling, DEFAULT_CLAUDE_MAX_TURNS, DEFAULT_CLAUDE_TOOLS } from "../shared/contract.ts";
 
-export type Policy = { folders: string[]; tasks: string[]; commands?: string[]; prompts?: string[]; claudeTools?: string[]; claudeMaxTurns?: number };
+export type Policy = { folders: string[]; tasks: string[]; commands?: string[]; prompts?: string[]; workflows?: string[]; claudeTools?: string[]; claudeMaxTurns?: number; batchMaxItems?: number; batchMaxConcurrency?: number };
 export type PolicyLoad = { policy: Policy | null } | { error: string };
 
 export const policyPath = (home = os.homedir()) => path.join(home, ".mailroom", "policy.json");
@@ -34,9 +35,9 @@ export function loadPolicy(home = os.homedir()): PolicyLoad {
   }
   try {
     const p = JSON.parse(text);
-    if (!p || typeof p !== "object" || !strs(p.folders) || !strs(p.tasks) || (p.commands !== undefined && !strs(p.commands)) || (p.prompts !== undefined && !strs(p.prompts)) || (p.claudeTools !== undefined && !strs(p.claudeTools)) || (p.claudeMaxTurns !== undefined && !(Number.isInteger(p.claudeMaxTurns) && p.claudeMaxTurns >= 1)))
+    if (!p || typeof p !== "object" || !strs(p.folders) || !strs(p.tasks) || (p.commands !== undefined && !strs(p.commands)) || (p.prompts !== undefined && !strs(p.prompts)) || (p.workflows !== undefined && !strs(p.workflows)) || (p.batchMaxItems !== undefined && !(Number.isInteger(p.batchMaxItems) && p.batchMaxItems >= 1)) || (p.batchMaxConcurrency !== undefined && !(Number.isInteger(p.batchMaxConcurrency) && p.batchMaxConcurrency >= 1)) || (p.claudeTools !== undefined && !strs(p.claudeTools)) || (p.claudeMaxTurns !== undefined && !(Number.isInteger(p.claudeMaxTurns) && p.claudeMaxTurns >= 1)))
       return { error: `${policyPath(home)} must look like {"folders":[],"tasks":[],"commands":[],"claudeTools":[],"claudeMaxTurns":10}` };
-    return { policy: { folders: p.folders, tasks: p.tasks, ...(p.commands ? { commands: p.commands } : {}), ...(p.prompts ? { prompts: p.prompts } : {}), ...(p.claudeTools ? { claudeTools: p.claudeTools } : {}), ...(p.claudeMaxTurns !== undefined ? { claudeMaxTurns: p.claudeMaxTurns } : {}) } };
+    return { policy: { folders: p.folders, tasks: p.tasks, ...(p.commands ? { commands: p.commands } : {}), ...(p.prompts ? { prompts: p.prompts } : {}), ...(p.workflows ? { workflows: p.workflows } : {}), ...(p.batchMaxItems !== undefined ? { batchMaxItems: p.batchMaxItems } : {}), ...(p.batchMaxConcurrency !== undefined ? { batchMaxConcurrency: p.batchMaxConcurrency } : {}), ...(p.claudeTools ? { claudeTools: p.claudeTools } : {}), ...(p.claudeMaxTurns !== undefined ? { claudeMaxTurns: p.claudeMaxTurns } : {}) } };
   } catch {
     return { error: `${policyPath(home)} is not valid JSON` };
   }
@@ -58,9 +59,11 @@ export const policyClaude = (p: Policy) => ({ tools: p.claudeTools ?? [...DEFAUL
 /** Returns a refuse reason if the contract (or the resolved job path) goes beyond the policy, else null. Each reason names the fix. */
 export function exceeds(
   policy: Policy,
-  contract: { folders: string[]; tasks: string[]; commands?: string[]; prompts?: string[]; claudeTools?: string[]; claudeMaxTurns?: number },
+  contract: { folders: string[]; tasks: string[]; commands?: string[]; prompts?: string[]; workflows?: string[]; claudeTools?: string[]; claudeMaxTurns?: number; batchMaxItems?: number; batchMaxConcurrency?: number },
   realPath: string | null,
   home: string,
+  /** Tasks a batch item or workflow step runs as, beyond the contract's own list: they bring the claude ceilings into play without needing their own policy.tasks entry. */
+  extraTasks: string[] = [],
 ): string | null {
   const pf = policy.folders.map(f => resolvePathFor(f, home));
   for (const f of contract.folders) {
@@ -79,7 +82,17 @@ export function exceeds(
     const bad = contract.prompts.filter(c => !allowed.includes(c));
     if (bad.length) return `contract prompts ${bad.join(", ")} are not allowed by the laptop policy. To allow: ${bad.map(c => `mailroom policy allow-prompt ${c}`).join("; ")}`;
   }
-  if (contract.tasks.includes("claude") || contract.tasks.includes("ask")) {
+  if (Array.isArray(contract.workflows)) {
+    const allowed = policy.workflows ?? [];
+    const bad = contract.workflows.filter(c => !allowed.includes(c));
+    if (bad.length) return `contract workflows ${bad.join(", ")} are not allowed by the laptop policy. To allow: ${bad.map(c => `mailroom policy allow-workflow ${c}`).join("; ")}`;
+  }
+  if (contract.tasks.includes("batch") || extraTasks.includes("batch")) {
+    const lim = batchLimits(contract);
+    if (policy.batchMaxItems !== undefined && lim.maxItems > policy.batchMaxItems) return `contract batchMaxItems ${lim.maxItems} is more than the laptop policy allows (${policy.batchMaxItems}). To allow: mailroom policy batch-max-items ${lim.maxItems}`;
+    if (policy.batchMaxConcurrency !== undefined && lim.maxConcurrency > policy.batchMaxConcurrency) return `contract batchMaxConcurrency ${lim.maxConcurrency} is more than the laptop policy allows (${policy.batchMaxConcurrency}). To allow: mailroom policy batch-max-concurrency ${lim.maxConcurrency}`;
+  }
+  if (contract.tasks.includes("claude") || contract.tasks.includes("ask") || extraTasks.includes("ask") || extraTasks.includes("claude")) {
     const c = claudeCeiling(contract);
     const pc = policyClaude(policy);
     const badTools = c.tools.filter(t => !pc.tools.includes(t));

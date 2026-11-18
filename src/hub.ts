@@ -12,7 +12,7 @@ import { fingerprint, idempotencyFresh, parseIdempotencyKey } from "./idempotenc
 import { isRerunSafe, NOT_RERUN_SAFE_REASON, parseLabel, parseRerunSafe, REQUEUE_REASON, resumeRefusal, UNCOUNTED_SQL } from "./job-rules.ts";
 import { addUsage, budgetFor, ensureClaudeUsageSchema, usageSummary } from "./claude-budget.ts";
 import { cleanPartial, oldestKept } from "../shared/partials.ts";
-import { clipMaxTurns, isClaudeTask, parseUsage } from "../shared/claude-budget.ts";
+import { clipMaxTurns, refusedWhenOver, usesBudget, parseUsage } from "../shared/claude-budget.ts";
 import { claudeCeiling } from "../shared/contract.ts";
 import { markerBytes, planResult, resultCutoff, resultExpired } from "./results.ts";
 import { MAX_RESULT_BYTES } from "../shared/limits.ts";
@@ -336,7 +336,7 @@ export class Hub extends DurableObject<Env> {
       const bad = this.projects.argError(args.command, args.args);
       if (bad) verdict = { verdict: "refuse", reason: bad };
     }
-    if (verdict.verdict !== "refuse" && isClaudeTask(task)) {
+    if (verdict.verdict !== "refuse" && refusedWhenOver(task, args)) {
       const bs = budgetFor(this.sql, k.id, parse(c.body), now); // the key's claude budget for today (src/claude-budget.ts)
       if (bs.over) verdict = { verdict: "refuse", reason: bs.reason! };
     }
@@ -589,7 +589,7 @@ export class Hub extends DurableObject<Env> {
     const now = Date.now();
     j.contract_version = c.version;
     const v = check(parse(c.body), { task: j.task, args: parse(j.args) }, { now, usedToday: this.usedToday(j.key_id, now, j.id) });
-    if (v.verdict !== "refuse" && isClaudeTask(j.task)) {
+    if (v.verdict !== "refuse" && refusedWhenOver(j.task, parse(j.args))) {
       const bs = budgetFor(this.sql, j.key_id, parse(c.body), now);
       if (bs.over) return bs.reason!;
     }
@@ -871,11 +871,11 @@ export class Hub extends DurableObject<Env> {
     if (m.type === "usage") {
       // What a cancelled claude job used before it was killed (the daemon sends no result for it). A running job's usage rides on its result.
       const u = parseUsage(m.usage);
-      if (j && j.state === "cancelled" && isClaudeTask(j.task) && u && !this.usageSeen.has(j.id)) { this.usageSeen.add(j.id); addUsage(this.sql, j.key_id, u); }
+      if (j && j.state === "cancelled" && usesBudget(j.task, parse(j.args)) && u && !this.usageSeen.has(j.id)) { this.usageSeen.add(j.id); addUsage(this.sql, j.key_id, u); }
       return;
     }
     if (!j || j.state !== "running") return; // late or stray (e.g. cancelled): ignore
-    if (m.type === "result" && isClaudeTask(j.task)) { const u = parseUsage(m.usage); if (u) addUsage(this.sql, j.key_id, u); } // failed and done jobs both count
+    if (m.type === "result" && usesBudget(j.task, parse(j.args))) { const u = parseUsage(m.usage); if (u) addUsage(this.sql, j.key_id, u); } // failed and done jobs both count
     if (m.type === "progress") {
       if (typeof m.text !== "string" || !this.isInflight(j.id)) return;
       const pct = typeof m.pct === "number" && Number.isFinite(m.pct) ? Math.min(100, Math.max(0, m.pct)) : null;
@@ -933,7 +933,7 @@ export class Hub extends DurableObject<Env> {
       const lane = laneOf(j.task, parse(j.args), this.laneMode?.hints);
       let args = parse(j.args);
       let budget: { turns: number; ms: number } | undefined;
-      if (isClaudeTask(j.task)) {
+      if (usesBudget(j.task, parse(j.args))) {
         // Cap this job by what is left of the key's day: maxTurns is clipped here, the daemon also clips its timeout to `budget.ms`.
         const bs = budgetFor(this.sql, j.key_id, parse(c.body));
         // An ask takes no maxTurns from the client (the daemon would refuse it): its prompt sets the turns and the daemon clips them to budget.turns.

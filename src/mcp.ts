@@ -155,7 +155,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "mailroom_get_parcel", scope: "read", inputSchema: idArg("parcel", "p_1001"),
-    description: "Get one parcel with its timeline of events, a fresh contract check (what the contract says about this parcel now) and the key that sent it. Use this to see exactly what a parcel will do before the owner decides on it.",
+    description: "Get one parcel with its timeline of events, its count of partial results so far (partials; clients read them at GET /api/jobs/:id/partials), a fresh contract check (what the contract says about this parcel now) and the key that sent it. Use this to see exactly what a parcel will do before the owner decides on it.",
     run: (a, api) => api.getParcel(a.id),
   },
   {

@@ -4,6 +4,12 @@
 
 export const CLAUDE_TASKS: readonly string[] = ["claude", "ask"];
 export const isClaudeTask = (task: unknown): boolean => typeof task === "string" && CLAUDE_TASKS.includes(task);
+/** Does a job of this task count its turns and time in the daily budget? claude and ask always; a batch of prompts; a workflow (any step may ask). */
+export const usesBudget = (task: unknown, args?: Record<string, unknown>): boolean =>
+  isClaudeTask(task) || task === "workflow" || (task === "batch" && typeof args?.prompt === "string");
+/** Is a job refused at the door when today's budget is used up? Everything that always asks Claude; a workflow may need no Claude at all, so it runs and its asks fail alone. */
+export const refusedWhenOver = (task: unknown, args?: Record<string, unknown>): boolean =>
+  isClaudeTask(task) || (task === "batch" && typeof args?.prompt === "string");
 
 export const DEFAULT_CLAUDE_DAILY_TURNS = 100;
 export const DEFAULT_CLAUDE_DAILY_MINUTES = 60;
