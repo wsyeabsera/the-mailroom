@@ -25,7 +25,7 @@ Nothing is updated in place except job state, key revocation and `daemon`; each 
 
 ## Client routes (Bearer client key)
 
-`POST /api/jobs` body `{ "task": "echo|read_file|write_file|claude", "args": {...} }`
+`POST /api/jobs` body `{ "task": "echo|read_file|write_file|claude|run", "args": {...} }`
 - 401 `{error:"bad_key"}` if the key is unknown, revoked, or its contract is expired.
 - Body over 256 KB: 413. More than 60 requests a minute per key: 429.
 - Runs `check()` with `usedToday` = this key's jobs created since 00:00 UTC that are not refused.
@@ -64,7 +64,7 @@ Hub -> Daemon:
 
 On close the Hub appends `daemon.disconnected`; `running` jobs of that daemon go back to `queued`. The daemon reconnects with backoff 1s -> 30s and runs jobs in order.
 
-The daemon must re-run `check()` (with `home` set and paths `realpath`-resolved) before acting and refuse if it fails. Slice 1 tasks: `echo {text}` -> `{echo:text}`; `read_file {path}` -> `{content}` (max 200 KB); `write_file {path, content}` -> `{bytes}`. Slice 2: `claude {prompt, cwd}` -> `{output}` via `claude -p` in `cwd` with a 5 minute timeout.
+The daemon must re-run `check()` (with `home` set and paths `realpath`-resolved) before acting and refuse if it fails. Slice 1 tasks: `echo {text}` -> `{echo:text}`; `read_file {path}` -> `{content}` (max 200 KB); `write_file {path, content}` -> `{bytes}`. Slice 2: `claude {prompt, cwd}` -> `{output}` via `claude -p` in `cwd` with a 5 minute timeout. Slice 3: `run {command, args}` -> `{output, exitCode}`. The contract lists `commands: string[]` (names, `/^[\w.-]{1,60}$/`, non-empty when `run` is a task; a stored contract without it means none) and `check()` refuses a `command` not in it. The laptop's `~/.mailroom/commands.json` (mode 0600, read per job) maps each name to `{script (absolute), args: {name: {type: string|number|boolean|enum, required, maxLength, values}}, timeoutMs (default 5 min), cwd}`; the daemon refuses unknown commands, bad args, or a cwd that resolves outside the contract folders, and spawns `script --name value ...` as an argv array with no shell.
 
 ## Event shape
 

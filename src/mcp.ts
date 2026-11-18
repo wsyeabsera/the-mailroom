@@ -115,7 +115,8 @@ const idArg = (what: string, eg: string): Schema => ({ type: "object", propertie
 const CONTRACT_PROPS: Record<string, Schema> = {
   name: { type: "string", minLength: 1, maxLength: 60, description: "Short name for the contract (letters, numbers, spaces)." },
   folders: { type: "array", items: { type: "string", maxLength: 1000 }, minItems: 1, maxItems: 50, description: "Folders the key may touch, each starting with ~/ or / (never the whole home or root)." },
-  tasks: { type: "array", items: { type: "string", enum: ["echo", "read_file", "write_file", "claude"] }, minItems: 1, description: "Tasks the key may ask for: echo, read_file, write_file, claude." },
+  tasks: { type: "array", items: { type: "string", enum: ["echo", "read_file", "write_file", "claude", "run"] }, minItems: 1, description: "Tasks the key may ask for: echo, read_file, write_file, claude, run." },
+  commands: { type: "array", items: { type: "string", maxLength: 60 }, maxItems: 50, description: "Names of the laptop-registered commands the run task may start (required and non-empty when tasks includes run). Omit or [] otherwise." },
   dailyLimit: { type: "integer", minimum: 1, maximum: 100000, description: "Whole parcels per UTC day, 1 to 100000." },
   expires: { type: ["string", "null"], description: "Date like 2026-12-31 after which the contract stops working, or null for never." },
   approval: { type: "array", items: { type: "string" }, description: "Tasks (a subset of tasks) that wait for the owner before they run. Use [] for none." },

@@ -68,7 +68,7 @@ r = await owner("POST", "/admin/keys", { label: "x", contract_id: "nope" });
 ok(r.status === 422, "key with unknown contract is 422");
 
 console.log("contract, key, credential");
-r = await owner("POST", "/admin/contracts", { name: "E2E", folders: [allowed], tasks: ["echo", "read_file", "write_file"], dailyLimit: 50, expires: null, approval: ["write_file"] });
+r = await owner("POST", "/admin/contracts", { name: "E2E", folders: [allowed], tasks: ["echo", "read_file", "write_file", "run"], commands: ["greet"], dailyLimit: 50, expires: null, approval: ["write_file"] });
 ok(r.status === 201, "contract created");
 const contractId = r.json.id;
 r = await owner("POST", "/admin/keys", { label: "e2e client", contract_id: contractId });
@@ -125,6 +125,20 @@ ok([200, 202, 204].includes(approve.status), "owner approves");
 j = await waitJob(r.json.id, ["done", "failed", "refused"]);
 ok(j?.state === "done" && readFileSync(join(allowed, "note.md"), "utf8") === "approved text", "write runs after approval and the file is on disk");
 
+console.log("run");
+writeFileSync(join(tmp, "greet.sh"), '#!/bin/sh\necho "got:$2"\n', { mode: 0o755 });
+mkdirSync(join(home, ".mailroom"), { recursive: true });
+writeFileSync(join(home, ".mailroom/commands.json"), JSON.stringify({ greet: { script: join(tmp, "greet.sh"), cwd: allowed, args: { who: { type: "string", required: true, maxLength: 40 } } } }), { mode: 0o600 });
+r = await client(key, "POST", "/api/jobs", { task: "run", args: { command: "greet", args: { who: "$(id) world" } } });
+ok(r.status === 202, "run accepted");
+j = await waitJob(r.json.id, ["done", "failed", "refused"]);
+ok(j?.state === "done" && j.result?.output === "got:$(id) world\n" && j.result?.exitCode === 0, "run round trip: metacharacters stay literal");
+r = await client(key, "POST", "/api/jobs", { task: "run", args: { command: "rm", args: {} } });
+ok(r.status === 403 && r.json.state === "refused", "a command not in the contract is refused at the gateway");
+r = await client(key, "POST", "/api/jobs", { task: "run", args: { command: "greet", args: { who: 5 } } });
+j = r.status === 403 ? r.json : await waitJob(r.json.id, ["done", "failed", "refused"]);
+ok(j?.state === "refused", "bad args are refused by the laptop");
+
 console.log("offline queue");
 killGroup(d);
 ok(await until(async () => !(await owner("GET", "/admin/laptop")).json.connected, 90000), "laptop shows away after the daemon dies");
@@ -145,7 +159,7 @@ ok(r.status === 401, "a revoked key stops at once");
 
 console.log("overview counts");
 r = await owner("GET", "/admin/state");
-ok(r.json.counts.done === 4 && r.json.counts.refused === 2 && r.json.counts.queued === 0, `today's counts are true (done ${r.json.counts.done}, refused ${r.json.counts.refused}, queued ${r.json.counts.queued})`);
+ok(r.json.counts.done === 5 && r.json.counts.refused === 4 && r.json.counts.queued === 0, `today's counts are true (done ${r.json.counts.done}, refused ${r.json.counts.refused}, queued ${r.json.counts.queued})`);
 ok(r.json.daemon.connected === true, "overview says the laptop is connected");
 
 console.log("events");

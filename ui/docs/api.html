@@ -54,11 +54,11 @@
 <table>
 <thead><tr><th>Method</th><th>Path</th><th>What it does</th><th>Success</th><th>Errors</th></tr></thead>
 <tbody>
-<tr><td>POST</td><td><code>/api/jobs</code></td><td>Send a parcel. Body <code>{"task":"echo|read_file|write_file|claude","args":{...}}</code>. The Hub checks it against the key's contract.</td><td>202 <code>queued</code> or <code>waiting_approval</code></td><td>403 refused (the body says why), 401, 413, 422 <code>invalid</code>, 429</td></tr>
+<tr><td>POST</td><td><code>/api/jobs</code></td><td>Send a parcel. Body <code>{"task":"echo|read_file|write_file|claude|run","args":{...}}</code>. The Hub checks it against the key's contract.</td><td>202 <code>queued</code> or <code>waiting_approval</code></td><td>403 refused (the body says why), 401, 413, 422 <code>invalid</code>, 429</td></tr>
 <tr><td>GET</td><td><code>/api/jobs/:id</code></td><td>Status and result of one of this key's own parcels.</td><td>200</td><td>401, 404 <code>not_found</code> (also for another key's parcel), 429</td></tr>
 </tbody>
 </table>
-<p>The arguments each task needs: <code>echo</code> takes <code>text</code>; <code>read_file</code> takes <code>path</code>; <code>write_file</code> takes <code>path</code> and <code>content</code>; <code>claude</code> takes <code>prompt</code> and <code>cwd</code> (the folder to work in).</p>
+<p>The arguments each task needs: <code>echo</code> takes <code>text</code>; <code>read_file</code> takes <code>path</code>; <code>write_file</code> takes <code>path</code> and <code>content</code>; <code>claude</code> takes <code>prompt</code> and <code>cwd</code> (the folder to work in); <code>run</code> takes <code>command</code> (a name the contract lists) and <code>args</code> (an object the laptop checks against its own schema).</p>
 
 <h3>Examples</h3>
 <p>Send an echo parcel. The key here is fake.</p>

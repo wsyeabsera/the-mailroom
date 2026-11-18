@@ -77,7 +77,7 @@ export function eventTag(ev) {
   return [k.split(".")[0], ""];
 }
 
-export const TASK_WORDS = { echo: "echo", read_file: "read", write_file: "write", claude: "ask claude" };
+export const TASK_WORDS = { echo: "echo", read_file: "read", write_file: "write", claude: "ask claude", run: "run a command" };
 export function joinWords(list) {
   if (list.length <= 1) return list.join("");
   return list.slice(0, -1).join(", ") + " and " + list[list.length - 1];

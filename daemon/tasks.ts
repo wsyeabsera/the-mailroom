@@ -4,6 +4,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { check, normalizePath } from "../shared/contract.ts";
 import type { Contract } from "../shared/contract.ts";
+import { buildArgv, loadCommand } from "./commands.ts";
 
 export type JobMsg = { id: string; task: string; args: Record<string, unknown>; contract: Contract };
 
@@ -34,7 +35,14 @@ export function recheck(job: JobMsg, now = Date.now(), home = os.homedir()): { r
   const v = check(job.contract, { task: job.task, args: job.args ?? {} }, { now, usedToday: 0, home });
   if (v.verdict === "refuse") return { reason: v.reason };
   if (job.task === "echo") return { resolved: null };
-  const raw = (job.task === "claude" ? job.args.cwd : job.args.path) as string;
+  let raw = (job.task === "claude" ? job.args.cwd : job.args.path) as string;
+  if (job.task === "run") {
+    const c = loadCommand(job.args.command, home);
+    if ("error" in c) return { reason: c.error };
+    const b = buildArgv(c.command, job.args.args);
+    if ("error" in b) return { reason: b.error };
+    raw = c.command.cwd; // the laptop's registered cwd, not an arg
+  }
   const real = resolvePath(raw, home);
   const folders = job.contract.folders.map(f => resolvePath(f, home));
   if (real === null || !folders.some(f => f !== null && (real === f || real.startsWith(f === "/" ? "/" : f + "/"))))
@@ -69,6 +77,8 @@ export async function runTask(job: JobMsg, resolved: string | null, signal: Abor
     }
     case "claude":
       return { output: await runClaude(String(a.prompt ?? ""), resolved!, signal) };
+    case "run":
+      return runCommand(a, resolved!, signal);
     default:
       throw new Error(`unknown task ${job.task}`);
   }
@@ -100,6 +110,40 @@ function runClaude(prompt: string, cwd: string, signal: AbortSignal): Promise<st
       if (timedOut) reject(new Error("claude timed out"));
       else if (code !== 0) reject(new Error(`claude exited with ${code}: ${err.trim()}`));
       else resolve(out.toString("utf8"));
+    });
+  });
+}
+
+/** Starts a registered command: argv array, no shell, so metacharacters in args stay literal. */
+function runCommand(a: Record<string, unknown>, cwd: string, signal: AbortSignal): Promise<{ output: string; exitCode: number }> {
+  return new Promise((resolve, reject) => {
+    const c = loadCommand(a.command);
+    if ("error" in c) return reject(new Error(c.error));
+    const b = buildArgv(c.command, a.args);
+    if ("error" in b) return reject(new Error(b.error));
+    const child = spawn(c.command.script, b.argv, { cwd, stdio: ["ignore", "pipe", "pipe"], signal, shell: false });
+    let out = Buffer.alloc(0);
+    let err = "";
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, c.command.timeoutMs);
+    child.stdout.on("data", (d: Buffer) => {
+      if (out.length < MAX_BYTES) out = Buffer.concat([out, d]).subarray(0, MAX_BYTES);
+    });
+    child.stderr.on("data", (d: Buffer) => {
+      err = (err + d).slice(-2000);
+    });
+    child.on("error", e => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.on("close", code => {
+      clearTimeout(timer);
+      if (timedOut) reject(new Error(`${a.command} timed out`));
+      else if (code !== 0) reject(new Error(`${a.command} exited with ${code}: ${err.trim()}`));
+      else resolve({ output: out.toString("utf8"), exitCode: 0 });
     });
   });
 }
