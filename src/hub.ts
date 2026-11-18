@@ -6,7 +6,7 @@ import { bearer, credentialHint, displayPrefix, generateAdminToken, generateDaem
 import { formatFieldErrors, handleMcpText, ToolError, type McpApi } from "./mcp.ts";
 import { checkLogin, clearFailures, LOGIN_TABLE, recordFailure, type Sql } from "./login-limit.ts";
 import { laneKey, laneOf, parseHello, pickNext, type LaneHints } from "../shared/lanes.ts";
-import { ensureProjectSchema, Projects, storeReport } from "./projects.ts";
+import { ensureProjectSchema, Projects, storePromptReport, storeReport } from "./projects.ts";
 import { fingerprint, idempotencyFresh, parseIdempotencyKey } from "./idempotency.ts";
 import { isRerunSafe, NOT_RERUN_SAFE_REASON, parseLabel, parseRerunSafe, REQUEUE_REASON, UNCOUNTED_SQL } from "./job-rules.ts";
 import { markerBytes, planResult, resultCutoff, resultExpired } from "./results.ts";
@@ -283,6 +283,8 @@ export class Hub extends DurableObject<Env> {
       if (task === "echo" && typeof args.text !== "string") errors.args = "echo needs a text string.";
       if (task === "write_file" && typeof args.content !== "string") errors.args = "write_file needs a content string.";
       if (task === "claude" && typeof args.prompt !== "string") errors.args = "claude needs a prompt string.";
+      if (task === "ask" && typeof args.prompt !== "string") errors.args = "ask needs a prompt name string.";
+      if (task === "ask" && args.vars !== undefined && (args.vars === null || typeof args.vars !== "object" || Array.isArray(args.vars))) errors.args = "ask vars must be an object.";
       if (task === "run" && typeof args.command !== "string") errors.args = "run needs a command name string.";
       if (task === "run" && args.args !== undefined && (args.args === null || typeof args.args !== "object" || Array.isArray(args.args))) errors.args = "run args must be an object.";
       if ((task === "read_file" || task === "write_file") && args.path !== undefined && typeof args.path !== "string") errors.args = `${task} needs a path string.`;
@@ -803,6 +805,7 @@ export class Hub extends DurableObject<Env> {
       for (const n of parseRerunSafe(m.rerunSafe)) this.sql.run("INSERT OR IGNORE INTO daemon_rerun (name) VALUES (?)", n);
       this.sql.run("UPDATE daemon SET connected = 1 WHERE id = 1");
       if (m.commands !== undefined) storeReport(this.sql, m.commands); // untrusted display data; an old daemon sends none and the last snapshot stays
+      if (m.prompts !== undefined) storePromptReport(this.sql, m.prompts); // same: untrusted display data (names and variable specs)
       this.event("daemon.connected", {});
       this.send({ type: "welcome", server_seq: this.lastEventSeq() });
       this.pushNext();

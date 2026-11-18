@@ -71,5 +71,14 @@ export function createClient({ url, key, fetch: f = globalThis.fetch } = {}) {
     if (job.state !== "done") throw new MailroomError(job.reason || `job ${job.state}`, { code: job.state, body: job });
     return job.result;
   }
-  return { submit, get, wait, cancel, run };
+  // Ask a registered prompt (task "ask") with variables and wait. The laptop fixes the prompt, tools, turns and model; you pass only vars (and optionally resume: an earlier ask job's id). Throws unless the job ends "done"; returns its result: { output } where output is the parsed JSON when the prompt has a schema, else text.
+  async function ask(prompt, vars = {}, opts = {}) {
+    const { resume, ...rest } = opts;
+    const sub = await submit("ask", { prompt, vars, ...(resume ? { resume } : {}) }, rest);
+    if (sub.state === "refused") throw new MailroomError(sub.reason || "refused", { status: 403, code: "refused", body: sub });
+    const job = await wait(sub.id, rest);
+    if (job.state !== "done") throw new MailroomError(job.reason || `job ${job.state}`, { code: job.state, body: job });
+    return job.result;
+  }
+  return { submit, get, wait, cancel, run, ask };
 }

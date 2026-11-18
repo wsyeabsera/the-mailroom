@@ -128,3 +128,34 @@ export function commandsView(args: {
   });
   return { rows, reported: reported !== null };
 }
+
+export type ReportedPrompt = { name: string; vars: Record<string, ArgSpec>; timeoutMs: number | null; schema: boolean };
+
+/** The laptop's prompt report (names and variable specs, never template text) is untrusted display data, sanitised like the command report. */
+export function sanitizePromptReport(raw: unknown): ReportedPrompt[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ReportedPrompt[] = [];
+  const seen = new Set<string>();
+  for (const c of raw) {
+    if (out.length >= MAX_REPORT_COMMANDS) break;
+    if (!c || typeof c !== "object" || Array.isArray(c)) continue;
+    const o = c as Record<string, unknown>;
+    if (typeof o.name !== "string" || !NAME_RE.test(o.name) || seen.has(o.name)) continue;
+    seen.add(o.name);
+    const vars: Record<string, ArgSpec> = {};
+    if (o.vars && typeof o.vars === "object" && !Array.isArray(o.vars)) {
+      let n = 0;
+      for (const [k, v] of Object.entries(o.vars)) {
+        if (n >= MAX_ARGS) break;
+        if (!NAME_RE.test(k)) continue;
+        const spec = sanitizeArg(v);
+        if (!spec) continue;
+        Object.defineProperty(vars, k, { value: spec, enumerable: true, writable: true, configurable: true });
+        n++;
+      }
+    }
+    const timeoutMs = typeof o.timeoutMs === "number" && Number.isFinite(o.timeoutMs) && o.timeoutMs > 0 ? Math.floor(o.timeoutMs) : null;
+    out.push({ name: o.name, vars, timeoutMs, schema: o.schema === true });
+  }
+  return out;
+}

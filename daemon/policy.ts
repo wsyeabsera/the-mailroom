@@ -7,7 +7,7 @@ import path from "node:path";
 import { resolvePathFor } from "./paths.ts";
 import { claudeCeiling, DEFAULT_CLAUDE_MAX_TURNS, DEFAULT_CLAUDE_TOOLS } from "../shared/contract.ts";
 
-export type Policy = { folders: string[]; tasks: string[]; commands?: string[]; claudeTools?: string[]; claudeMaxTurns?: number };
+export type Policy = { folders: string[]; tasks: string[]; commands?: string[]; prompts?: string[]; claudeTools?: string[]; claudeMaxTurns?: number };
 export type PolicyLoad = { policy: Policy | null } | { error: string };
 
 export const policyPath = (home = os.homedir()) => path.join(home, ".mailroom", "policy.json");
@@ -34,9 +34,9 @@ export function loadPolicy(home = os.homedir()): PolicyLoad {
   }
   try {
     const p = JSON.parse(text);
-    if (!p || typeof p !== "object" || !strs(p.folders) || !strs(p.tasks) || (p.commands !== undefined && !strs(p.commands)) || (p.claudeTools !== undefined && !strs(p.claudeTools)) || (p.claudeMaxTurns !== undefined && !(Number.isInteger(p.claudeMaxTurns) && p.claudeMaxTurns >= 1)))
+    if (!p || typeof p !== "object" || !strs(p.folders) || !strs(p.tasks) || (p.commands !== undefined && !strs(p.commands)) || (p.prompts !== undefined && !strs(p.prompts)) || (p.claudeTools !== undefined && !strs(p.claudeTools)) || (p.claudeMaxTurns !== undefined && !(Number.isInteger(p.claudeMaxTurns) && p.claudeMaxTurns >= 1)))
       return { error: `${policyPath(home)} must look like {"folders":[],"tasks":[],"commands":[],"claudeTools":[],"claudeMaxTurns":10}` };
-    return { policy: { folders: p.folders, tasks: p.tasks, ...(p.commands ? { commands: p.commands } : {}), ...(p.claudeTools ? { claudeTools: p.claudeTools } : {}), ...(p.claudeMaxTurns !== undefined ? { claudeMaxTurns: p.claudeMaxTurns } : {}) } };
+    return { policy: { folders: p.folders, tasks: p.tasks, ...(p.commands ? { commands: p.commands } : {}), ...(p.prompts ? { prompts: p.prompts } : {}), ...(p.claudeTools ? { claudeTools: p.claudeTools } : {}), ...(p.claudeMaxTurns !== undefined ? { claudeMaxTurns: p.claudeMaxTurns } : {}) } };
   } catch {
     return { error: `${policyPath(home)} is not valid JSON` };
   }
@@ -58,7 +58,7 @@ export const policyClaude = (p: Policy) => ({ tools: p.claudeTools ?? [...DEFAUL
 /** Returns a refuse reason if the contract (or the resolved job path) goes beyond the policy, else null. Each reason names the fix. */
 export function exceeds(
   policy: Policy,
-  contract: { folders: string[]; tasks: string[]; commands?: string[]; claudeTools?: string[]; claudeMaxTurns?: number },
+  contract: { folders: string[]; tasks: string[]; commands?: string[]; prompts?: string[]; claudeTools?: string[]; claudeMaxTurns?: number },
   realPath: string | null,
   home: string,
 ): string | null {
@@ -74,7 +74,12 @@ export function exceeds(
     const bad = contract.commands.filter(c => !allowed.includes(c));
     if (bad.length) return `contract commands ${bad.join(", ")} are not allowed by the laptop policy. To allow: ${bad.map(c => `mailroom policy allow-command ${c}`).join("; ")}`;
   }
-  if (contract.tasks.includes("claude")) {
+  if (Array.isArray(contract.prompts)) {
+    const allowed = policy.prompts ?? [];
+    const bad = contract.prompts.filter(c => !allowed.includes(c));
+    if (bad.length) return `contract prompts ${bad.join(", ")} are not allowed by the laptop policy. To allow: ${bad.map(c => `mailroom policy allow-prompt ${c}`).join("; ")}`;
+  }
+  if (contract.tasks.includes("claude") || contract.tasks.includes("ask")) {
     const c = claudeCeiling(contract);
     const pc = policyClaude(policy);
     const badTools = c.tools.filter(t => !pc.tools.includes(t));
