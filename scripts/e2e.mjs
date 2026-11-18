@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, symlinkSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createClient } from "../client/mailroom-client.mjs";
 
 const PORT = 8801;
 const BASE = `http://localhost:${PORT}`;
@@ -68,7 +69,7 @@ r = await owner("POST", "/admin/keys", { label: "x", contract_id: "nope" });
 ok(r.status === 422, "key with unknown contract is 422");
 
 console.log("contract, key, credential");
-r = await owner("POST", "/admin/contracts", { name: "E2E", folders: [allowed], tasks: ["echo", "read_file", "write_file", "run"], commands: ["greet"], dailyLimit: 50, expires: null, approval: ["write_file"] });
+r = await owner("POST", "/admin/contracts", { name: "E2E", folders: [allowed], tasks: ["echo", "read_file", "write_file", "run"], commands: ["greet", "slow"], dailyLimit: 50, expires: null, approval: ["write_file"] });
 ok(r.status === 201, "contract created");
 const contractId = r.json.id;
 r = await owner("POST", "/admin/keys", { label: "e2e client", contract_id: contractId });
@@ -139,6 +140,73 @@ r = await client(key, "POST", "/api/jobs", { task: "run", args: { command: "gree
 j = r.status === 403 ? r.json : await waitJob(r.json.id, ["done", "failed", "refused"]);
 ok(j?.state === "refused", "bad args are refused by the laptop");
 
+console.log("run: progress, cancel, policy");
+const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const pids = join(tmp, "slow.pids");
+writeFileSync(join(tmp, "slow.sh"), `#!/bin/sh
+# tvdash-scan stand-in: reports progress on stderr; "hang" also leaves a grandchild behind
+echo "$$" > "${pids}.self"
+if [ "$2" = "hang" ]; then
+  sleep 300 &
+  echo "$!" > "${pids}.grandchild"
+  echo "MAILROOM_PROGRESS 25 scanning" >&2
+  wait
+else
+  echo "MAILROOM_PROGRESS 25 scanning" >&2
+  sleep 2
+  echo "MAILROOM_PROGRESS 75 almost done" >&2
+  sleep 2
+  echo "scan complete"
+fi
+`, { mode: 0o755 });
+{
+  const reg = JSON.parse(readFileSync(join(home, ".mailroom/commands.json"), "utf8"));
+  reg.slow = { script: join(tmp, "slow.sh"), cwd: allowed, args: { mode: { type: "enum", values: ["quick", "hang"], required: true } } };
+  writeFileSync(join(home, ".mailroom/commands.json"), JSON.stringify(reg), { mode: 0o600 });
+}
+// The Hub allows 60 requests a minute per key, so this section polls gently and uses its own key.
+r = await owner("POST", "/admin/keys", { label: "slow runner", contract_id: contractId });
+const slowKey = r.json.key;
+const mr = createClient({ url: BASE, key: slowKey });
+const untilSlow = async (fn, ms) => until(async () => { await sleep(500); return fn(); }, ms);
+const seen = [];
+let sub = await mr.submit("run", { command: "slow", args: { mode: "quick" } });
+ok(sub.state !== "refused" && !!sub.id, "slow run accepted through the client helper");
+const sawRunning = await untilSlow(async () => { const jj = await mr.get(sub.id); if (jj.progress) seen.push({ state: jj.state, ...jj.progress }); return jj.state === "running" && jj.progress ? jj : null; }, 20000);
+ok(sawRunning?.progress?.text === "scanning" && sawRunning.progress.pct === 25, "progress text and pct show while the job is running");
+j = await mr.wait(sub.id, { intervalMs: 1000, timeoutMs: 30000, onProgress: p => seen.push(p) });
+ok(j.state === "done" && j.result?.output === "scan complete\n", "slow run ends done with its output");
+ok(seen.some(p => p.text === "almost done" && p.pct === 75), "a later progress update (75 almost done) was seen");
+
+sub = await mr.submit("run", { command: "slow", args: { mode: "hang" } });
+await untilSlow(async () => (await mr.get(sub.id)).progress, 20000);
+const readPid = f => { try { return Number(readFileSync(`${pids}.${f}`, "utf8").trim()); } catch { return NaN; } };
+const selfPid = readPid("self"), grandPid = readPid("grandchild");
+ok(alive(selfPid) && alive(grandPid), "the hanging script and its grandchild are running");
+const nextJob = await mr.submit("echo", { text: "after cancel" });
+const cr = await mr.cancel(sub.id);
+ok(cr.state === "cancelled", "cancel answers cancelled");
+ok((await mr.get(sub.id)).state === "cancelled", "the job reads back cancelled");
+ok(await until(async () => !alive(selfPid) && !alive(grandPid), 10000), "the job's process and its grandchild are gone");
+j = await mr.wait(nextJob.id, { intervalMs: 1000, timeoutMs: 20000 });
+ok(j.state === "done" && j.result?.echo === "after cancel", "the daemon takes the next job after the cancel");
+ok((await mr.get(sub.id)).state === "cancelled", "the cancelled job stays cancelled");
+
+// The laptop policy ceiling: a contract that allows a command the policy does not list is refused by the daemon.
+mkdirSync(join(home, ".mailroom"), { recursive: true });
+writeFileSync(join(home, ".mailroom/policy.json"), JSON.stringify({ folders: [allowed], tasks: ["echo", "read_file", "write_file", "run"], commands: ["greet", "slow"] }), { mode: 0o600 });
+r = await mr.submit("run", { command: "greet", args: { who: "policy" } });
+j = await mr.wait(r.id, { intervalMs: 1000, timeoutMs: 20000 });
+ok(j?.state === "done", "within the policy, a run still works");
+r = await owner("POST", "/admin/contracts", { name: "Too wide", folders: [allowed], tasks: ["run"], commands: ["greet", "rm-everything"], dailyLimit: 50, expires: null, approval: [] });
+const wideContract = r.json.id;
+r = await owner("POST", "/admin/keys", { label: "wide", contract_id: wideContract });
+const wide = createClient({ url: BASE, key: r.json.key });
+r = await wide.submit("run", { command: "greet", args: { who: "x" } });
+ok(r.state === "queued" || r.state === "running" || r.state === "dispatched", `the Hub accepts it (greet is in that contract): ${r.state}`);
+j = await wide.wait(r.id, { intervalMs: 1000, timeoutMs: 20000 });
+ok(j?.state === "refused" && /rm-everything/.test(j.reason || "") && /policy/.test(j.reason || ""), `the daemon refuses: ${j?.reason}`);
+
 console.log("offline queue");
 killGroup(d);
 ok(await until(async () => !(await owner("GET", "/admin/laptop")).json.connected, 90000), "laptop shows away after the daemon dies");
@@ -159,7 +227,7 @@ ok(r.status === 401, "a revoked key stops at once");
 
 console.log("overview counts");
 r = await owner("GET", "/admin/state");
-ok(r.json.counts.done === 5 && r.json.counts.refused === 4 && r.json.counts.queued === 0, `today's counts are true (done ${r.json.counts.done}, refused ${r.json.counts.refused}, queued ${r.json.counts.queued})`);
+ok(r.json.counts.done === 8 && r.json.counts.refused === 5 && r.json.counts.queued === 0, `today's counts are true (done ${r.json.counts.done}, refused ${r.json.counts.refused}, queued ${r.json.counts.queued})`);
 ok(r.json.daemon.connected === true, "overview says the laptop is connected");
 
 console.log("events");
