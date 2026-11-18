@@ -227,7 +227,7 @@ ok(r.status === 401, "a revoked key stops at once");
 
 console.log("overview counts");
 r = await owner("GET", "/admin/state");
-ok(r.json.counts.done === 5 && r.json.counts.refused === 4 && r.json.counts.queued === 0, `today's counts are true (done ${r.json.counts.done}, refused ${r.json.counts.refused}, queued ${r.json.counts.queued})`);
+ok(r.json.counts.done === 8 && r.json.counts.refused === 5 && r.json.counts.queued === 0, `today's counts are true (done ${r.json.counts.done}, refused ${r.json.counts.refused}, queued ${r.json.counts.queued})`);
 ok(r.json.daemon.connected === true, "overview says the laptop is connected");
 
 console.log("events");
