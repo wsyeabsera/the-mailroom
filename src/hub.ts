@@ -5,6 +5,7 @@ import { cancelAction } from "../shared/cancel.ts";
 import { bearer, credentialHint, displayPrefix, generateAdminToken, generateDaemonCredential, generateKey, hashToken, makeId, safeEqual, safeEqualSecret, tokenKind, validateTokenInput } from "./keys.ts";
 import { formatFieldErrors, handleMcpText, ToolError, type McpApi } from "./mcp.ts";
 import { checkLogin, clearFailures, LOGIN_TABLE, recordFailure, type Sql } from "./login-limit.ts";
+import { ensureProjectSchema, Projects, storeReport } from "./projects.ts";
 import { SESSION_SECONDS, sessionCookie, signSession } from "./session.ts";
 
 export interface Env {
@@ -45,6 +46,7 @@ export class Hub extends DurableObject<Env> {
   private rate = new Map<string, { start: number; n: number }>();
   private mcpRate = new Map<string, { start: number; n: number }>();
   private enc = new TextEncoder();
+  private projects: Projects;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -63,6 +65,11 @@ export class Hub extends DurableObject<Env> {
       LOGIN_TABLE,
     ])
       this.sql.run(q);
+    ensureProjectSchema(this.sql);
+    this.projects = new Projects({
+      sql: this.sql, next: (n) => this.next(n), event: (k, p) => this.event(k, p), keyOut: (k) => this.keyOut(k), jobOut: (j) => this.jobOut(j),
+      progress: (id) => this.progressOf(id), contractBody: (id) => { const c = this.contractRow(id); return c ? (parse(c.body) as Contract) : undefined; }, readJson: (r) => this.readJson(r),
+    });
     // A fresh instance has no socket: nothing can still be running.
     this.sql.run("UPDATE daemon SET connected = 0");
     for (const j of this.sql.all<Row>("SELECT * FROM jobs WHERE state = 'running'")) this.setState(j, "queued", "laptop disconnected");
@@ -141,6 +148,7 @@ export class Hub extends DurableObject<Env> {
     try {
       if (path === "/daemon") return await this.daemonUpgrade(req);
       if (path === "/api/jobs" || path.startsWith("/api/jobs/")) return await this.clientRoute(req, path);
+      if (path === "/api/commands") return await this.commandsRoute(req);
       if (path === "/mcp") return await this.mcp(req);
       if (path === "/admin/login") return await this.login(req);
       if (path.startsWith("/admin/")) return await this.admin(req, url);
@@ -174,6 +182,14 @@ export class Hub extends DurableObject<Env> {
       return false;
     }
     return ++r.n > limit;
+  }
+
+  private async commandsRoute(req: Request): Promise<Response> {
+    const k = await this.clientAuth(req);
+    if (!k) return err(401, "bad_key");
+    if (this.rateLimited(k.id)) return err(429, "rate_limited", { retry_after: 60 });
+    if (req.method !== "GET") return err(405, "method_not_allowed");
+    return json(this.projects.commandsFor((parse(this.contractRow(k.contract_id)!.body) as Contract).commands ?? []));
   }
 
   private async clientRoute(req: Request, path: string): Promise<Response> {
@@ -278,9 +294,12 @@ export class Hub extends DurableObject<Env> {
       const k = this.one("SELECT * FROM keys WHERE id = ?", seg[2]);
       if (!k) return err(404, "not_found");
       if (seg.length === 3 && m === "GET") return json(this.keyDetail(k));
+      if (seg.length === 3 && m === "PATCH") return this.projects.moveKey(req, k);
       if (seg.length === 4 && seg[3] === "revoke") return m === "POST" ? this.revoke(k) : err(405, "method_not_allowed");
       return err(404, "not_found");
     }
+
+    if (route === "projects") return this.projects.route(req, seg);
 
     if (route === "contracts") {
       if (seg.length === 2) {
@@ -345,7 +364,7 @@ export class Hub extends DurableObject<Env> {
 
   private keyOut(k: Row) {
     const c = this.contractRow(k.contract_id);
-    return { id: k.id, label: k.label, prefix: k.prefix, contract: { id: k.contract_id, name: c?.name ?? "" }, created_at: k.created_at, last_used_at: k.last_used_at, revoked_at: k.revoked_at };
+    return { id: k.id, label: k.label, prefix: k.prefix, contract: { id: k.contract_id, name: c?.name ?? "" }, project_id: k.project_id ?? null, created_at: k.created_at, last_used_at: k.last_used_at, revoked_at: k.revoked_at };
   }
 
   private daemonInfo() {
@@ -397,11 +416,13 @@ export class Hub extends DurableObject<Env> {
     const errors: Record<string, string> = {};
     if (label.length < 1 || label.length > 60) errors.label = "Label must be 1 to 60 characters.";
     if (typeof body.contract_id !== "string" || !this.contractRow(body.contract_id)) errors.contract_id = "Unknown contract.";
+    const target = this.projects.checkTarget(body.project_id);
+    if (!target.ok) errors.project_id = target.error;
     if (Object.keys(errors).length) return { errors };
     const key = generateKey();
     const id = makeId("k_", this.next("key"));
     const now = Date.now();
-    this.sql.run("INSERT INTO keys (id, label, prefix, hash, contract_id, created_at) VALUES (?, ?, ?, ?, ?, ?)", id, label, displayPrefix(key), await hashToken(key), body.contract_id, now);
+    this.sql.run("INSERT INTO keys (id, label, prefix, hash, contract_id, created_at, project_id) VALUES (?, ?, ?, ?, ?, ?, ?)", id, label, displayPrefix(key), await hashToken(key), body.contract_id, now, target.ok ? target.id : null);
     this.event("key.created", { key_id: id, label });
     return { id, label, key };
   }
@@ -709,6 +730,7 @@ export class Hub extends DurableObject<Env> {
       dm.hello = true;
       this.lastSeq = Number.isInteger(m.last_seq) ? m.last_seq : 0;
       this.sql.run("UPDATE daemon SET connected = 1 WHERE id = 1");
+      if (m.commands !== undefined) storeReport(this.sql, m.commands); // untrusted display data; an old daemon sends none and the last snapshot stays
       this.event("daemon.connected", {});
       this.send({ type: "welcome", server_seq: this.lastEventSeq() });
       this.pushNext();

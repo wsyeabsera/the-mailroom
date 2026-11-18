@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createClient } from "../client/mailroom-client.mjs";
 
-const PORT = 8801;
+const PORT = Number(process.env.E2E_PORT ?? 8801);
 const BASE = `http://localhost:${PORT}`;
 const root = new URL("..", import.meta.url).pathname;
 const pass = readFileSync(join(root, ".dev.vars"), "utf8").match(/^OWNER_PASSWORD=(.*)$/m)[1];
@@ -44,7 +44,7 @@ async function until(fn, ms = 15000) { const t = Date.now(); while (Date.now() -
 const startDaemon = () => { const d = spawn("node", [join(root, "daemon/cli.ts"), "run"], { env: { ...process.env, HOME: home }, stdio: "ignore", detached: true }); procs.push(d); return d; };
 
 console.log("starting wrangler dev ...");
-const w = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--inspector-port", "9351", "--persist-to", join(tmp, "state")], { cwd: root, stdio: "ignore", detached: true });
+const w = spawn("npx", ["wrangler", "dev", "--port", String(PORT), "--inspector-port", String(PORT + 550), "--persist-to", join(tmp, "state")], { cwd: root, stdio: "ignore", detached: true });
 procs.push(w);
 if (!(await until(async () => { try { return (await fetch(BASE + "/admin/state")).status === 401; } catch { return false; } }, 60000))) { console.log("FAIL wrangler did not start"); process.exit(1); }
 
@@ -233,6 +233,68 @@ console.log("overview counts");
 r = await owner("GET", "/admin/state");
 ok(r.json.counts.done === 8 && r.json.counts.refused === 5 && r.json.counts.queued === 0, `today's counts are true (done ${r.json.counts.done}, refused ${r.json.counts.refused}, queued ${r.json.counts.queued})`);
 ok(r.json.daemon.connected === true, "overview says the laptop is connected");
+
+console.log("projects");
+r = await owner("POST", "/admin/projects", { name: "  " });
+ok(r.status === 422 && r.json.errors?.name, "a blank project name is 422 with a field error");
+r = await owner("POST", "/admin/projects", { name: "x".repeat(61) });
+ok(r.status === 422 && r.json.errors?.name, "a 61-character project name is 422");
+r = await owner("POST", "/admin/projects", { name: "E2E app", folder: "~/Hobby/e2e", notes: "n" });
+ok(r.status === 201 && r.json.id?.startsWith("pr_") && r.json.key_count === 0, "project created");
+const projId = r.json.id;
+r = await owner("POST", "/admin/projects", { name: "e2e APP" });
+ok(r.status === 422 && r.json.errors?.name, "a duplicate name is refused while the first is live");
+r = await owner("PATCH", `/admin/keys/${(await owner("GET", "/admin/keys")).json.find(k => k.label === "e2e client").id}`, { project_id: "pr_nope" });
+ok(r.status === 422 && r.json.errors?.project_id, "moving a key into an unknown project is 422");
+const e2eKeyId = (await owner("GET", "/admin/keys")).json.find(k => k.label === "e2e client").id;
+r = await owner("PATCH", `/admin/keys/${e2eKeyId}`, { project_id: projId });
+ok(r.status === 200 && r.json.project_id === projId, "the e2e key moves into the project");
+r = await owner("GET", `/admin/projects/${projId}`);
+ok(r.status === 200 && r.json.keys.some(k => k.id === e2eKeyId) && r.json.key_count === 1, "the project page lists the key");
+ok(Array.isArray(r.json.recent_jobs) && r.json.recent_jobs.length > 0 && r.json.today.done > 0, "the project page carries the key's jobs and today's counts");
+ok(r.json.commands.rows.some(c => c.name === "slow"), "the commands view lists a contract command");
+r = await owner("POST", `/admin/projects/${projId}/archive`);
+ok(r.status === 409 && r.json.error === "has_active_keys" && r.json.count === 1, "archive is refused while it has an active key, with the count");
+r = await owner("GET", "/admin/projects");
+ok(r.json.some(p => p.id === "unassigned") && r.json.find(p => p.id === projId).key_count === 1, "the list has the project and the Unassigned entry");
+r = await owner("PATCH", `/admin/keys/${e2eKeyId}`, { project_id: null });
+ok(r.status === 200 && r.json.project_id === null, "the key moves back to Unassigned");
+r = await owner("PATCH", `/admin/keys/${e2eKeyId}`, { project_id: projId });
+ok(r.json.project_id === projId, "and into the project again");
+r = await owner("POST", "/admin/keys", { label: "in project", contract_id: contractId, project_id: projId });
+ok(r.status === 201, "a key can be issued straight into a project");
+await owner("POST", `/admin/keys/${r.json.id}/revoke`);
+
+r = await owner("POST", "/admin/contracts", { name: "Ghost", folders: [allowed], tasks: ["run"], commands: ["greet", "ghost"], dailyLimit: 50, expires: null, approval: [] });
+const ghostContract = r.json.id;
+r = await owner("POST", "/admin/keys", { label: "ghost holder", contract_id: ghostContract, project_id: projId });
+const ghostKey = r.json.key;
+const ghostKeyId = r.json.id;
+
+// A fresh daemon says hello with the registry (greet is registered by now), replacing the old connection.
+killGroup(d);
+d = startDaemon();
+r = await until(async () => { const x = await client(key, "GET", "/api/commands"); return x.json?.find?.(c => c.name === "greet")?.on_laptop ? x : null; });
+ok(r?.status === 200, "GET /api/commands says greet is on the laptop after the daemon's hello");
+ok(r && r.json.find(c => c.name === "greet").args.who?.type === "string" && r.json.find(c => c.name === "greet").args.who.required === true, "it carries the full arg spec");
+const gr = await client(ghostKey, "GET", "/api/commands");
+ok(gr.json.find(c => c.name === "ghost").on_laptop === false && gr.json.find(c => c.name === "ghost").args === null && gr.json.find(c => c.name === "ghost").timeoutMs === null, "a contract command the laptop did not report is on_laptop false, args null");
+ok(r && !JSON.stringify(r.json).includes("greet.sh") && !JSON.stringify(r.json).includes(allowed), "no script path or cwd is reported");
+ok((await client("mr_live_" + "x".repeat(32), "GET", "/api/commands")).status === 401, "/api/commands needs a client key");
+r = await owner("GET", `/admin/projects/${projId}`);
+ok(r.json.laptop_reported_at > 0 && r.json.commands.reported === true && r.json.commands.rows.find(c => c.name === "ghost")?.mismatch === "not-on-laptop", "the project page shows a mismatch for a command the laptop lacks");
+await owner("PATCH", `/admin/keys/${e2eKeyId}`, { project_id: null });
+await owner("POST", `/admin/keys/${ghostKeyId}/revoke`);
+r = await owner("POST", `/admin/projects/${projId}/archive`);
+ok(r.status === 200 && r.json.archived_at > 0, "archive works once it has no active keys");
+r = await owner("PATCH", `/admin/keys/${e2eKeyId}`, { project_id: projId });
+ok(r.status === 422, "a key cannot be moved into an archived project");
+r = await owner("POST", "/admin/projects", { name: "E2E app" });
+ok(r.status === 201, "a name is free again once its project is archived");
+r = await owner("POST", `/admin/projects/${projId}/unarchive`);
+ok(r.status === 409, "unarchive is refused when its name is taken");
+r = await owner("GET", "/admin/events?after=0&limit=1000");
+{ const ks = new Set(r.json.events.map(e => e.kind)); for (const k of ["project.created", "project.archived", "key.moved"]) ok(ks.has(k), `event ${k} recorded`); ok(!r.json.events.some(e => e.kind === "mcp.call" && e.payload.tool === "commands"), "listing commands is not an event"); }
 
 console.log("events");
 r = await owner("GET", "/admin/events?after=0&limit=500");
