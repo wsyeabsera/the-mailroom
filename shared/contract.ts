@@ -5,8 +5,9 @@
 import { DEFAULT_CLAUDE_DAILY_MINUTES, DEFAULT_CLAUDE_DAILY_TURNS, MAX_CLAUDE_DAILY_MINUTES, MAX_CLAUDE_DAILY_TURNS } from "./claude-budget.ts";
 import { BATCH_MAX_CONCURRENCY, BATCH_MAX_ITEMS, TARGET_RE, batchLimits, checkBatch, checkWorkflow } from "./pipeline.ts";
 import { validateCallbackPrefixes, type UrlOpts } from "./callback.ts";
+import { LOCAL_MCP_TASKS, checkLocalMcp, validateLocalMcp, type LocalMcpServer } from "./local-mcp.ts";
 
-export const TASKS = ["echo", "read_file", "write_file", "claude", "run", "ask", "batch", "workflow"] as const;
+export const TASKS = ["echo", "read_file", "write_file", "claude", "run", "ask", "batch", "workflow", ...LOCAL_MCP_TASKS] as const;
 export type TaskName = (typeof TASKS)[number];
 
 export type Contract = {
@@ -26,6 +27,7 @@ export type Contract = {
   batchMaxItems?: number; // most items in one batch; missing = 100 (shared/pipeline.ts)
   batchMaxConcurrency?: number; // most items a batch runs at once; missing = 3, at most 6
   workflows?: string[]; // names the "workflow" task may run (registered on the laptop in workflows.json); missing = none
+  localMcp?: LocalMcpServer[]; // local stdio MCP servers by name with an allow-list of tools (shared/local-mcp.ts); the command lives only on the laptop; missing = none
   callbackUrls?: string[]; // https prefixes (ending in /) a job's callback_url must start with; missing = none (shared/callback.ts)
 };
 
@@ -230,17 +232,21 @@ export function validateContract(raw: unknown, urlOpts: UrlOpts = {}): Validatio
   const cdm = o.claudeDailyMinutes === undefined || o.claudeDailyMinutes === null ? DEFAULT_CLAUDE_DAILY_MINUTES : o.claudeDailyMinutes;
   if (typeof cdm !== "number" || !Number.isInteger(cdm) || cdm < 1 || cdm > MAX_CLAUDE_DAILY_MINUTES) errors.claudeDailyMinutes = `Use a whole number of minutes from 1 to ${MAX_CLAUDE_DAILY_MINUTES}, like 60.`;
 
+  const lm = validateLocalMcp(o.localMcp);
+  if (!lm.ok) errors.localMcp = lm.error;
+  else if (!errors.tasks && tasks.some(t => (LOCAL_MCP_TASKS as readonly string[]).includes(t)) && lm.servers.length === 0) errors.localMcp = "Name at least one local MCP server (and its tools) for mcp_list or mcp_call.";
+
   const cb = validateCallbackPrefixes(o.callbackUrls, urlOpts);
   if (!cb.ok) errors.callbackUrls = cb.error;
 
   if (Object.keys(errors).length) return { ok: false, errors };
-  return { ok: true, contract: { name, folders, tasks, dailyLimit: dl as number, expires, approval, commands, prompts, claudeTools, claudeMaxTurns: cm as number, claudeDailyTurns: cdt as number, claudeDailyMinutes: cdm as number, batches, batchMaxItems: bmi as number, batchMaxConcurrency: bmc as number, workflows, ...(cb.ok && cb.prefixes.length ? { callbackUrls: cb.prefixes } : {}) } };
+  return { ok: true, contract: { name, folders, tasks, dailyLimit: dl as number, expires, approval, commands, prompts, claudeTools, claudeMaxTurns: cm as number, claudeDailyTurns: cdt as number, claudeDailyMinutes: cdm as number, batches, batchMaxItems: bmi as number, batchMaxConcurrency: bmc as number, workflows, ...(lm.ok && lm.servers.length ? { localMcp: lm.servers } : {}), ...(cb.ok && cb.prefixes.length ? { callbackUrls: cb.prefixes } : {}) } };
 }
 
 /** The paths a job touches. echo touches none. */
 export function jobPaths(job: Job): string[] | { error: string } {
   const a = job.args ?? {};
-  if (job.task === "echo" || job.task === "run" || job.task === "ask" || job.task === "batch" || job.task === "workflow") return []; // run and ask: the daemon checks the registered cwd itself; batch and workflow check each item or step the same way
+  if (job.task === "echo" || job.task === "run" || job.task === "ask" || job.task === "batch" || job.task === "workflow" || job.task === "mcp_list" || job.task === "mcp_call") return []; // run and ask: the daemon checks the registered cwd itself; batch and workflow check each item or step the same way
   const key = job.task === "claude" ? "cwd" : "path";
   const v = a[key];
   if (typeof v !== "string") return { error: `${job.task} needs a ${key}` };
@@ -265,6 +271,13 @@ export function check(contract: Contract, job: Job, ctx: CheckContext): Verdict 
   if (job.task === "workflow") {
     const why = checkWorkflow(contract, job.args);
     if (why) return { verdict: "refuse", reason: why };
+  }
+
+  let mcpApprove = false;
+  if (job.task === "mcp_list" || job.task === "mcp_call") {
+    const m = checkLocalMcp(contract, job.task, job.args);
+    if ("refuse" in m) return { verdict: "refuse", reason: m.refuse };
+    mcpApprove = m.approve;
   }
 
   if (job.task === "ask") {
@@ -297,5 +310,5 @@ export function check(contract: Contract, job: Job, ctx: CheckContext): Verdict 
     if (n === null) return { verdict: "refuse", reason: `path “${p}” must start with ~/ or / and stay inside its folder` };
     if (!folders.some(f => inside(n, f))) return { verdict: "refuse", reason: `${p} is outside the contract` };
   }
-  return contract.approval.includes(job.task) ? { verdict: "approve" } : { verdict: "allow" };
+  return contract.approval.includes(job.task) || mcpApprove ? { verdict: "approve" } : { verdict: "allow" };
 }

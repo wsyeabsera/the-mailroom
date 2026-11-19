@@ -17,6 +17,7 @@ For personal use on the owner's own machine only. It is not a service for other 
 | Browser extension | `extension/` | Chrome MV3: badge with the approvals waiting, popup, side panel, notifications. See `extension/README.md` |
 | MCP admin channel | `src/mcp.ts`, `POST /mcp` | A remote MCP server so other apps and Claude sessions can administer it with their own scoped tokens. See `docs/mcp.md` |
 | Claude Code plugin | `plugin/` | One install connects a Claude session to the MCP channel, with a skill of safety rules and two commands. See `plugin/README.md` |
+| Local MCP | `shared/local-mcp.ts`, `daemon/mcp-supervisor.ts` | `mcp_list` / `mcp_call`: the owner's local stdio MCP servers, by name, from a contract. See `docs/local-mcp.md` |
 | API | `docs/api.md` | The interface everything is built against |
 
 ## Run it locally

@@ -19,6 +19,7 @@ import { MAX_RESULT_BYTES, MAX_WRITE_BYTES } from "../shared/limits.ts";
 import { runBatch, runWorkflow } from "./pipeline.ts";
 import { loadWorkflow } from "./workflows.ts";
 import { batchTarget } from "../shared/pipeline.ts";
+import { localMcpRefusal, runMcpTask } from "./mcp-tasks.ts";
 
 export type JobMsg = { id: string; task: string; args: Record<string, unknown>; contract: Contract; budget?: { turns: number; ms: number } /* what is left of the key's claude day; from the Hub */ };
 
@@ -54,6 +55,12 @@ export function recheck(job: JobMsg, now = Date.now(), home = os.homedir(), impl
   if ("error" in pol) return { reason: `laptop policy unusable: ${pol.error}` };
   const ceil = (r: string | null) => (pol.policy ? exceeds(pol.policy, job.contract, r, home, implicit) : null);
   if (job.task === "echo") {
+    const over = ceil(null);
+    return over ? { reason: over } : { resolved: null };
+  }
+  if (job.task === "mcp_list" || job.task === "mcp_call") {
+    const why = localMcpRefusal(job, home);
+    if (why) return { reason: why };
     const over = ceil(null);
     return over ? { reason: over } : { resolved: null };
   }
@@ -135,6 +142,9 @@ export async function runTask(job: JobMsg, resolved: string | null, signal: Abor
       return runAsk(job, resolved!, signal, report, onUsage);
     case "run":
       return runCommand(a, resolved!, signal, report, onPartial, extra.stdin);
+    case "mcp_list":
+    case "mcp_call":
+      return runMcpTask(job, signal);
     case "batch":
       return runBatch(job, signal, report, onUsage, onPartial);
     case "workflow":
