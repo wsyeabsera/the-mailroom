@@ -66,12 +66,19 @@ test("mailroom policy CLI", () => {
   const file = path.join(home, ".mailroom", "policy.json");
   assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { folders: ["~/work"], tasks: ["echo"] });
   assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  assert.equal(run("allow-task", "mcp_list").status, 0);
+  assert.equal(run("allow-task", "mcp_call").status, 0);
+  assert.equal(run("allow-task", "mcp_call").status, 0); // twice: still one entry
+  const bogus = run("allow-task", "mcp_everything");
+  assert.notEqual(bogus.status, 0);
+  assert.match(bogus.stderr + bogus.stdout, /not a task.*mcp_list, mcp_call/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).tasks, ["echo", "mcp_list", "mcp_call"]);
   assert.equal(run("allow-command", "deploy-notes").status, 0);
   assert.notEqual(run("allow-command", "bad name;").status, 0);
   assert.equal(run("allow-claude-tool", "Bash(git log:*)").status, 0);
   assert.equal(run("claude-max-turns", "20").status, 0);
   assert.notEqual(run("claude-max-turns", "99").status, 0);
-  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { folders: ["~/work"], tasks: ["echo"], commands: ["deploy-notes"], claudeTools: ["Read", "Glob", "Grep", "Bash(git log:*)"], claudeMaxTurns: 20 });
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { folders: ["~/work"], tasks: ["echo", "mcp_list", "mcp_call"], commands: ["deploy-notes"], claudeTools: ["Read", "Glob", "Grep", "Bash(git log:*)"], claudeMaxTurns: 20 });
   const shown = run("show").stdout;
   assert.match(shown, /commands: deploy-notes/);
   assert.match(shown, /claude max turns: 20/);

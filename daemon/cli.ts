@@ -3,7 +3,7 @@ import readline from "node:readline";
 import { deleteConfig, configPath, loadConfig, saveConfig } from "./config.ts";
 import { probe, run } from "./client.ts";
 import { loadPolicy, savePolicy, policyPath, policyClaude } from "./policy.ts";
-import { COMMAND_RE, PROMPT_RE, toolNameOk } from "../shared/contract.ts";
+import { COMMAND_RE, PROMPT_RE, TASKS, toolNameOk } from "../shared/contract.ts";
 import * as service from "./service.ts";
 import { purgeLogs, readLog } from "./logs.ts";
 import { doctor, explain, fetchFromHub } from "./doctor.ts";
@@ -19,7 +19,7 @@ const HELP = `mailroom <command>
   policy show|allow-folder <path>|allow-task <task>|allow-command <name>|allow-prompt <name>|allow-claude-tool <tool>|claude-max-turns <n>|logs on|off   the laptop ceiling the daemon never goes beyond (~/.mailroom/policy.json)
   plugin install|uninstall [--scope user|project|local]   add the Claude Code plugin to the project in the current folder (default scope: project)
   plugin install|uninstall [--scope user|project|local]   add the Claude Code plugin to the project in this folder (default: project)
-  doctor [--contracts file.json] [--token mra_...]   check commands.json, prompts.json, policy.json and mcp.json (and the Hub's contracts) and print each problem with its fix
+  doctor [--contracts file.json] [--token mra_...]   check commands.json, prompts.json, policy.json, mcp.json and local-mcp.json (and the Hub's contracts) and print each problem with its fix
   explain <key label> '<job json>' [--contract file.json] [--token mra_...]   say which rule would refuse a job, without running it
   logs <job id>                              print the owner-only debug log of a claude or ask job (reply and turns; kept 7 days; never sent to the Hub)
   logout                                   delete the saved config
@@ -186,6 +186,7 @@ async function main() {
         console.log(`Saved ${policyPath()}`);
         return 0;
       }
+      if (sub === "allow-task" && args[1] && !(TASKS as readonly string[]).includes(args[1])) return fail(`“${args[1]}” is not a task. Tasks: ${TASKS.join(", ")}.`);
       if ((sub === "allow-folder" || sub === "allow-task") && args[1]) {
         const list = sub === "allow-folder" ? p.folders : p.tasks;
         if (!list.includes(args[1])) list.push(args[1]);

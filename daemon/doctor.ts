@@ -10,6 +10,8 @@ import { loadCommand } from "./commands.ts";
 import { loadPrompt } from "./prompts.ts";
 import { servicePath } from "./service.ts";
 import { loadMcpServers, mcpServerOf, mcpPath } from "./mcp.ts";
+import { loadLocalMcp, localMcpPath } from "./local-mcp.ts";
+import { LOCAL_MCP_TASKS } from "../shared/local-mcp.ts";
 import { recheck, type JobMsg } from "./tasks.ts";
 import { resolvePathFor } from "./paths.ts";
 
@@ -57,7 +59,7 @@ export function doctor(input: DoctorInput = {}): Finding[] {
   const add = (level: Finding["level"], message: string, fix?: string) => out.push({ level, message, ...(fix ? { fix } : {}) });
 
   // ---- file modes ----
-  for (const f of ["config.json", "commands.json", "prompts.json", "policy.json", "mcp.json", "sessions.json"]) {
+  for (const f of ["config.json", "commands.json", "prompts.json", "policy.json", "mcp.json", "local-mcp.json", "sessions.json"]) {
     const p = path.join(dir(home), f);
     try {
       const st = fs.statSync(p);
@@ -141,8 +143,31 @@ export function doctor(input: DoctorInput = {}): Finding[] {
     if (!which(s.command, svcPath)) add("error", `MCP server “${name}”: command “${s.command}” is not found on the background service's PATH (${svcPath})`, `use an absolute path in ${mcpPath(home)}`);
   }
 
+  // ---- local-mcp.json (the servers mcp_list and mcp_call may reach) ----
+  const lmFile = localMcpPath(home);
+  const lm = loadLocalMcp(home);
+  const lmRaw = readJson(lmFile);
+  if (!lm.present) add("info", `no ${lmFile}: mcp_list and mcp_call have no local MCP servers`);
+  else if ("error" in lmRaw) add("error", lmRaw.error, `fix ${lmFile}`);
+  else {
+    for (const e of lm.problems) add("error", e, `edit ${lmFile}`);
+    if (!lm.problems.length && Object.keys(lm.servers).length === 0) add("warn", `${lmFile} defines no servers`, `add "<server>": {"command": "...", "args": [...]}`);
+    for (const [name, sv] of Object.entries(lm.servers)) {
+      if (!which(sv.command, svcPath)) add("error", `local MCP server “${name}”: command “${sv.command}” is not found on the background service's PATH (${svcPath})`, `use an absolute path in ${lmFile}`);
+      if (sv.cwd !== undefined && !(fs.existsSync(sv.cwd) && fs.statSync(sv.cwd).isDirectory())) add("error", `local MCP server “${name}”: cwd ${sv.cwd} is not a folder`, `fix the cwd in ${lmFile}`);
+    }
+  }
+  const lmNames = new Set(Object.keys(lm.servers));
+  if (policy && lm.present && !LOCAL_MCP_TASKS.some(t => policy!.tasks.includes(t))) add("warn", `${lmFile} defines servers but the policy allows neither mcp_list nor mcp_call, so no contract can use them`, LOCAL_MCP_TASKS.map(t => `mailroom policy allow-task ${t}`).join("; "));
+
   // ---- contracts ----
   if (input.contracts) {
+    const usedLm = new Set<string>();
+    for (const c of input.contracts) for (const sv of c.localMcp ?? []) {
+      usedLm.add(sv.server);
+      if (!lmNames.has(sv.server)) add("warn", `contract “${c.name}” allows local MCP server “${sv.server}”, which is not defined in ${lmFile}, so its jobs fail`, `add "${sv.server}" to ${lmFile}, or remove it from the contract`);
+    }
+    for (const n of lmNames) if (!usedLm.has(n)) add("warn", `local MCP server “${n}” is not used by any contract`, `remove it from ${lmFile}, or allow it in a contract's localMcp`);
     const usedCmds = new Set<string>(), usedPrompts = new Set<string>();
     for (const c of input.contracts) {
       for (const x of c.commands ?? []) { usedCmds.add(x); if (!commands.includes(x)) add("error", `contract “${c.name}” allows command “${x}”, which is not in ${cmdFile}`, `register “${x}” in commands.json, or remove it from the contract`); }

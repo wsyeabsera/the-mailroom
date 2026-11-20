@@ -5,7 +5,7 @@ import { VERSION } from "../shared/version.ts";
 import { loadLastSeq, saveLastSeq } from "./config.ts";
 import type { Config } from "./config.ts";
 import { commandTimeouts } from "./commands.ts";
-import { hintsFromTimeouts, laneOf, type Lane } from "../shared/lanes.ts";
+import { LANES, hintsFromTimeouts, laneOf, type Lane } from "../shared/lanes.ts";
 import { recheck, runTask } from "./tasks.ts";
 import { listReport } from "./commands.ts";
 import { throttle } from "./progress.ts";
@@ -63,10 +63,10 @@ export function run(cfg: Config, log: (s: string) => void = console.log): Promis
 
     const connect = () => {
       const ws = new WebSocket(wsUrl(cfg.url), { headers: { Authorization: `Bearer ${cfg.credential}` }, handshakeTimeout: 10000 });
-      const queues: Record<Lane, JobMsg[]> = { short: [], long: [] }; // strict order within a lane
+      const queues: Record<Lane, JobMsg[]> = { short: [], mcp: [], long: [] }; // strict order within a lane
       const cancelled = new Set<string>();
       const running = new Map<string, AbortController>(); // job id -> its abort controller, one per busy lane
-      const working: Record<Lane, boolean> = { short: false, long: false };
+      const working: Record<Lane, boolean> = { short: false, mcp: false, long: false };
       const send = (m: unknown) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(m));
 
       const pump = async (lane: Lane) => {
@@ -118,14 +118,14 @@ export function run(cfg: Config, log: (s: string) => void = console.log): Promis
           if (Number.isInteger(m.server_seq)) saveLastSeq(m.server_seq);
           log("connected to the Hub");
         } else if (m.type === "job" && typeof m.id === "string") {
-          // The Hub names the lane; fall back to our own rule if it did not (never trust it beyond the two names).
-          const lane: Lane = m.lane === "short" || m.lane === "long" ? m.lane : laneOf(m.task, m.args);
+          // The Hub names the lane; fall back to our own rule if it did not (never trust it beyond the lane names).
+          const lane: Lane = LANES.includes(m.lane) ? m.lane : laneOf(m.task, m.args);
           queues[lane].push(m);
           void pump(lane);
         } else if (m.type === "cancel") {
           const abort = running.get(m.id);
           if (abort) abort.abort();
-          else if (queues.short.some(j => j.id === m.id) || queues.long.some(j => j.id === m.id)) cancelled.add(m.id);
+          else if (LANES.some(l => queues[l].some(j => j.id === m.id))) cancelled.add(m.id);
         }
       });
       ws.on("unexpected-response", (_q, res) => {

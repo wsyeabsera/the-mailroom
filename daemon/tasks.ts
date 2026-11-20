@@ -4,7 +4,7 @@ import path from "node:path";
 import { parseProgressLine } from "./progress.ts";
 import { parsePartialLine } from "../shared/partials.ts";
 import { keepAwake, killTree, killTreeOnAbort, spawnTree, timeoutMessage } from "./proc.ts";
-import { READ_ONLY_TOOLS, StreamReader, makeScratch, removeScratch } from "./claude.ts";
+import { READ_ONLY_TOOLS, StreamReader, MAX_DENIALS, boundedDenials, confineArgv, makeScratch, removeScratch } from "./claude.ts";
 import { check, normalizePath, claudeCeiling } from "../shared/contract.ts";
 import type { Contract } from "../shared/contract.ts";
 import { buildArgv, loadCommand } from "./commands.ts";
@@ -137,7 +137,7 @@ export async function runTask(job: JobMsg, resolved: string | null, signal: Abor
       return { bytes };
     }
     case "claude":
-      return { output: await runClaude(String(a.prompt ?? ""), resolved!, signal, a, claudeCeiling(job.contract), report, job.id, onUsage, job.budget) };
+      return runClaude(String(a.prompt ?? ""), resolved!, signal, a, claudeCeiling(job.contract), report, job.id, onUsage, job.budget);
     case "ask":
       return runAsk(job, resolved!, signal, report, onUsage);
     case "run":
@@ -210,6 +210,8 @@ async function runAsk(job: JobMsg, cwd: string, signal: AbortSignal, report: (te
   const count = (u: Usage) => { total.turns += u.turns; total.ms += u.ms; onUsage({ ...total }); };
   const r = await execClaude(f.text, cwd, signal, opts, p.prompt.timeoutMs, report, { id: job.id, task: "ask", prompt: String(a.prompt), resume: a.resume }, count, job.budget);
   let text = typeof r.result?.result === "string" ? r.result.result : r.raw;
+  let denials = boundedDenials(r.result);
+  const dn = () => (denials.length ? { permission_denials: denials } : {});
   // A prompt with a schema never returns a result that does not match it: the answer is parsed and validated, and the parsed value is the output.
   if (p.prompt.schema) {
     let parsed = parseAnswer(p.prompt.schema, text);
@@ -223,13 +225,14 @@ async function runAsk(job: JobMsg, cwd: string, signal: AbortSignal, report: (te
         if (i >= 0) argv[i + 1] = String(Math.min(Number(argv[i + 1]), REPAIR_MAX_TURNS));
         const r2 = await execClaude(REPAIR_MESSAGE, cwd, signal, { ...opts, argv }, p.prompt.timeoutMs, report, { id: job.id, task: "ask", prompt: String(a.prompt), resume: job.id }, count, left);
         text = typeof r2.result?.result === "string" ? r2.result.result : r2.raw;
+        denials = [...denials, ...boundedDenials(r2.result)].slice(0, MAX_DENIALS);
         parsed = parseAnswer(p.prompt.schema, text);
       }
     }
     if (!parsed.ok) throw new Error(parsed.error);
-    return { output: parsed.value };
+    return { output: parsed.value, ...dn() };
   }
-  return { output: Buffer.from(text).subarray(0, MAX_RESULT_BYTES).toString("utf8") };
+  return { output: Buffer.from(text).subarray(0, MAX_RESULT_BYTES).toString("utf8"), ...dn() };
 }
 
 /** Builds claude's options from a registered prompt, clipped by the contract ceiling. Throws when nothing is left to run with. */
@@ -246,16 +249,18 @@ export function askOptions(p: Prompt, ceil: { tools: string[]; maxTurns: number 
   return { argv, scratch: p.scratch };
 }
 
-async function runClaude(prompt: string, cwd: string, signal: AbortSignal, args: Record<string, unknown> = {}, ceil = claudeCeiling({}), report: (text: string) => void = () => {}, jobId = "job", onUsage: (u: Usage) => void = () => {}, budget?: { turns: number; ms: number }): Promise<unknown> {
+async function runClaude(prompt: string, cwd: string, signal: AbortSignal, args: Record<string, unknown> = {}, ceil = claudeCeiling({}), report: (text: string) => void = () => {}, jobId = "job", onUsage: (u: Usage) => void = () => {}, budget?: { turns: number; ms: number }): Promise<{ output: unknown; permission_denials?: unknown[] }> {
   if (!prompt) throw new Error("claude needs a prompt");
   const opts = claudeOptions(args, ceil);
   const r = await execClaude(prompt, cwd, signal, opts, claudeTimeout(), report, { id: jobId, task: "claude", resume: args.resume }, onUsage, budget);
+  const denials = boundedDenials(r.result);
+  const withDenials = (output: unknown) => ({ output, ...(denials.length ? { permission_denials: denials } : {}) }); // only when something was refused
   if (opts.json) {
-    if (r.result) return r.result;
+    if (r.result) return withDenials(r.result.permission_denials === undefined ? r.result : { ...r.result, permission_denials: denials }); // the whole result object, with the bounded list in place of the raw one
     throw new Error("claude did not return valid JSON (output may be truncated)");
   }
-  if (r.result && typeof r.result.result === "string") return Buffer.from(r.result.result + "\n").subarray(0, MAX_RESULT_BYTES).toString("utf8");
-  return r.raw;
+  if (r.result && typeof r.result.result === "string") return withDenials(Buffer.from(r.result.result + "\n").subarray(0, MAX_RESULT_BYTES).toString("utf8"));
+  return withDenials(r.raw);
 }
 
 type ExecResult = { result: Record<string, unknown> | null; raw: string };
@@ -290,6 +295,15 @@ function execClaude(prompt: string, cwd: string, signal: AbortSignal, opts: { ar
       }
       runCwd = scratchDir;
       argv.push("--add-dir", cwd);
+    }
+    // The job may read and write only in its own folder(s), and may not run commands or fetch anything it was not granted (see confineArgv).
+    try {
+      const real = (d: string) => { try { return fs.realpathSync(d); } catch { return d; } };
+      const dirs = [...new Set((scratchDir ? [runCwd, cwd] : [cwd]).flatMap(d => [d, real(d)]))]; // a symlinked path (macOS /var) and its target both match
+      argv.splice(0, argv.length, ...confineArgv(argv, dirs));
+    } catch (e) {
+      if (scratchDir) removeScratch(scratchDir);
+      return reject(e);
     }
     argv.push("--output-format", "stream-json", "--verbose");
     // options go before the prompt; "--" is not used because --allowedTools is variadic

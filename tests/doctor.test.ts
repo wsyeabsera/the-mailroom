@@ -192,3 +192,52 @@ test("`mailroom explain` with --contract and with a Hub token", async () => {
     assert.match(none.out(), /No live key is labelled/);
   } finally { srv.close(); }
 });
+
+// ---- local-mcp.json (#2974) ----
+const lm = (home: string, servers: unknown, mode = 0o600) => write(home, "local-mcp.json", servers, mode);
+
+test("local-mcp.json: missing is info only; healthy is clean", () => {
+  const home = fixture();
+  const none = doctor({ home, pathEnv: "/bin:/usr/bin" });
+  assert.deepEqual(msgs(none, "error"), []);
+  assert.ok(msgs(none, "info").some(m => /local-mcp\.json: mcp_list and mcp_call have no local MCP servers/.test(m)));
+  lm(home, { files: { command: "/bin/sh", args: ["-c", "true"], cwd: path.join(home, "work") } });
+  assert.deepEqual(msgs(doctor({ home, pathEnv: "/bin:/usr/bin" }), "error"), []);
+});
+
+test("local-mcp.json: bad JSON, bad shape, loose mode, missing command and cwd are errors with a fix", () => {
+  let home = fixture();
+  lm(home, "{nope");
+  assert.ok(msgs(doctor({ home, pathEnv: "/bin" }), "error").some(m => /local-mcp\.json is not valid JSON/.test(m)));
+  home = fixture();
+  lm(home, { "bad name": { command: "x" }, ok: { command: "/bin/sh", bogus: 1 } });
+  const e = msgs(doctor({ home, pathEnv: "/bin" }), "error");
+  assert.ok(e.some(m => /bad name/.test(m) && /edit .*local-mcp\.json/.test(m)), e.join("\n"));
+  assert.ok(e.some(m => /unknown keys: bogus/.test(m)));
+  home = fixture();
+  lm(home, { files: { command: "/bin/sh" } }, 0o644);
+  const modes = msgs(doctor({ home, pathEnv: "/bin" }), "error");
+  assert.ok(modes.some(m => /local-mcp\.json is readable by others.*chmod 600/.test(m)), modes.join("\n"));
+  assert.ok(modes.some(m => /must be mode 0600/.test(m)));
+  home = fixture();
+  lm(home, { files: { command: "definitely-not-installed" }, other: { command: "/bin/sh", cwd: path.join(home, "missing") } });
+  const e2 = msgs(doctor({ home, pathEnv: "/bin:/usr/bin" }), "error");
+  assert.ok(e2.some(m => /“files”: command “definitely-not-installed” is not found/.test(m)));
+  assert.ok(e2.some(m => /“other”: cwd .*missing is not a folder/.test(m)));
+});
+
+test("local-mcp.json vs contracts: unknown servers and unused servers warn, the policy must allow mcp tasks", () => {
+  const home = fixture();
+  lm(home, { files: { command: "/bin/sh" }, spare: { command: "/bin/sh" } });
+  write(home, "policy.json", { folders: ["~/work"], tasks: ["echo"] });
+  const contract = c({ tasks: ["echo", "mcp_list"], commands: undefined, prompts: undefined, localMcp: [{ server: "files", tools: [{ name: "a" }] }, { server: "ghost", tools: [{ name: "b" }] }] });
+  const w = msgs(doctor({ home, contracts: [contract], pathEnv: "/bin:/usr/bin" }), "warn");
+  assert.ok(w.some(m => /contract “proj” allows local MCP server “ghost”.*not defined in .*local-mcp\.json.*remove it from the contract/.test(m)), w.join("\n"));
+  assert.ok(!w.some(m => /server “files” is not used/.test(m)));
+  assert.ok(w.some(m => /“spare” is not used by any contract/.test(m)));
+  assert.ok(w.some(m => /policy allows neither mcp_list nor mcp_call.*policy allow-task mcp_list; mailroom policy allow-task mcp_call/.test(m)));
+  write(home, "policy.json", { folders: ["~/work"], tasks: ["echo", "mcp_call"] });
+  assert.ok(!msgs(doctor({ home, pathEnv: "/bin:/usr/bin" }), "warn").some(m => /neither mcp_list/.test(m)));
+  // no contracts passed: no contract warnings, and the home dir is the injected one (never the real ~/.mailroom)
+  assert.ok(!msgs(doctor({ home, pathEnv: "/bin:/usr/bin" }), "warn").some(m => /ghost|not used by any contract/.test(m)));
+});

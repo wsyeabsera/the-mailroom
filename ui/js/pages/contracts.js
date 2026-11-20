@@ -1,9 +1,10 @@
 import { h, mount, enc } from "../dom.js";
 import { api } from "../api.js";
 import { banner, pageHead, loadInto, tag, emptyState } from "../components.js";
+import { formatLocalMcp, parseLocalMcp, localMcpNeeded } from "../local-mcp-form.js";
 import { plural, joinWords, TASK_WORDS, expiryText } from "../format.js";
 
-const ALL_TASKS = ["echo", "read_file", "write_file", "claude", "run", "ask"];
+const ALL_TASKS = ["echo", "read_file", "write_file", "claude", "run", "ask", "mcp_list", "mcp_call"];
 
 export function render(view, params, ctx) {
   const body = h("div");
@@ -48,7 +49,7 @@ function plainWords(c) {
 function editor(body, id, ctx) {
   const isNew = id === "new";
   loadInto(body, async () => isNew ? { name: "", folders: [], tasks: ["echo"], dailyLimit: 50, expires: null, approval: [], commands: [], prompts: [], callbackUrls: [], claudeTools: ["Read", "Glob", "Grep"], claudeMaxTurns: 10, claudeDailyTurns: 100, claudeDailyMinutes: 60, used_by: 0 } : api("/admin/contracts/" + enc(id)), (c) => {
-    const f = { name: c.name, folders: (c.folders || []).join("\n"), tasks: new Set(c.tasks), limit: String(c.dailyLimit), expires: c.expires ? (c.expires.endsWith("T00:00:00.000Z") ? c.expires.slice(0, 10) : c.expires) : "", approval: new Set(c.approval), commands: (c.commands || []).join("\n"), prompts: (c.prompts || []).join("\n"), claudeTools: (c.claudeTools || ["Read", "Glob", "Grep"]).join("\n"), claudeMaxTurns: String(c.claudeMaxTurns != null ? c.claudeMaxTurns : 10), claudeDailyTurns: String(c.claudeDailyTurns != null ? c.claudeDailyTurns : 100), claudeDailyMinutes: String(c.claudeDailyMinutes != null ? c.claudeDailyMinutes : 60), callbackUrls: (c.callbackUrls || []).join("\n") };
+    const f = { name: c.name, folders: (c.folders || []).join("\n"), tasks: new Set(c.tasks), limit: String(c.dailyLimit), expires: c.expires ? (c.expires.endsWith("T00:00:00.000Z") ? c.expires.slice(0, 10) : c.expires) : "", approval: new Set(c.approval), commands: (c.commands || []).join("\n"), prompts: (c.prompts || []).join("\n"), claudeTools: (c.claudeTools || ["Read", "Glob", "Grep"]).join("\n"), claudeMaxTurns: String(c.claudeMaxTurns != null ? c.claudeMaxTurns : 10), claudeDailyTurns: String(c.claudeDailyTurns != null ? c.claudeDailyTurns : 100), claudeDailyMinutes: String(c.claudeDailyMinutes != null ? c.claudeDailyMinutes : 60), callbackUrls: (c.callbackUrls || []).join("\n"), localMcp: formatLocalMcp(c.localMcp) };
     const errBox = h("div");
     const errs = {};
     const field = (key, node) => { const e = h("div", { class: "et", id: "e-" + key, hidden: true }); errs[key] = { e, node }; return [node, e]; };
@@ -57,6 +58,7 @@ function editor(body, id, ctx) {
     const commands = h("textarea", { class: "fld", id: "f-commands", rows: "2", placeholder: "deploy-notes", oninput: () => { f.commands = commands.value; } }); commands.value = f.commands;
     const prompts = h("textarea", { class: "fld", id: "f-prompts", rows: "2", placeholder: "find-stream", oninput: () => { f.prompts = prompts.value; } }); prompts.value = f.prompts;
     const claudeTools = h("textarea", { class: "fld", id: "f-claudeTools", rows: "2", placeholder: "Read", oninput: () => { f.claudeTools = claudeTools.value; } }); claudeTools.value = f.claudeTools;
+    const localMcp = h("textarea", { class: "fld", id: "f-localMcp", rows: "3", placeholder: "files: read_file, list_dir, write_file:ask", oninput: () => { f.localMcp = localMcp.value; } }); localMcp.value = f.localMcp;
     const claudeMaxTurns = h("input", { class: "fld", id: "f-claudeMaxTurns", value: f.claudeMaxTurns, inputmode: "numeric", oninput: () => { f.claudeMaxTurns = claudeMaxTurns.value; } });
     const claudeDailyTurns = h("input", { class: "fld", id: "f-claudeDailyTurns", value: f.claudeDailyTurns, inputmode: "numeric", oninput: () => { f.claudeDailyTurns = claudeDailyTurns.value; } });
     const claudeDailyMinutes = h("input", { class: "fld", id: "f-claudeDailyMinutes", value: f.claudeDailyMinutes, inputmode: "numeric", oninput: () => { f.claudeDailyMinutes = claudeDailyMinutes.value; } });
@@ -87,6 +89,11 @@ function editor(body, id, ctx) {
       const raw = f.limit.trim();
       const num = (v) => (/^\d+$/.test(v.trim()) ? Number(v) : v.trim());
       const payload = { claudeDailyTurns: num(f.claudeDailyTurns), claudeDailyMinutes: num(f.claudeDailyMinutes), name: f.name, folders: f.folders.split("\n").map((s) => s.trim()).filter(Boolean), tasks: ALL_TASKS.filter((t) => f.tasks.has(t)), dailyLimit: /^\d+$/.test(raw) ? Number(raw) : raw, expires: f.expires.trim() || null, approval: ALL_TASKS.filter((t) => f.approval.has(t)), commands: f.commands.split("\n").map((s) => s.trim()).filter(Boolean), prompts: f.prompts.split("\n").map((s) => s.trim()).filter(Boolean), claudeTools: f.claudeTools.split("\n").map((s) => s.trim()).filter(Boolean), claudeMaxTurns: /^\d+$/.test(f.claudeMaxTurns.trim()) ? Number(f.claudeMaxTurns) : f.claudeMaxTurns.trim(), callbackUrls: f.callbackUrls.split("\n").map((s) => s.trim()).filter(Boolean) };
+      const lm = parseLocalMcp(f.localMcp);
+      const tasksChosen = ALL_TASKS.filter((t) => f.tasks.has(t));
+      const lmErr = lm.ok ? localMcpNeeded(tasksChosen, lm.localMcp) : lm.error;
+      if (lmErr) return showErrors({ localMcp: lmErr });
+      payload.localMcp = lm.localMcp;
       save.disabled = true;
       try {
         const saved = isNew ? await api("/admin/contracts", { method: "POST", body: payload }) : await api("/admin/contracts/" + enc(id), { method: "PUT", body: payload });
@@ -106,6 +113,7 @@ function editor(body, id, ctx) {
         h("label", { for: "f-commands" }, "Allowed commands for the run task (one name per line; the laptop's commands.json decides what each does)"), field("commands", commands),
         h("label", { for: "f-prompts" }, "Allowed prompts for the ask task (one name per line; the laptop's prompts.json decides what each asks Claude and which tools it gets)"), field("prompts", prompts),
         h("label", { for: "f-claudeTools" }, "Tools the claude task may use (one per line, exact names; a job with none listed gets all of these)"), field("claudeTools", claudeTools),
+        h("label", { for: "f-localMcp" }, "Local MCP servers for mcp_list and mcp_call (one per line: server: tool, tool:auto, tool:ask; :auto runs without asking only for read-only tools; the laptop's local-mcp.json decides what each server runs)"), field("localMcp", localMcp),
         h("label", { for: "f-claudeMaxTurns" }, "Most turns a claude job may take (1 to 50)"), field("claudeMaxTurns", claudeMaxTurns),
         h("div", { class: "row" }, h("div", { class: "f1" }, h("label", { for: "f-claudeDailyTurns" }, "Claude turns a day (per key, UTC)"), field("claudeDailyTurns", claudeDailyTurns)), h("div", { class: "f1" }, h("label", { for: "f-claudeDailyMinutes" }, "Claude minutes a day (per key, UTC)"), field("claudeDailyMinutes", claudeDailyMinutes))),
         h("label", { for: "f-callbackUrls" }, "Callback URLs (optional, one https prefix per line, each ending in /; a parcel may ask to be told here when it ends)"), field("callbackUrls", callbacks),

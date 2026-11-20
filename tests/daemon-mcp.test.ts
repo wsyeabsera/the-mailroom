@@ -137,7 +137,7 @@ test("askOptions never silently drops an MCP tool the contract does not allow", 
 test("a prompt uses exactly one declared MCP tool: the fake server runs and answers, nothing else is started", async () => {
   const r = await ask("browse");
   assert.equal(r.ok, true, r.error);
-  assert.equal(r.result.output.trim(), `servers=browser tools=Read,${TOOL} PAGE:http://example.com/live strict=true`);
+  assert.equal(r.result.output.trim(), `servers=browser tools=Read(/${home}/allowed/**),${TOOL} PAGE:http://example.com/live strict=true`);
 });
 
 test("a prompt with no MCP tool gets no MCP config at all", async () => {

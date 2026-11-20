@@ -1,7 +1,9 @@
-// Two lanes so a long job never delays a quick one. Pure logic shared by the Hub and the daemon.
+// Three lanes so a long job never delays a quick one. Pure logic shared by the Hub and the daemon.
 // `short`: echo, read_file, write_file, and run commands the laptop reported as short (timeoutMs <= 60000).
+// `mcp`: mcp_list and mcp_call (the chat's laptop tools): their own lane, one job at a time, so a running Claude turn never blocks them.
 // `long`: claude, run (unless reported short), and anything else. Order is strict within a lane.
-export type Lane = "short" | "long";
+export type Lane = "short" | "mcp" | "long";
+export const LANES: readonly Lane[] = ["short", "mcp", "long"];
 export type LaneHints = Record<string, Lane>; // run command name -> lane, reported by the daemon's hello
 export const SHORT_TIMEOUT_MS = 60_000;
 export const SINGLE_LANE = "all"; // the lane key used for an old daemon (hello without `lanes`)
@@ -10,6 +12,7 @@ const SHORT_TASKS = new Set(["echo", "read_file", "write_file"]);
 
 export function laneOf(task: string, args: unknown, hints: LaneHints = {}): Lane {
   if (SHORT_TASKS.has(task)) return "short";
+  if (task === "mcp_list" || task === "mcp_call") return "mcp";
   if (task === "run") {
     const cmd = args && typeof args === "object" ? (args as Record<string, unknown>).command : undefined;
     if (typeof cmd === "string" && Object.hasOwn(hints, cmd) && hints[cmd] === "short") return "short";
@@ -30,7 +33,7 @@ export function parseHello(v: unknown): { hints: LaneHints } | null {
   const c = (v as Record<string, unknown>).commands;
   const hints: LaneHints = {};
   if (c && typeof c === "object" && !Array.isArray(c)) {
-    for (const [k, l] of Object.entries(c)) if (l === "short" || l === "long") hints[k] = l;
+    for (const [k, l] of Object.entries(c)) if (l === "short" || l === "long") hints[k] = l; // "mcp" is never a run-command hint
   }
   return { hints };
 }

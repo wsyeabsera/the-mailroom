@@ -63,7 +63,7 @@ test("a contract that lacks localMcp, or the task, refuses mcp_call", () => {
   assert.equal(call(none, { server: "notes", tool: "search" }).verdict, "refuse");
   assert.equal(check({ ...base, tasks: ["echo"] }, { task: "mcp_call", args: { server: "notes", tool: "search" } }, ctx).verdict, "refuse");
   assert.deepEqual(jobPaths({ task: "mcp_call", args: {} }), []);
-  assert.equal(laneOf("mcp_call", {}), "long");
+  assert.equal(laneOf("mcp_call", {}), "mcp");
 });
 
 test("a malformed stored contract never throws", () => {
